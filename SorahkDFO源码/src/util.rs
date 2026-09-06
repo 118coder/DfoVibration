@@ -1,0 +1,283 @@
+//! Common utility functions.
+//!
+//! Provides branch prediction hints and hash functions used across modules.
+
+/// Marker function for cold code paths.
+///
+/// Used with branch prediction hints to inform the compiler about infrequently executed paths.
+#[inline(always)]
+#[cold]
+pub fn cold() {}
+
+/// Branch prediction hint for conditions expected to be false.
+///
+/// Helps the compiler optimize for the more common case where the condition is false.
+///
+/// # Example
+/// ```
+/// use sorahk::util::unlikely;
+///
+/// fn process_data(value: i32) -> Result<i32, &'static str> {
+///     if unlikely(value < 0) {
+///         return Err("negative value");
+///     }
+///     Ok(value * 2)
+/// }
+///
+/// assert_eq!(process_data(5).unwrap(), 10);
+/// assert!(process_data(-1).is_err());
+/// ```
+#[inline(always)]
+pub fn unlikely(b: bool) -> bool {
+    if b {
+        cold()
+    }
+    b
+}
+
+/// Branch prediction hint for conditions expected to be true.
+///
+/// Helps the compiler optimize for the more common case where the condition is true.
+///
+/// # Example
+/// ```
+/// use sorahk::util::likely;
+///
+/// fn validate_input(value: i32) -> Option<i32> {
+///     if likely(value >= 0 && value <= 100) {
+///         return Some(value);
+///     }
+///     None
+/// }
+///
+/// assert_eq!(validate_input(50), Some(50));
+/// assert_eq!(validate_input(150), None);
+/// ```
+#[inline(always)]
+pub fn likely(b: bool) -> bool {
+    if !b {
+        cold()
+    }
+    b
+}
+
+/// FNV-1a 32-bit hash constants.
+pub mod fnv32 {
+    /// Offset basis for FNV-1a 32-bit hash.
+    pub const OFFSET_BASIS: u32 = 0x811c9dc5;
+    /// Prime multiplier for FNV-1a 32-bit hash.
+    pub const PRIME: u32 = 0x01000193;
+}
+
+/// FNV-1a 64-bit hash constants.
+pub mod fnv64 {
+    /// Offset basis for FNV-1a 64-bit hash.
+    pub const OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+    /// Prime multiplier for FNV-1a 64-bit hash.
+    pub const PRIME: u64 = 0x100000001b3;
+}
+
+/// Computes FNV-1a 32-bit hash.
+///
+/// Non-cryptographic hash function suitable for hash tables and checksums.
+///
+/// # Arguments
+/// * `hash` - Current hash state
+/// * `value` - Value to incorporate into hash
+///
+/// # Returns
+/// Updated hash state
+#[inline(always)]
+pub fn fnv1a_hash_u32(mut hash: u32, value: u32) -> u32 {
+    hash ^= value;
+    hash.wrapping_mul(fnv32::PRIME)
+}
+
+/// Computes FNV-1a 64-bit hash.
+///
+/// Non-cryptographic hash function suitable for hash tables and checksums.
+///
+/// # Arguments
+/// * `hash` - Current hash state
+/// * `value` - Value to incorporate into hash
+///
+/// # Returns
+/// Updated hash state
+#[inline(always)]
+pub fn fnv1a_hash_u64(mut hash: u64, value: u64) -> u64 {
+    hash ^= value;
+    hash.wrapping_mul(fnv64::PRIME)
+}
+
+/// Computes FNV-1a 64-bit hash for a byte sequence.
+///
+/// Processes each byte in the input using the FNV-1a algorithm.
+///
+/// # Arguments
+/// * `hash` - Initial hash state
+/// * `bytes` - Input bytes to hash
+///
+/// # Returns
+/// Final hash state
+#[inline(always)]
+pub fn fnv1a_hash_bytes(mut hash: u64, bytes: &[u8]) -> u64 {
+    for &byte in bytes {
+        hash = fnv1a_hash_u64(hash, byte as u64);
+    }
+    hash
+}
+
+// ─── 绝对稳定化基础设施: 崩溃日志 + 受监督线程 ─────────────────────────────
+// panic 策略为 unwind(见 Cargo.toml [profile.release] panic = "unwind"):
+// 任何线程 panic 都不再杀死整个进程, 由这里记录日志并让线程安全退出/重启。
+
+use std::any::Any;
+use std::io::Write;
+
+/// 崩溃日志文件路径: 与可执行文件同目录的 SorahkDFO_crash.log
+pub fn crash_log_path() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("SorahkDFO_crash.log")
+}
+
+/// 追加一条异常日志(每次打开-追加-关闭, 不持有文件句柄, 可跨线程安全调用)。
+pub fn crash_log(context: &str, detail: &str) {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
+    let line = format!("[{ts}] [thread:{thread}] [{context}] {detail}\n");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(crash_log_path())
+    {
+        let _ = f.write_all(line.as_bytes());
+    }
+    #[cfg(debug_assertions)]
+    eprint!("{line}");
+}
+
+/// 把 panic 载荷转成可读字符串(绝不 panic)。
+pub fn panic_payload_str(payload: &(dyn Any + Send)) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "non-string panic payload".to_string()
+    }
+}
+
+/// 受监督线程: panic 被捕获(日志由 main 里的全局 panic hook 统一记录),
+/// 线程安全退出; 若闭包以 panic 结束则自动重启(最多 MAX 次), 进程永不死。
+///
+/// 闭包正常返回(Ok)表示该线程职责正常结束, 不重启。
+pub fn spawn_supervised<F>(name: &'static str, mut f: F)
+where
+    F: FnMut() + Send + 'static,
+{
+    const MAX_RESTARTS: u32 = 10;
+    let _ = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || {
+            let mut restarts: u32 = 0;
+            loop {
+                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut f));
+                if r.is_ok() {
+                    break; // 正常结束, 不再重启
+                }
+                restarts += 1;
+                if restarts > MAX_RESTARTS {
+                    crash_log(
+                        "SUPERVISOR_GIVE_UP",
+                        &format!("{name} 连续 panic {MAX_RESTARTS} 次, 放弃重启(进程保持存活)"),
+                    );
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(300));
+            }
+        });
+}
+
+/// 防中毒锁获取: 锁被其它线程 panic 弄脏时仍取出内部数据继续运行(降级而非 panic)。
+pub fn lock_guard<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    match m.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+/// 防中毒读锁获取: 同上(RwLock)。
+pub fn read_guard<T>(rw: &std::sync::RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    match rw.read() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+/// 防中毒写锁获取: 同上(RwLock)。
+pub fn write_guard<T>(rw: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    match rw.write() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_likely_unlikely() {
+        assert!(likely(true));
+        assert!(!likely(false));
+        assert!(unlikely(true));
+        assert!(!unlikely(false));
+    }
+
+    #[test]
+    fn test_fnv1a_hash_u32() {
+        let hash = fnv32::OFFSET_BASIS;
+        let result = fnv1a_hash_u32(hash, 42);
+        assert_ne!(result, hash);
+
+        // Verify determinism
+        let hash1 = fnv1a_hash_u32(fnv32::OFFSET_BASIS, 42);
+        let hash2 = fnv1a_hash_u32(fnv32::OFFSET_BASIS, 42);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_fnv1a_hash_u64() {
+        let hash = fnv64::OFFSET_BASIS;
+        let result = fnv1a_hash_u64(hash, 42);
+        assert_ne!(result, hash);
+
+        // Verify determinism
+        let hash1 = fnv1a_hash_u64(fnv64::OFFSET_BASIS, 42);
+        let hash2 = fnv1a_hash_u64(fnv64::OFFSET_BASIS, 42);
+        assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_fnv1a_hash_bytes() {
+        let hash = fnv64::OFFSET_BASIS;
+        let data = b"test data";
+        let result = fnv1a_hash_bytes(hash, data);
+        assert_ne!(result, hash);
+
+        // Verify determinism
+        let hash1 = fnv1a_hash_bytes(fnv64::OFFSET_BASIS, data);
+        let hash2 = fnv1a_hash_bytes(fnv64::OFFSET_BASIS, data);
+        assert_eq!(hash1, hash2);
+
+        // Verify different inputs produce different outputs
+        let hash3 = fnv1a_hash_bytes(fnv64::OFFSET_BASIS, b"other data");
+        assert_ne!(hash1, hash3);
+    }
+}

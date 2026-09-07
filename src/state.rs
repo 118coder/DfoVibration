@@ -550,6 +550,8 @@ pub struct AppState {
     notification_sender: std::sync::Mutex<Option<Sender<NotificationEvent>>>,
     /// Process whitelist (empty means all processes enabled)
     process_whitelist: Mutex<Vec<String>>,
+    /// 白名单总开关 (false = 全部放行, 列表保留)
+    whitelist_enabled: std::sync::atomic::AtomicBool,
     /// Cached foreground process name with timestamp
     cached_process_info: RwLock<(Option<String>, Instant)>,
     /// Currently pressed keys for combo detection
@@ -797,6 +799,7 @@ impl AppState {
             input_timeout: AtomicU64::new(config.input_timeout.clamp(1, 2000)),
             worker_count: AtomicU64::new(0),
             process_whitelist: Mutex::new(config.process_whitelist.clone()),
+            whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
             configured_worker_count: config.worker_count,
             input_mappings,
             worker_pool: OnceLock::new(),
@@ -1020,6 +1023,8 @@ impl AppState {
         if let Ok(mut whitelist) = self.process_whitelist.lock() {
             *whitelist = config.process_whitelist.clone();
         }
+        self.whitelist_enabled
+            .store(config.whitelist_enabled, Ordering::Relaxed);
 
         // Clear process name cache
         if let Ok(mut cache) = self.cached_process_info.write() {
@@ -2138,6 +2143,10 @@ impl AppState {
     /// Check if current foreground process is in whitelist (empty whitelist = all allowed)
     #[inline]
     pub(crate) fn is_process_whitelisted(&self) -> bool {
+        // 白名单总开关关闭 = 全部放行 (列表保留, 重开即恢复)
+        if !self.whitelist_enabled.load(Ordering::Relaxed) {
+            return true;
+        }
         // 防中毒: 锁内只做轻量 clone, 绝不持锁调用 WinAPI(OpenProcess 等)
         let whitelist = util::lock_guard(&self.process_whitelist).clone();
         if whitelist.is_empty() {

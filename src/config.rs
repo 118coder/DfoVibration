@@ -660,6 +660,9 @@ pub struct AppConfig {
     /// Process whitelist (empty means all processes)
     #[serde(default)]
     pub process_whitelist: Vec<String>,
+    /// 是否启用进程白名单过滤 (false = 全部放行, 列表保留不删)
+    #[serde(default = "default_whitelist_enabled")]
+    pub whitelist_enabled: bool,
     /// HID device baselines for button detection
     #[serde(default)]
     pub hid_baselines: Vec<HidDeviceBaseline>,
@@ -816,6 +819,10 @@ fn default_dfo_player() -> bool {
     true
 }
 
+fn default_whitelist_enabled() -> bool {
+    true
+}
+
 /// device_api_preferences 按键名排序序列化 (HashMap 迭代顺序不定)
 fn serialize_sorted_device_prefs<S>(
     m: &HashMap<String, DeviceApiPreference>,
@@ -862,6 +869,7 @@ impl Default for AppConfig {
             event_duration: default_event_duration(),
             worker_count: default_worker_count(),
             process_whitelist: vec![], // Empty means all processes enabled
+            whitelist_enabled: default_whitelist_enabled(),
             hid_baselines: Vec::new(),
             rawinput_capture_mode: default_capture_mode(),
             xinput_capture_mode: default_xinput_capture_mode(),

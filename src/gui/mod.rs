@@ -15,6 +15,7 @@ mod main_window;
 mod minimal;
 mod turbo_page;
 mod vibration_page;
+mod whitelist_page;
 mod mouse_direction_dialog;
 mod mouse_scroll_dialog;
 mod settings_dialog;
@@ -98,6 +99,9 @@ pub struct SorahkGui {
     pub show_guide: bool,
     /// 首次运行 DFO 询问已回答 (会话内瞬态, 不持久化)
     dfo_ask_answered: bool,
+    /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
+    new_whitelist_name: String,
+    whitelist_error: Option<String>,
     /// Device manager dialog visibility
     show_device_manager: bool,
     /// Device manager dialog
@@ -241,6 +245,8 @@ impl SorahkGui {
             show_about_dialog: false,
             show_guide: false,
             dfo_ask_answered: false,
+            new_whitelist_name: String::new(),
+            whitelist_error: None,
             show_device_manager: false,
             device_manager_dialog: None,
             hid_activation_dialog: None,

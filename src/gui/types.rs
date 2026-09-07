@@ -10,6 +10,8 @@ pub enum Page {
     Gamepad,
     /// 连发映射 (键盘/鼠标触发 → 目标键)
     Turbo,
+    /// 白名单 (进程过滤管理)
+    Whitelist,
     /// 通用型震动设定
     Vibration,
     /// 全职业预设 (震动)
@@ -18,13 +20,14 @@ pub enum Page {
 
 impl Page {
     /// 选项卡从左到右的固定顺序。
-    pub const TABS: &'static [Page] = &[Page::Gamepad, Page::Turbo, Page::Vibration, Page::JobPresets];
+    pub const TABS: &'static [Page] = &[Page::Gamepad, Page::Turbo, Page::Whitelist, Page::Vibration, Page::JobPresets];
 
     /// 导航文案 (纯文字, 图标由 widgets 矢量绘制)。
     pub fn label(self) -> &'static str {
         match self {
             Page::Gamepad => "手柄映射",
             Page::Turbo => "连发映射",
+            Page::Whitelist => "白名单",
             Page::Vibration => "通用震动",
             Page::JobPresets => "全职业预设",
         }
@@ -40,6 +43,7 @@ impl Page {
         match self {
             Page::Gamepad => crate::gui::widgets::Icon::Gamepad,
             Page::Turbo => crate::gui::widgets::Icon::Bolt,
+            Page::Whitelist => crate::gui::widgets::Icon::Shield,
             Page::Vibration => crate::gui::widgets::Icon::Wave,
             Page::JobPresets => crate::gui::widgets::Icon::Wand,
         }
@@ -50,6 +54,7 @@ impl Page {
         match self {
             Page::Gamepad => "点击手柄按键设置映射, 修改后自动保存并立即生效",
             Page::Turbo => "连发映射与全局配置, 由切换键控制启停",
+            Page::Whitelist => "只允许列表内进程使用连发, 防止误触其他程序",
             Page::Vibration => "震动参数实时生效, 进图自动驱动",
             Page::JobPresets => "按职业加载震动预设, 滑块修改自动保存到 JobVibration.toml",
         }

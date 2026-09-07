@@ -155,6 +155,7 @@ fn full_config() -> AppConfig {
     c.minimal_mode = true;
     c.minimal_vib_preset_job = true;
     c.dfo_player = false;
+    c.whitelist_enabled = false;
     c.switch_key = "F9".to_string();
     c.mappings = vec![distinct_mapping("F6", 77), none_options_mapping()];
     c.input_timeout = 9;
@@ -200,7 +201,7 @@ fn app_config_roundtrip_preserves_every_field() {
         language, guide_seen, minimal_mode, minimal_vib_preset_job,
         switch_key, input_timeout, interval, event_duration,
         worker_count, rawinput_capture_mode, xinput_capture_mode,
-        current_preset, dfo_player,
+        current_preset, dfo_player, whitelist_enabled,
     );
     assert_eq!(
         loaded.window_rect_normal, orig.window_rect_normal,

@@ -699,6 +699,14 @@ impl SorahkGui {
                                 ui.add_space(16.0);
                             });
                     }
+                    Page::Whitelist => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                self.render_whitelist_page(ui);
+                                ui.add_space(12.0);
+                            });
+                    }
                     Page::Vibration => {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])

@@ -8,10 +8,96 @@ use crate::state::{AppState, DeviceType, InputDevice, InputEvent};
 use crate::util::{likely, unlikely};
 use smallvec::SmallVec;
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
 };
+use windows::core::{s, PCWSTR};
+use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::UI::Input::XboxController::*;
+
+/* ─────────────── 多 DLL 探测 (第三方/国产手柄适配) ───────────────
+ * 不少国产手柄的驱动会把自带版 xinput1_3.dll 装进系统或游戏目录,
+ * 它们只在这份 DLL 下正常握手; 系统默认加载的那份可能完全看不到它们。
+ * 这里按 1_4 → 1_3 → 9_1_0 → xinput 顺序探测, 选中第一个导出齐全的实例,
+ * 全进程统一走它; 全部失败则回退 windows-rs 静态链接的系统导出 (与旧行为一致)。 */
+
+type XInputGetStateFn = unsafe extern "system" fn(u32, *mut XINPUT_STATE) -> u32;
+type XInputSetStateFn = unsafe extern "system" fn(u32, *mut XINPUT_VIBRATION) -> u32;
+type XInputGetCapabilitiesFn = unsafe extern "system" fn(u32, u32, *mut XINPUT_CAPABILITIES) -> u32;
+type XInputEnableFn = unsafe extern "system" fn(i32);
+
+struct XInputApi {
+    get_state: XInputGetStateFn,
+    set_state: XInputSetStateFn,
+    get_caps: XInputGetCapabilitiesFn,
+    enable: XInputEnableFn,
+    dll: &'static str,
+}
+
+static XINPUT_API: OnceLock<XInputApi> = OnceLock::new();
+
+fn api() -> &'static XInputApi {
+    XINPUT_API.get_or_init(|| unsafe { resolve_api() })
+}
+
+unsafe fn resolve_api() -> XInputApi {
+    for name in ["xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll", "xinput.dll"] {
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let Ok(handle) = LoadLibraryW(PCWSTR(wide.as_ptr())) else {
+            continue;
+        };
+        if handle.is_invalid() {
+            continue;
+        }
+        let (Some(g), Some(st), Some(cp), Some(en)) = (
+            GetProcAddress(handle, s!("XInputGetState")),
+            GetProcAddress(handle, s!("XInputSetState")),
+            GetProcAddress(handle, s!("XInputGetCapabilities")),
+            GetProcAddress(handle, s!("XInputEnable")),
+        ) else {
+            continue;
+        };
+        eprintln!("[xinput] XInput DLL = {}", name);
+        return XInputApi {
+            get_state: std::mem::transmute::<_, XInputGetStateFn>(g),
+            set_state: std::mem::transmute::<_, XInputSetStateFn>(st),
+            get_caps: std::mem::transmute::<_, XInputGetCapabilitiesFn>(cp),
+            enable: std::mem::transmute::<_, XInputEnableFn>(en),
+            dll: name,
+        };
+    }
+    eprintln!("[xinput] XInput DLL = system (windows-rs 静态链接, 兜底)");
+    XInputApi {
+        get_state: fallback_get_state,
+        set_state: fallback_set_state,
+        get_caps: fallback_get_caps,
+        enable: fallback_enable,
+        dll: "system",
+    }
+}
+
+unsafe extern "system" fn fallback_get_state(idx: u32, state: *mut XINPUT_STATE) -> u32 {
+    unsafe { XInputGetState(idx, state) }
+}
+unsafe extern "system" fn fallback_set_state(idx: u32, vib: *mut XINPUT_VIBRATION) -> u32 {
+    unsafe { XInputSetState(idx, vib) }
+}
+unsafe extern "system" fn fallback_get_caps(idx: u32, flags: u32, caps: *mut XINPUT_CAPABILITIES) -> u32 {
+    unsafe { XInputGetCapabilities(idx, XINPUT_FLAG(flags), caps) }
+}
+unsafe extern "system" fn fallback_enable(on: i32) {
+    unsafe { XInputEnable(on != 0) }
+}
+
+/// 供 vibration.rs 输出端复用同一 DLL 实例 (输入与震动必须同源, 否则部分
+/// 国产手柄会出现"输入有反应、马达没反应")。
+pub unsafe fn xinput_get_state(slot: u32, state: *mut XINPUT_STATE) -> u32 {
+    (api().get_state)(slot, state)
+}
+
+pub unsafe fn xinput_set_state(slot: u32, vib: &XINPUT_VIBRATION) -> u32 {
+    (api().set_state)(slot, vib as *const XINPUT_VIBRATION as *mut XINPUT_VIBRATION)
+}
 
 /// XInput gamepad VID (Microsoft)
 const XBOX_VID: u16 = 0x045E;
@@ -143,7 +229,7 @@ impl XInputHandler {
     pub fn initialize(&mut self) {
         for user_index in 0..XUSER_MAX_COUNT {
             let mut state = XINPUT_STATE::default();
-            let result = unsafe { XInputGetState(user_index, &mut state) };
+            let result = unsafe { (api().get_state)(user_index, &mut state) };
             if result == 0 {
                 // Device connected
                 let vid_pid = Self::detect_vid_pid_static(user_index).unwrap_or((XBOX_VID, 0x028E));
@@ -192,7 +278,7 @@ impl XInputHandler {
     pub fn poll(&mut self) {
         /* 蓝牙/手柄重置请求: XInputEnable 开关 + 清空设备缓存, 强制重新握手 */
         if crate::input_manager::take_xinput_reset() {
-            unsafe { XInputEnable(false); }
+            unsafe { (api().enable)(0); }
             for user_index in 0..XUSER_MAX_COUNT {
                 let idx = user_index as usize;
                 if let Some(mut ds) = self.device_states[idx].take() {
@@ -209,7 +295,7 @@ impl XInputHandler {
                     self.ownership.release_device(ds.vid_pid);
                 }
             }
-            unsafe { XInputEnable(true); }
+            unsafe { (api().enable)(1); }
         }
 
         // Check and clear cache if configuration was reloaded
@@ -246,7 +332,7 @@ impl XInputHandler {
     fn poll_device(&mut self, user_index: u32) {
         let mut state = XINPUT_STATE::default();
 
-        match unsafe { XInputGetState(user_index, &mut state) } {
+        match unsafe { (api().get_state)(user_index, &mut state) } {
             0 => {
                 let idx = user_index as usize;
 
@@ -1205,7 +1291,7 @@ impl XInputHandler {
     fn detect_vid_pid_static(user_index: u32) -> Option<(u16, u16)> {
         // Try to get capabilities (contains subtype info)
         let mut caps = XINPUT_CAPABILITIES::default();
-        if unsafe { XInputGetCapabilities(user_index, XINPUT_FLAG_GAMEPAD, &mut caps) } == 0 {
+        if unsafe { (api().get_caps)(user_index, XINPUT_FLAG_GAMEPAD.0, &mut caps) } == 0 {
             // Map subtype to known VID:PID
             match caps.SubType {
                 XINPUT_DEVSUBTYPE_GAMEPAD => Some((XBOX_VID, 0x028E)),

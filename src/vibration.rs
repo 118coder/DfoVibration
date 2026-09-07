@@ -12,11 +12,14 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::System::Memory::{
     MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
 };
-use windows::Win32::UI::Input::XboxController::{XInputSetState, XINPUT_VIBRATION};
+use windows::Win32::UI::Input::XboxController::{XINPUT_STATE, XINPUT_VIBRATION};
 
 use crate::state::AppState;
 
 const VIB_SHM_MAGIC: u32 = 0x564F4656;
+/// 必须与 DLL 源码 common/vib_protocol.h 的 VIB_SHM_VERSION 一致;
+/// DLL 协议升级 (事件语义/参数槽位变化) 后旧版本直接拒接, 避免按旧语义误读
+const VIB_SHM_VERSION: u32 = 2;
 const VIB_RING_SIZE: usize = 256 * 1024;
 
 const VEV_FONT: u32 = 10;
@@ -381,7 +384,7 @@ impl VibEngine {
         self.hold_r = s * rr;
         self.left = self.hold_l;
         self.right = self.hold_r;
-        self.hold_until = now_ms() + dur;
+        self.hold_until = now_ms().wrapping_add(dur);
         self.rhythm_until = 0;
     }
 
@@ -391,7 +394,7 @@ impl VibEngine {
             return;
         }
         let now = now_ms();
-        if s >= self.rank_level || now >= self.rank_full_until {
+        if s >= self.rank_level || !before(now, self.rank_full_until) {
             self.rank_full_until = now.wrapping_add(dur.max(20));
             self.rank_level = s;
         }
@@ -428,7 +431,7 @@ impl VibEngine {
                 self.algo_state[1] += count as f32;
                 if self.algo_state[1] >= self.algo_ap[1] {
                     self.inject(self.algo_ap[2] / 100.0, 0.9, 0.7, 60.0, 45.0);
-                    self.silence_until = now + self.algo_ap[3] as u32;
+                    self.silence_until = now.wrapping_add(self.algo_ap[3] as u32);
                     self.algo_state[1] = 0.0;
                 }
             }
@@ -604,7 +607,7 @@ impl VibEngine {
         self.rhythm_r = s * rr;
         self.left = self.rhythm_l;
         self.right = self.rhythm_r;
-        self.rhythm_until = now_ms() + dur;
+        self.rhythm_until = now_ms().wrapping_add(dur);
         self.rhythm_period = period.max(30);
         self.hold_until = 0;
     }
@@ -731,11 +734,11 @@ impl VibEngine {
                 self.burst_hits = self.burst_hits.saturating_add(count);
                 if !abs_mode && self.burst_hits >= 6 {
                     self.state = VibState::Burst;
-                    self.burst_until = now + 800;
+                    self.burst_until = now.wrapping_add(800);
                 }
 
                 /* 特殊攻击静默: 静默期内普通事件不注入(突显特殊攻击) */
-                if !abs_mode && now < self.silence_until && (a6 & FONT_SPECIAL) == 0 {
+                if !abs_mode && before(now, self.silence_until) && (a6 & FONT_SPECIAL) == 0 {
                     return;
                 }
                 /* 评分动态衰减 (v29): 攻击命中提升评级 (上限 8 = 满评分) */
@@ -749,7 +752,7 @@ impl VibEngine {
 
             if is_hit {
                 let cw = self.p[P_COUNTER_WIN].max(300.0) as u32;
-                self.counter_until = now + cw;
+                self.counter_until = now.wrapping_add(cw);
                 /* 评分动态衰减 (v29): 受击/命中事件也续评级 (保持节奏) */
                 if self.ghost_enabled {
                     self.ghost_grade = (self.ghost_grade + 0.5).min(8.0);
@@ -801,7 +804,7 @@ impl VibEngine {
             }
 
             let mut mul = 1.0;
-            if is_attack && now < self.counter_until {
+            if is_attack && before(now, self.counter_until) {
                 self.state = VibState::Counter;
                 mul = self.p[P_COUNTER_MUL].max(100.0) / 100.0;
             }
@@ -909,7 +912,7 @@ impl VibEngine {
             }
             if a6 & FONT_SPECIAL != 0 {
                 /* 特殊攻击静默窗口 */
-                self.silence_until = now + self.p[P_SILENCE].max(0.0) as u32;
+                self.silence_until = now.wrapping_add(self.p[P_SILENCE].max(0.0) as u32);
             }
             return;
         }
@@ -1025,10 +1028,10 @@ impl VibEngine {
         if self.dot_active && now.wrapping_sub(self.dot_last) > 200 {
             self.dot_active = false;
         }
-        if self.state == VibState::Burst && now >= self.burst_until {
+        if self.state == VibState::Burst && !before(now, self.burst_until) {
             self.state = VibState::Combat;
         }
-        if self.state == VibState::Counter && now >= self.counter_until {
+        if self.state == VibState::Counter && !before(now, self.counter_until) {
             self.state = VibState::Combat;
         }
         let idle = self.p[P_IDLE].max(1000.0) as u32;
@@ -1071,7 +1074,7 @@ impl VibEngine {
         self.algo_tick(now);
 
         /* 效果模式 */
-        if now < self.hold_until {
+        if before(now, self.hold_until) {
             self.left = self.hold_l;
             self.right = self.hold_r;
         } else {
@@ -1086,7 +1089,7 @@ impl VibEngine {
                 self.right *= dr;
             }
         }
-        if now < self.rhythm_until {
+        if before(now, self.rhythm_until) {
             let on = ((now / self.rhythm_period) & 1) == 0;
             self.left = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
             self.right = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
@@ -1205,6 +1208,32 @@ fn now_ms() -> u32 {
         .unwrap_or(0)
 }
 
+/// u32 毫秒时间戳的回绕安全比较: now_ms 截断 u32, 49.7 天回绕一次。
+/// "未过期"判定 = (deadline - now) 的有符号差 > 0, 在 ±2^31 ms 内恒正确;
+/// 裸比较 `now < deadline` 在回绕点后会恒真 → 震动卡死最长 49.7 天。
+#[inline]
+fn before(now: u32, deadline: u32) -> bool {
+    deadline.wrapping_sub(now) as i32 > 0
+}
+
+/// 向"当前已连接"的 XInput 槽位输出震动 (每次输出时扫描 0..4)。
+/// 旧实现硬编码 0 号槽 —— 非 0 号槽位的手柄收不到任何游戏震动。
+fn send_vibration(left: u16, right: u16) {
+    let vib = XINPUT_VIBRATION {
+        wLeftMotorSpeed: left,
+        wRightMotorSpeed: right,
+    };
+    for slot in 0..4u32 {
+        let mut st = XINPUT_STATE::default();
+        if unsafe { crate::xinput::xinput_get_state(slot, &mut st) } == 0 {
+            unsafe {
+                let _ = crate::xinput::xinput_set_state(slot, &vib);
+            }
+            return;
+        }
+    }
+}
+
 pub fn now_ms_u64() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1313,7 +1342,7 @@ pub fn run(state: Arc<AppState>) {
                             };
                             if !view.Value.is_null() {
                                 let s = unsafe { &mut *(view.Value as *mut VibShm) };
-                                if s.magic == VIB_SHM_MAGIC {
+                                if s.magic == VIB_SHM_MAGIC && s.version == VIB_SHM_VERSION {
                                     shm_handle = Some(h);
                                     shm_view = Some(view);
                                 } else {
@@ -1329,7 +1358,9 @@ pub fn run(state: Arc<AppState>) {
 
                 if let Some(view) = shm_view {
                     let s = unsafe { &mut *(view.Value as *mut VibShm) };
-                    let connected = s.magic == VIB_SHM_MAGIC && process_alive(s.game_pid);
+                    let connected = s.magic == VIB_SHM_MAGIC
+                        && s.version == VIB_SHM_VERSION
+                        && process_alive(s.game_pid);
                     state.vibration_connected.store(connected, Ordering::Relaxed);
 
                     if connected {
@@ -1428,16 +1459,15 @@ pub fn run(state: Arc<AppState>) {
                             let _ = unsafe { CloseHandle(h) };
                         }
                         shm_view = None;
-                        engine.left = 0.0;
-                        engine.right = 0.0;
-                        let zero = XINPUT_VIBRATION { wLeftMotorSpeed: 0, wRightMotorSpeed: 0 };
-                        unsafe { let _ = XInputSetState(0, &zero); }
+                        // 整引擎重置: 旧实现只清 left/right, hold/rhythm/评分脉冲等
+                        // deadline 字段残留 (配合 u32 回绕会把震动卡死到下一轮 tick)
+                        engine = VibEngine::new();
+                        send_vibration(0, 0);
                     }
                 } else {
                     state.vibration_connected.store(false, Ordering::Relaxed);
                 }
 
-                let zero = XINPUT_VIBRATION { wLeftMotorSpeed: 0, wRightMotorSpeed: 0 };
                 if enabled {
                     /* 评分测试: 模拟等级 8 事件 (GUI 测试按钮) */
                     if state.vibration_rank_test.swap(false, Ordering::Relaxed) {
@@ -1458,8 +1488,7 @@ pub fn run(state: Arc<AppState>) {
                         let pct = params[P_TEST].max(1) as f32 / 100.0;
                         let vl = (65535.0 * pct * motor_l).min(65535.0) as u16;
                         let vr = (65535.0 * pct * motor_r).min(65535.0) as u16;
-                        let vib = XINPUT_VIBRATION { wLeftMotorSpeed: vl, wRightMotorSpeed: vr };
-                        unsafe { let _ = XInputSetState(0, &vib); }
+                        send_vibration(vl, vr);
                         state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                         state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
                     } else {
@@ -1494,7 +1523,7 @@ pub fn run(state: Arc<AppState>) {
                             engine.algo_ap[i] = state.vibration_algo_ap[i].load(Ordering::Relaxed) as f32;
                         }
                         /* 评分脉冲: 按各事件强度 × 满幅输出, 持续 rank_duration */
-                        if now_ms() < engine.rank_full_until {
+                        if before(now_ms(), engine.rank_full_until) {
                             let lvl = engine.rank_level.clamp(0.0, 1.0);
                             /* 全局总调整[9] + 强度上限[4] 作用于评分通道 (v24.3);
                              * 独立测试开关开时评分通道独立 (单通道测试用) */
@@ -1513,8 +1542,7 @@ pub fn run(state: Arc<AppState>) {
                             let thr3 = (engine.out_threshold.min(50.0) / 100.0) * 65535.0;
                             let vl = if (vl as f32) < thr3 { 0 } else { vl };
                             let vr = if (vr as f32) < thr3 { 0 } else { vr };
-                            let vib = XINPUT_VIBRATION { wLeftMotorSpeed: vl, wRightMotorSpeed: vr };
-                            unsafe { let _ = XInputSetState(0, &vib); }
+                            send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
                             /* 评分事件实时输出 (rank_out, 供 L/R 进度条) */
@@ -1538,11 +1566,11 @@ pub fn run(state: Arc<AppState>) {
                             let ml = engine.move_level.clamp(0.0, 1.0);
                             let now = now_ms();
                             let pace_ms = params[P_MOVE_PACE].max(200).min(800);
-                            if now >= engine.move_pace_until {
-                                engine.move_pace_until = now + pace_ms;
+                            if !before(now, engine.move_pace_until) {
+                                engine.move_pace_until = now.wrapping_add(pace_ms);
                                 engine.move_phase = !engine.move_phase;
                             }
-                            let pace_frac = if engine.move_pace_until > now {
+                            let pace_frac = if before(now, engine.move_pace_until) {
                                 1.0 - ((engine.move_pace_until - now) as f32 / pace_ms as f32)
                             } else {
                                 1.0
@@ -1582,8 +1610,7 @@ pub fn run(state: Arc<AppState>) {
                             let thr = (params[P_MOVE_THRESHOLD] as f32).clamp(0.0, 20.0) / 100.0 * 65535.0;
                             let vl = if engine.move_out_l < thr { 0 } else { engine.move_out_l.min(65535.0) as u16 };
                             let vr = if engine.move_out_r < thr { 0 } else { engine.move_out_r.min(65535.0) as u16 };
-                            let vib = XINPUT_VIBRATION { wLeftMotorSpeed: vl, wRightMotorSpeed: vr };
-                            unsafe { let _ = XInputSetState(0, &vib); }
+                            send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
                         } else {
@@ -1604,14 +1631,13 @@ pub fn run(state: Arc<AppState>) {
                             let rk = 1.0 + rnd;
                             let vl = ((l as f32) * motor_l * rk).min(65535.0) as u16;
                             let vr = ((r as f32) * motor_r * rk).min(65535.0) as u16;
-                            let vib = XINPUT_VIBRATION { wLeftMotorSpeed: vl, wRightMotorSpeed: vr };
-                            unsafe { let _ = XInputSetState(0, &vib); }
+                            send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
                         }
                     }
                 } else {
-                    unsafe { let _ = XInputSetState(0, &zero); }
+                    send_vibration(0, 0);
                     engine.left = 0.0;
                     engine.right = 0.0;
                     state.vibration_out_l.store(0, Ordering::Relaxed);

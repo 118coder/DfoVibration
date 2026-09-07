@@ -98,7 +98,7 @@ pub fn render_about_dialog(
                                     .strong()
                                     .color(label_color),
                             );
-                            ui.label(egui::RichText::new("llnut").size(14.0).color(text_color));
+                            ui.label(egui::RichText::new("118coder").size(14.0).color(text_color));
                             ui.end_row();
 
                             // GitHub
@@ -109,10 +109,10 @@ pub fn render_about_dialog(
                                     .color(label_color),
                             );
                             ui.hyperlink_to(
-                                egui::RichText::new("https://github.com/llnut/Sorahk")
+                                egui::RichText::new("https://github.com/118coder/DfoVibration")
                                     .size(14.0)
                                     .color(label_color),
-                                "https://github.com/llnut/Sorahk",
+                                "https://github.com/118coder/DfoVibration/tree/main",
                             );
                             ui.end_row();
 

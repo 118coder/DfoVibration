@@ -223,11 +223,7 @@ impl SorahkGui {
             egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
         };
 
-        let accent_color = if self.dark_mode {
-            egui::Color32::from_rgb(152, 162, 255) // 紫色强调 (暗色)
-        } else {
-            egui::Color32::from_rgb(94, 106, 210) // 紫色强调 (亮色)
-        };
+        let accent_color = Theme::new(self.dark_mode).accent_text;
 
         egui::Window::new("")
             .title_bar(false)
@@ -338,7 +334,7 @@ impl SorahkGui {
                                                     ),
                                                 )
                                                 .fill(if is_capturing {
-                                                    egui::Color32::from_rgb(94, 106, 210) // 捕获中: 紫色
+                                                    Theme::new(self.dark_mode).accent // 捕获中: 强调色
                                                 } else if self.dark_mode {
                                                     egui::Color32::from_rgb(33, 36, 46) // #232838 输入框底色
                                                 } else {
@@ -421,11 +417,7 @@ impl SorahkGui {
                                                         .color(egui::Color32::WHITE)
                                                         .strong(),
                                                 )
-                                                .fill(if self.dark_mode {
-                                                    egui::Color32::from_rgb(105, 117, 219) // #7C8CF8
-                                                } else {
-                                                    egui::Color32::from_rgb(94, 106, 210) // #6C5CE7
-                                                })
+                                                .fill(Theme::new(self.dark_mode).btn_primary)
                                                 .corner_radius(8.0);
 
                                                 if ui.add_sized([90.0, 34.0], save_btn).clicked() {
@@ -515,11 +507,7 @@ impl SorahkGui {
                                                             .color(egui::Color32::WHITE)
                                                             .strong(),
                                                     )
-                                                    .fill(if self.dark_mode {
-                                                        egui::Color32::from_rgb(105, 117, 219) // #7C8CF8
-                                                    } else {
-                                                        egui::Color32::from_rgb(94, 106, 210) // #6C5CE7
-                                                    })
+                                                    .fill(Theme::new(self.dark_mode).btn_primary)
                                                     .corner_radius(8.0);
 
                                                     if ui.add_sized([88.0, 32.0], rename_btn).clicked() {
@@ -759,6 +747,10 @@ impl SorahkGui {
                                                     ui.checkbox(&mut temp_config.always_on_top, "");
                                                     ui.end_row();
 
+                                                    ui.label(t.dfo_vibration_feature());
+                                                    ui.checkbox(&mut temp_config.dfo_player, "");
+                                                    ui.end_row();
+
                                                     ui.label(t.dark_mode());
                                                     ui.checkbox(&mut temp_config.dark_mode, "");
                                                     ui.end_row();
@@ -900,7 +892,7 @@ impl SorahkGui {
                                                                     }),
                                                             )
                                                             .fill(if is_capturing_trigger {
-                                                                egui::Color32::from_rgb(94, 106, 210)
+                                                                Theme::new(self.dark_mode).accent
                                                             } else {
                                                                 input_bg
                                                             })
@@ -966,7 +958,7 @@ impl SorahkGui {
                                                                     }),
                                                             )
                                                             .fill(if is_capturing_target {
-                                                                egui::Color32::from_rgb(94, 106, 210)
+                                                                Theme::new(self.dark_mode).accent
                                                             } else {
                                                                 input_bg
                                                             })
@@ -1346,7 +1338,7 @@ impl SorahkGui {
                                                                 }),
                                                         )
                                                         .fill(if is_capturing_new_trigger {
-                                                            egui::Color32::from_rgb(94, 106, 210)
+                                                            Theme::new(self.dark_mode).accent
                                                         } else {
                                                             new_input_bg
                                                         })
@@ -1416,7 +1408,7 @@ impl SorahkGui {
                                                                 }),
                                                         )
                                                         .fill(if is_capturing_new_target {
-                                                            egui::Color32::from_rgb(94, 106, 210)
+                                                            Theme::new(self.dark_mode).accent
                                                         } else {
                                                             new_input_bg
                                                         })
@@ -2011,8 +2003,8 @@ impl SorahkGui {
                                     .color(egui::Color32::WHITE)
                                     .strong(),
                             )
-                            .fill(Theme::new(self.dark_mode).good)
-                            .corner_radius(15.0);
+                            .fill(Theme::new(self.dark_mode).btn_primary)
+                            .corner_radius(8.0);
 
                             if ui.add_sized([button_width, 32.0], save_btn).clicked() {
                                 should_save = true;
@@ -2023,11 +2015,10 @@ impl SorahkGui {
                             let cancel_btn = egui::Button::new(
                                 egui::RichText::new(t.cancel())
                                     .size(14.0)
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
+                                    .color(Theme::new(self.dark_mode).btn_secondary_text),
                             )
-                            .fill(Theme::new(self.dark_mode).bad)
-                            .corner_radius(15.0);
+                            .fill(Theme::new(self.dark_mode).btn_secondary)
+                            .corner_radius(8.0);
 
                             if ui.add_sized([button_width, 32.0], cancel_btn).clicked() {
                                 should_cancel = true;
@@ -2042,7 +2033,7 @@ impl SorahkGui {
                         ui.label(
                             egui::RichText::new(t.changes_take_effect_hint())
                                 .size(12.0)
-                                .color(egui::Color32::from_rgb(105, 117, 219))
+                                .color(Theme::new(self.dark_mode).accent_text)
                                 .italics(),
                         );
                     });
@@ -2091,6 +2082,16 @@ impl SorahkGui {
 
                     // Update GUI's config
                     self.config = temp_config.clone();
+
+                    // DFO 震动关闭时震动页不可达: 当前页落在其上则回手柄映射
+                    if !self.config.dfo_player
+                        && matches!(
+                            self.active_page,
+                            crate::gui::types::Page::Vibration | crate::gui::types::Page::JobPresets
+                        )
+                    {
+                        self.active_page = crate::gui::types::Page::Gamepad;
+                    }
 
                     // Re-parse switch key after configuration update
                     self.parsed_switch_key = Self::parse_switch_key(&self.config.switch_key);

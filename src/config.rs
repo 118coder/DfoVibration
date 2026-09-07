@@ -637,6 +637,10 @@ pub struct AppConfig {
     /// 极简模式震动预设来源 (false=通用 / true=全职业)
     #[serde(default)]
     pub minimal_vib_preset_job: bool,
+    /// 是否为 DFO 玩家 (首次运行询问; false 时隐藏「通用震动」「全职业预设」入口,
+    /// 可随时在设置中改回; serde default true = 老用户行为不变)
+    #[serde(default = "default_dfo_player")]
+    pub dfo_player: bool,
     /// Toggle hotkey name
     pub switch_key: String,
     /// Key mapping configurations
@@ -808,6 +812,10 @@ fn default_xinput_capture_mode() -> String {
     "MostSustained".to_string()
 }
 
+fn default_dfo_player() -> bool {
+    true
+}
+
 /// device_api_preferences 按键名排序序列化 (HashMap 迭代顺序不定)
 fn serialize_sorted_device_prefs<S>(
     m: &HashMap<String, DeviceApiPreference>,
@@ -836,6 +844,7 @@ impl Default for AppConfig {
             window_rect_minimal: None,
             minimal_mode: false,
             minimal_vib_preset_job: false,
+            dfo_player: default_dfo_player(),
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {
                 trigger_key: "Q".to_string(),

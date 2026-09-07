@@ -602,20 +602,18 @@ impl TrayIcon {
             match cmd_id {
                 1010 => {
                     let was_paused = state.toggle_paused();
-                    if let Some(sender) = state.get_notification_sender() {
-                        let language = state.language();
-                        let translations = CachedTranslations::new(language);
-                        let msg = if was_paused {
-                            NotificationEvent::Info(
-                                translations.tray_notification_activated().to_string(),
-                            )
-                        } else {
-                            NotificationEvent::Info(
-                                translations.tray_notification_paused().to_string(),
-                            )
-                        };
-                        let _ = sender.send(msg);
-                    }
+                    let language = state.language();
+                    let translations = CachedTranslations::new(language);
+                    let msg = if was_paused {
+                        NotificationEvent::Info(
+                            translations.tray_notification_activated().to_string(),
+                        )
+                    } else {
+                        NotificationEvent::Info(
+                            translations.tray_notification_paused().to_string(),
+                        )
+                    };
+                    state.send_notification(msg);
                 }
                 1020 => state.request_show_window(),
                 1030 => {

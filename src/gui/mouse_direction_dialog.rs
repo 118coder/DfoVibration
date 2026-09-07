@@ -54,26 +54,7 @@ impl MouseDirectionDialog {
 
         let mut should_close = false;
 
-        egui::Window::new("mouse_direction_dialog")
-            .id(egui::Id::new("mouse_direction_window"))
-            .title_bar(false)
-            .collapsible(false)
-            .resizable(false)
-            .fixed_size([380.0, 380.0])
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .frame(
-                egui::Frame::window(&ctx.style())
-                    .fill(bg_color)
-                    .corner_radius(egui::CornerRadius::same(16))
-                    .stroke(egui::Stroke::NONE)
-                    .shadow(egui::epaint::Shadow {
-                        offset: [0, 8],
-                        blur: 24,
-                        spread: 0,
-                        color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
-                    }),
-            )
-            .show(ctx, |ui| {
+        Theme::new(dark_mode).modal_window(ctx, "mouse_direction_dialog", [380.0, 380.0], bg_color, |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(20.0);
 

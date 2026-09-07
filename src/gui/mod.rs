@@ -10,7 +10,11 @@ mod error_dialog;
 mod fonts;
 mod gamepad_mapping;
 mod hid_activation_dialog;
+mod guide;
 mod main_window;
+mod minimal;
+mod turbo_page;
+mod vibration_page;
 mod mouse_direction_dialog;
 mod mouse_scroll_dialog;
 mod settings_dialog;
@@ -90,6 +94,10 @@ pub struct SorahkGui {
     show_settings_dialog: bool,
     /// About dialog visibility
     show_about_dialog: bool,
+    /// 使用说明浮窗 (标题栏「?」触发; 首次运行由 guide_seen 驱动)
+    pub show_guide: bool,
+    /// 首次运行 DFO 询问已回答 (会话内瞬态, 不持久化)
+    dfo_ask_answered: bool,
     /// Device manager dialog visibility
     show_device_manager: bool,
     /// Device manager dialog
@@ -231,6 +239,8 @@ impl SorahkGui {
             show_close_dialog: false,
             show_settings_dialog: false,
             show_about_dialog: false,
+            show_guide: false,
+            dfo_ask_answered: false,
             show_device_manager: false,
             device_manager_dialog: None,
             hid_activation_dialog: None,

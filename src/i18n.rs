@@ -98,6 +98,7 @@ struct TranslationCache {
     language_label: String,
     dark_mode_label: String,
     always_on_top_label: String,
+    dfo_vibration_label: String,
     show_tray_icon_label: String,
     show_notifications_label: String,
     toggle_key_section: String,
@@ -282,6 +283,9 @@ impl CachedTranslations {
     }
     pub fn always_on_top(&self) -> &str {
         &self.inner.always_on_top_label
+    }
+    pub fn dfo_vibration_feature(&self) -> &str {
+        &self.inner.dfo_vibration_label
     }
     pub fn show_tray_icon(&self) -> &str {
         &self.inner.show_tray_icon_label
@@ -881,6 +885,7 @@ impl TranslationCache {
             language_label: get_raw_translation(lang, RawKey::Language).to_string(),
             dark_mode_label: get_raw_translation(lang, RawKey::DarkMode).to_string(),
             always_on_top_label: get_raw_translation(lang, RawKey::AlwaysOnTop).to_string(),
+            dfo_vibration_label: get_raw_translation(lang, RawKey::DfoVibrationFeature).to_string(),
             show_tray_icon_label: get_raw_translation(lang, RawKey::ShowTrayIcon).to_string(),
             show_notifications_label: get_raw_translation(lang, RawKey::ShowNotifications)
                 .to_string(),
@@ -1177,6 +1182,7 @@ enum RawKey {
     Running,
     ClickToSet,
     AlwaysOnTop,
+    DfoVibrationFeature,
     ShowTrayIcon,
     ShowNotifications,
     SettingsDialogTitle,
@@ -1384,6 +1390,10 @@ fn get_raw_translation(lang: Language, key: RawKey) -> &'static str {
         // Always on Top
         (Language::English, RawKey::AlwaysOnTop) => "Always on Top:",
         (Language::SimplifiedChinese, RawKey::AlwaysOnTop) => "置顶:",
+        (Language::English, RawKey::DfoVibrationFeature) => "DFO Vibration (Vibration Center / Job Presets):",
+        (Language::SimplifiedChinese, RawKey::DfoVibrationFeature) => "DFO 震动功能 (震动中心/全职业预设):",
+        (Language::TraditionalChinese, RawKey::DfoVibrationFeature) => "DFO 震動功能 (震動中心/全職業預設):",
+        (Language::Japanese, RawKey::DfoVibrationFeature) => "DFO 振動機能 (振動センター/全職業プリセット):",
         (Language::TraditionalChinese, RawKey::AlwaysOnTop) => "置頂:",
         (Language::Japanese, RawKey::AlwaysOnTop) => "常に手前に表示:",
 
@@ -1442,17 +1452,17 @@ fn get_raw_translation(lang: Language, key: RawKey) -> &'static str {
 
         // About Description Line 1
         (Language::English, RawKey::AboutDescriptionLine1) => {
-            "A lightweight, efficient auto key press tool"
+            "Based on the Sorahk auto key press tool"
         }
-        (Language::SimplifiedChinese, RawKey::AboutDescriptionLine1) => "轻量高效的自动连发工具",
-        (Language::TraditionalChinese, RawKey::AboutDescriptionLine1) => "輕量高效的自動連發工具",
-        (Language::Japanese, RawKey::AboutDescriptionLine1) => "軽量で高効率な自動連打ツール",
+        (Language::SimplifiedChinese, RawKey::AboutDescriptionLine1) => "基于 Sorahk 连发工具",
+        (Language::TraditionalChinese, RawKey::AboutDescriptionLine1) => "基於 Sorahk 連發工具",
+        (Language::Japanese, RawKey::AboutDescriptionLine1) => "Sorahk ベースの連打ツール",
 
         // About Description Line 2
-        (Language::English, RawKey::AboutDescriptionLine2) => "with a clean interface",
-        (Language::SimplifiedChinese, RawKey::AboutDescriptionLine2) => "拥有简洁的界面",
-        (Language::TraditionalChinese, RawKey::AboutDescriptionLine2) => "擁有簡潔的介面",
-        (Language::Japanese, RawKey::AboutDescriptionLine2) => "シンプルなインターフェース",
+        (Language::English, RawKey::AboutDescriptionLine2) => "specialized for legacy DFO",
+        (Language::SimplifiedChinese, RawKey::AboutDescriptionLine2) => "对老版本 DFO 特化修改的版本",
+        (Language::TraditionalChinese, RawKey::AboutDescriptionLine2) => "對老版本 DFO 特化修改的版本",
+        (Language::Japanese, RawKey::AboutDescriptionLine2) => "旧版 DFO 向け特化カスタム版",
 
         // Running
         (Language::English, RawKey::Running) => "Running",
@@ -2439,8 +2449,9 @@ mod tests {
         assert!(translations.about_version().contains("Version"));
         assert_eq!(
             translations.about_description_line1(),
-            "A lightweight, efficient auto key press tool"
+            "Based on the Sorahk auto key press tool"
         );
+        assert_eq!(translations.about_description_line2(), "specialized for legacy DFO");
         assert_eq!(translations.about_author(), "👤 Author:");
         assert_eq!(translations.about_github(), "🔗 GitHub:");
         assert_eq!(translations.about_license(), "📜 License:");

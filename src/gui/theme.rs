@@ -360,6 +360,41 @@ impl Theme {
         self.badge(ui, text, self.target_fg, self.target_bg)
     }
 
+    // ───────────────────────── 弹窗脚手架 ─────────────────────────
+
+    /// 模态弹窗脚手架: 居中 / 无边框 / 固定尺寸 / 统一圆角投影。
+    /// 填充色由调用方传入 (个别弹窗有特调底色), 其余 chrome 全部归这里管。
+    /// 新弹窗一律用这个, 不要再手写 egui::Window + Frame 样板。
+    pub fn modal_window(
+        &self,
+        ctx: &egui::Context,
+        id: &str,
+        size: [f32; 2],
+        fill: egui::Color32,
+        add_contents: impl FnOnce(&mut egui::Ui),
+    ) {
+        egui::Window::new(id)
+            .id(egui::Id::new(id).with("modal_win"))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size(size)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(fill)
+                    .corner_radius(egui::CornerRadius::same(16))
+                    .stroke(egui::Stroke::NONE)
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
+                    }),
+            )
+            .show(ctx, |ui| add_contents);
+    }
+
     // ───────────────────────── 按钮 ─────────────────────────
 
     /// 主操作按钮 (强调色填充 + 白字)。

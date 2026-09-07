@@ -101,7 +101,11 @@ impl crate::state::EventDispatcher for WorkerPool {
         // Route to dedicated mouse move worker or distribute normally
         if is_mouse_action {
             EVENT_BACKLOG.fetch_add(1, Ordering::Relaxed);
-            let _ = self.mouse_move_worker.send(event);
+            if self.mouse_move_worker.send(event).is_err() {
+                // 接收端已死 (worker 线程退出): 回收计数, 否则泄漏积压
+                // → 全体 turbo_worker 永久进入背压忙旋
+                EVENT_BACKLOG.fetch_sub(1, Ordering::Relaxed);
+            }
         } else {
             // Normal load-balanced distribution
             let worker_idx = match device {
@@ -128,7 +132,10 @@ impl crate::state::EventDispatcher for WorkerPool {
                 } => Self::hash_generic_device(device_type, *button_id) % self.worker_count,
             };
             EVENT_BACKLOG.fetch_add(1, Ordering::Relaxed);
-            let _ = self.workers[worker_idx].send(event);
+            if self.workers[worker_idx].send(event).is_err() {
+                // 同上: worker 死亡后回收计数 (send 失败未入队)
+                EVENT_BACKLOG.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 }

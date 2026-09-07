@@ -35,6 +35,8 @@
 3. v3.1: 色板提饱和、设置单齿轮、改名 DfoVibration-V3、极简震动预设分段开关、窗口位置记忆
 4. v3.2: 100% 小窗强制、两级职业选择、连发映射预设管理卡(删除双确认)、首次运行指引、预设逻辑重构
 5. v3.3: 全职业两级 combo 垂直对齐(等高槽位)、剑魂微调(显式矩形 class_nudge)、移除「不应用」、分段切换直接启用、**双重 DPI 换算修复**
+6. v3.4 (2026-09-07): 遗留缺陷批次 — 共享内存版本校验(VIB_SHM_VERSION=2)/断连整引擎重置/震动输出自动发现槽位(修硬编码 0 号槽)/u32 毫秒回绕安全比较 before()(49.7 天卡死)/EVENT_BACKLOG 发送失败回收/托盘通知通道 OnceLock→Mutex(重启可换 sender)/config serde 全字段落盘迁移 + roundtrip 测试/卡键 P0 批次(闸门放行抬起/worker 暂停补发 release/XInput 断连派发 Released/hook FFI catch_unwind/重启容错)/职业导入长度校验/振动 params 启动恢复
+7. v3.2 视觉 (2026-09-07): 按钮语义层级强制 (规范见 design.md v3.2 增补) — 设置弹窗 保存绿/取消红 → primary/secondary, 三套强调色字面量收敛到主题令牌, 测试评分震动按钮入体系
 
 ## 三、构建与验证流程 (铁律)
 
@@ -127,3 +129,5 @@ design.md              设计规范 (新页面必读, 与 theme.rs 同步维护)
 ③ 全职业预设: 基础职业/转职两级选择即点即用; **「鬼剑士」「剑魂」同一水平线 + 行居中** (本轮核心修复)
 ④ 连发映射页预设管理卡: 保存/切换/重命名/删除双确认
 ⑤ 设置单齿轮; ⑥ 极简/完整来回切换窗口位置各回各位; ⑦ 剑魂 1px 微调合意度
+8. v3.5 (2026-09-07): 新增 DFO 玩家引导 — config.dfo_player (serde default true, 老用户不变); 首启弹窗询问「是否 DFO 玩家」→ false 时隐藏「通用震动」「全职业预设」侧边栏入口 + 极简震动段 (状态行显示已关闭), 设置勾选项 t.dfo_vibration_feature 可随时改; 标题栏新增「?」按钮 (show_guide) 随时重开使用说明; 使用说明重写 (4 步快速上手 + DFO 询问面板 + 国产手柄排查指引); XInput 多 DLL 探测 (1_4/1_3/9_1_0/xinput 顺序, 输入与震动同源, 兜底系统导出) — 国产手柄适配
+9. 重构 Phase 1-3 (2026-09-07): main_window.rs 4797 行拆为 gui/{shell(留在 main_window),vibration_page,turbo_page,minimal,guide}; theme 新增 modal_window 构建器 (鼠标×2 弹窗已收编, 新弹窗一律用它); Cargo.toml 新增 [profile.iter] (日常迭代 cargo build --profile iter, 交付仍 --release)。后续大步骤方案: C1 把 ~50 个 vibration_* 原子收进 VibrationParams 深模块 (编译器驱动全量改名); C6 job_presets 14 文件 → include_str! TOML 数据驱动 (JobClass 结构不动); C7 i18n 178 个透传 getter 删除。均未做, 按 HANDOFF 此条即可续作。

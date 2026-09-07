@@ -547,7 +547,7 @@ pub struct AppState {
     /// Worker pool for event processing
     worker_pool: OnceLock<Arc<dyn EventDispatcher>>,
     /// Notification event sender
-    notification_sender: OnceLock<Sender<NotificationEvent>>,
+    notification_sender: std::sync::Mutex<Option<Sender<NotificationEvent>>>,
     /// Process whitelist (empty means all processes enabled)
     process_whitelist: Mutex<Vec<String>>,
     /// Cached foreground process name with timestamp
@@ -800,7 +800,7 @@ impl AppState {
             configured_worker_count: config.worker_count,
             input_mappings,
             worker_pool: OnceLock::new(),
-            notification_sender: OnceLock::new(),
+            notification_sender: std::sync::Mutex::new(None),
             cached_process_info: RwLock::new((None, Instant::now())),
             pressed_keys: scc::HashSet::new(),
             active_combo_triggers: scc::HashMap::new(),
@@ -1166,12 +1166,20 @@ impl AppState {
 
     /// Sets the notification event sender.
     pub fn set_notification_sender(&self, sender: Sender<NotificationEvent>) {
-        let _ = self.notification_sender.set(sender);
+        // Mutex 而非 OnceLock: 托盘线程由 supervisor 重启后必须能替换 sender,
+        // 旧实现二次 set 失败 → 重启后所有通知静默失联
+        if let Ok(mut slot) = self.notification_sender.lock() {
+            *slot = Some(sender);
+        }
     }
 
-    /// Returns the notification sender if available.
-    pub fn get_notification_sender(&self) -> Option<&Sender<NotificationEvent>> {
-        self.notification_sender.get()
+    /// 发送通知 (无接收端 / 通道关闭时静默降级)
+    pub fn send_notification(&self, event: NotificationEvent) {
+        if let Ok(slot) = self.notification_sender.lock() {
+            if let Some(sender) = slot.as_ref() {
+                let _ = sender.send(event);
+            }
+        }
     }
 
     /// Signals the application to exit.
@@ -1293,7 +1301,7 @@ impl AppState {
         let was_paused = self.toggle_paused();
         self.active_combo_triggers.clear_sync();
 
-        if let Some(sender) = self.notification_sender.get() {
+        if let Some(sender) = self.notification_sender.lock().ok().as_mut().and_then(|s| s.as_ref()) {
             let msg = if was_paused {
                 "Sorahk activating".to_string()
             } else {

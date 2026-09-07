@@ -55,3 +55,13 @@ codegen-units = 1
 panic = "unwind"
 strip = true
 incremental = false
+
+# 日常迭代 profile: 跳过 fat-LTO/单 CGU 整程序优化, 改代码→运行循环快数倍。
+# 交付仍用 --release (cargo build --profile iter 用于快速自测)。
+[profile.iter]
+inherits = "release"
+opt-level = 1
+lto = false
+codegen-units = 16
+incremental = true
+strip = false

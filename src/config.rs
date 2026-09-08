@@ -641,6 +641,14 @@ pub struct AppConfig {
     /// 可随时在设置中改回; serde default true = 老用户行为不变)
     #[serde(default = "default_dfo_player")]
     pub dfo_player: bool,
+    /// 震动引擎路线: true = S1 ACT1 老方案 (配老版 DLL 的事件语义, 通道拆分/
+    /// 合成式输出/量纲归一/重映射前置), false = S4+ 新方案 (默认, 现行引擎)。
+    /// 仅 dfo_player=true 时有意义; 首启第三段弹窗询问, 设置里可随时切换。
+    #[serde(default)]
+    pub vib_legacy_client: bool,
+    /// 首启「客户端版本」询问弹窗是否已展示过 (dfo_player=true 时只在首次弹)
+    #[serde(default)]
+    pub vib_edition_asked: bool,
     /// Toggle hotkey name
     pub switch_key: String,
     /// Key mapping configurations
@@ -852,6 +860,8 @@ impl Default for AppConfig {
             minimal_mode: false,
             minimal_vib_preset_job: false,
             dfo_player: default_dfo_player(),
+            vib_legacy_client: false,
+            vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {
                 trigger_key: "Q".to_string(),

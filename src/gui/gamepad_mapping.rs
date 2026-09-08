@@ -476,8 +476,12 @@ impl SorahkGui {
                 }
             }
 
-            /* 短标签 (方向箭头/按键字母) 带微投影; 摇杆按下为隐形热点不绘字 */
-            if !slot.short.is_empty() && !is_click {
+            /* 短标签 (方向箭头/肩键文字) 带微投影; 摇杆按下为隐形热点不绘字;
+             * ABXY 面键与 Back/Start 系统键圈内不绘字 (2026-09-08 用户要求留白) */
+            if !slot.short.is_empty()
+                && !is_click
+                && !matches!(slot.kind, SlotKind::Button | SlotKind::System)
+            {
                 let font_size = match slot.short.chars().count() {
                     1 => 13.0,
                     2 => 9.5,
@@ -520,6 +524,237 @@ impl SorahkGui {
         }
 
         clicked
+    }
+
+    /// 右栏快捷卡 (空槽态显示): 连发开关 / 映射选择 / 震动开关 / 职业选择。
+    /// 控件语义与极简模式一致 (toggle_with_notify / 选中即应用), egui id 用
+    /// "gp_" 前缀避免与极简模式冲突; 震动段仅 DFO 玩家可见。
+    fn render_quick_connect_card(&mut self, ui: &mut egui::Ui, th: &Theme) {
+        use std::sync::atomic::Ordering;
+        th.panel(ui, Some("快速连接"), |ui| {
+            /* 连发大开关 */
+            let running = !self.app_state.is_paused();
+            let (ltext, lfg, lbg) = if running {
+                ("连发 · 开启中", th.good, th.good_soft)
+            } else {
+                ("连发 · 已暂停", th.hint, th.faint)
+            };
+            let turbo_btn = egui::Button::new(
+                egui::RichText::new(ltext).size(14.0).strong().color(lfg),
+            )
+            .fill(lbg)
+            .corner_radius(egui::CornerRadius::same(10));
+            if ui
+                .add_sized([ui.available_width(), 36.0], turbo_btn)
+                .clicked()
+            {
+                self.toggle_with_notify();
+            }
+            ui.add_space(theme::SP_XS);
+
+            /* 映射选择 (连发预设, 与极简/顶栏同一套切换逻辑) */
+            if self.config.presets.is_empty() {
+                ui.label(th.hint_text("映射预设: 无 — 到「连发映射修改」页保存一个"));
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label(th.weak("映射选择"));
+                    self.render_preset_switch(ui);
+                });
+            }
+            ui.add_space(theme::SP_S);
+
+            /* 震动段 (仅 DFO 玩家) */
+            if self.config.dfo_player {
+                let vib_on = self
+                    .app_state
+                    .vibration_enabled
+                    .load(Ordering::Relaxed);
+                let (vtext, vfg, vbg) = if vib_on {
+                    ("震动 · 开启", th.good, th.good_soft)
+                } else {
+                    ("震动 · 关闭", th.hint, th.faint)
+                };
+                let vib_btn = egui::Button::new(
+                    egui::RichText::new(vtext).size(14.0).strong().color(vfg),
+                )
+                .fill(vbg)
+                .corner_radius(egui::CornerRadius::same(10));
+                if ui
+                    .add_sized([ui.available_width(), 36.0], vib_btn)
+                    .clicked()
+                {
+                    let v = self
+                        .app_state
+                        .vibration_enabled
+                        .load(Ordering::Relaxed);
+                    self.app_state
+                        .vibration_enabled
+                        .store(!v, Ordering::Relaxed);
+                }
+                ui.add_space(theme::SP_XS);
+
+                /* 通用 / 全职业 分段开关 (与极简模式共享 minimal_vib_preset_job 状态) */
+                let mode_job = self.minimal_vib_preset_job;
+                let seg_w = ui.available_width();
+                let seg_h = 26.0_f32;
+                let (seg_rect, _) =
+                    ui.allocate_exact_size(egui::vec2(seg_w, seg_h), egui::Sense::hover());
+                let half = seg_w / 2.0;
+                let left_rect = egui::Rect::from_x_y_ranges(
+                    seg_rect.left()..=seg_rect.center().x,
+                    seg_rect.top()..=seg_rect.bottom(),
+                );
+                let right_rect = egui::Rect::from_x_y_ranges(
+                    seg_rect.center().x..=seg_rect.right(),
+                    seg_rect.top()..=seg_rect.bottom(),
+                );
+                let l_resp = ui
+                    .interact(left_rect, egui::Id::new("gp_vib_preset_mode").with("l"), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let r_resp = ui
+                    .interact(right_rect, egui::Id::new("gp_vib_preset_mode").with("r"), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                ui.painter().rect_filled(seg_rect, 8, th.faint);
+                let t = ui.ctx().animate_value_with_time(
+                    egui::Id::new("gp_vib_preset_mode"),
+                    if mode_job { 1.0 } else { 0.0 },
+                    0.15,
+                );
+                let thumb_w = half - 6.0;
+                let thumb_x = seg_rect.left() + 3.0 + t * (half - 6.0);
+                let thumb = egui::Rect::from_min_size(
+                    egui::pos2(thumb_x, seg_rect.top() + 3.0),
+                    egui::vec2(thumb_w, seg_h - 6.0),
+                );
+                ui.painter().rect_filled(thumb, 6, th.accent);
+                let unselected = |a: f32| -> egui::Color32 {
+                    let mut c = th.text_weak;
+                    egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8)
+                };
+                let selected_white = |a: f32| -> egui::Color32 {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, a as u8)
+                };
+                ui.painter().text(
+                    left_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "通用预设",
+                    egui::FontId::proportional(12.0),
+                    if mode_job { unselected(200.0) } else { selected_white(255.0) },
+                );
+                ui.painter().text(
+                    right_rect.center(),
+                    egui::Align2::CENTER_CENTER,
+                    "全职业预设",
+                    egui::FontId::proportional(12.0),
+                    if mode_job { selected_white(255.0) } else { unselected(200.0) },
+                );
+                if l_resp.clicked() {
+                    self.minimal_vib_preset_job = false;
+                    let _ = self.config.save_to_file("Config.toml");
+                }
+                if r_resp.clicked() {
+                    self.minimal_vib_preset_job = true;
+                    let jobs = crate::job_presets::builtin_jobs();
+                    let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
+                    let class_sel =
+                        self.vib_job_class.min(jobs[base_sel].classes.len().saturating_sub(1));
+                    self.apply_job_vibration_preset(
+                        jobs[base_sel].base_job,
+                        &jobs[base_sel].classes[class_sel],
+                    );
+                    self.vib_job_loaded = Some((base_sel, class_sel));
+                    let _ = self.config.save_to_file("Config.toml");
+                }
+                ui.add_space(theme::SP_XS);
+
+                /* 选择行 (选中即应用); 行整体下调 3px (用户微调 2026-09-08) */
+                if !mode_job {
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(th.weak("通用预设"));
+                        let names: Vec<String> = self
+                            .config
+                            .vibration_presets
+                            .iter()
+                            .map(|x| x.name.clone())
+                            .collect();
+                        let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));
+                        let selected = names.get(sel).cloned().unwrap_or_default();
+                        egui::ComboBox::from_id_salt("gp_vib_general")
+                            .selected_text(selected)
+                            .width(150.0)
+                            .show_ui(ui, |ui| {
+                                for (i, n) in names.iter().enumerate() {
+                                    if ui.selectable_label(i == sel, n).clicked() {
+                                        self.vib_preset_idx = i;
+                                        self.apply_general_vibration_preset(n);
+                                    }
+                                }
+                            });
+                    });
+                } else {
+                    let jobs = crate::job_presets::builtin_jobs();
+                    let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
+                    let classes = &jobs[base_sel].classes;
+                    let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
+                    /* 行整体下调 3px; 转职槽上调 3px (用户微调 2026-09-08,
+                     * 做法同极简模式 class_nudge: 定块 + 绝对定位子 Ui) */
+                    ui.add_space(3.0);
+                    ui.horizontal(|ui| {
+                        ui.label(th.weak("职业选择"));
+                        let combo_w = 110.0_f32;
+                        let combo_h = ui.spacing().interact_size.y;
+                        let (block, _) = ui.allocate_exact_size(
+                            egui::vec2(combo_w * 2.0 + 8.0, combo_h),
+                            egui::Sense::hover(),
+                        );
+                        /* 基础职业: 块内左槽 (原位) */
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                block.min,
+                                egui::vec2(combo_w, combo_h),
+                            )),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("gp_vib_job_base")
+                                    .selected_text(jobs[base_sel].base_job)
+                                    .width(combo_w)
+                                    .show_ui(ui, |ui| {
+                                        for (i, j) in jobs.iter().enumerate() {
+                                            if ui.selectable_label(i == base_sel, j.base_job).clicked() {
+                                                self.vib_job_base = i;
+                                                self.vib_job_class = 0;
+                                            }
+                                        }
+                                    });
+                            },
+                        );
+                        /* 转职: 右槽, 上调 1.5px (用户微调 2026-09-08: 3.0 回调 1.5) */
+                        ui.allocate_new_ui(
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                egui::pos2(block.min.x + combo_w + 8.0, block.min.y - 1.5),
+                                egui::vec2(combo_w, combo_h),
+                            )),
+                            |ui| {
+                                egui::ComboBox::from_id_salt("gp_vib_job_class")
+                                    .selected_text(classes[class_sel].name.clone())
+                                    .width(combo_w)
+                                    .show_ui(ui, |ui| {
+                                        for (i, c) in classes.iter().enumerate() {
+                                            if ui.selectable_label(i == class_sel, c.name).clicked() {
+                                                self.vib_job_class = i;
+                                                self.apply_job_vibration_preset(
+                                                    jobs[base_sel].base_job,
+                                                    c,
+                                                );
+                                            }
+                                        }
+                                    });
+                            },
+                        );
+                    });
+                }
+            }
+        });
     }
 
     /// 右侧槽位详情面板。
@@ -585,6 +820,8 @@ impl SorahkGui {
 
         let Some(slot_id) = self.gamepad_selected_slot else {
             render_slot_empty_state(ui, th);
+            /* 右栏空位宽裕: 快捷卡 (连发/映射/震动/职业) 让玩家开箱即连 */
+            self.render_quick_connect_card(ui, th);
             return;
         };
         let Some(slot) = get_slot(slot_id) else {

@@ -24,7 +24,10 @@
 
 ## 二、当前状态 (2026-09-08)
 
-✅ **417→420 测试全绿** (+3 导入钳位回归) · 最新 exe 已交付 (2026-09-08 晚: 潜藏 bug 修复轮)
+✅ **420→428 测试全绿** (+4 双路线回归) · 最新 exe 已交付 (2026-09-08 深夜: S1/S4 双路线)
+✅ **震动双路线 (2026-09-08 深夜, 用户拍板方案, 详见第八节 19 条)**: S1 ACT1 → 老方案 (老 DLL 事件语义配套:
+   通道拆分/合成式输出/量纲归一/重映射前置), S4+ 新版 → 现行新方案 (默认, 逐字节不变)。
+   首启 DFO 询问选「是」后追加版本询问弹窗; 设置「DFO 震动功能」处可随时切换 (勾选 DFO 玩家才可用)
 ✅ **潜藏 bug 修复轮 (2026-09-08 晚, 详见第八节 18 条)**: avx2 转义 UB+乱码 / 震动导入值无上限 两处真修复;
    新发现 params[39] 引擎槽位冲突 (需 schema 扩容, P1 待办); 旧记录「ownership 竞态」细节已随旧版 HANDOFF 丢失
 ⚠ **弹窗收编已回退 (fdc0725 revert 53e4d0d, 用户决定)**: 四窗迁到 modal_window 后全部塌成点状小窗。
@@ -164,3 +167,10 @@ design.md              设计规范 (新页面必读, 与 theme.rs 同步维护)
     ② **震动导入值上限修复 (job_presets/mod.rs)**: parse_job_export / parse_vibration_export 此前只查数组长度不查数值范围, u32::MAX 级数值直送引擎, rank_lr 负数 `as u32` 回绕。新增 `clamp_params` (60 槽逐一按震动页滑块 hi 钳位, 未列出索引按 % 类 100) + `clamp_signed_u32` (±100 二补码), 两个解析器收口。回归测试 4 个 (越界钳位/合法值不误伤/二补码保留/长度校验) 全绿, 全量 420/0。同时修了一个编译错 (i32 引用上 clamp 需 `(*v)`)。
     ③ **新发现 P1 待办 — params[39] 引擎槽位冲突**: vibration.rs `P_DEC_EFFECT=39` (装备特效衰减) 与 `P_MOVE_BOOST_WIN=39` (移动积累增强窗口, v22 新增) 共用同一槽, 震动页两个滑块写同一位, 后动者覆盖前者; 0..59 无空闲位, 正解需 params 60→61 / advanced 41→42 schema 扩容 (牵动导出格式 len==60 校验 / 内置预设 / config 数组), 需专项会话。
     ④ **旧记录核实**: 「ownership 竞态」细节随旧版 HANDOFF 重写丢失 (全历史 blob 检索只剩一句话), 候选位置 = temp_config 字段级合并 / 原子双写, 无红灯判据不动手; state.rs CaptureMode from_str().unwrap() 为假警报 (Err=Infallible 永不失败); clippy 无 correctness 级新发现 (93 条全是 unused import / cast); rawinput from_raw_parts 越界防护已在 (v1.6 继承)。
+19. **震动双路线: S1 ACT1 老方案 / S4+ 新方案 (2026-09-08 深夜, 用户拍板)**: 用户实测老宿主 (`E:\LX\DfoVibration_OLD`, 宿主源码 `C:\srchk_src`) 玩新版客户端"高攻群怪持续震"不爽, 要求兼容新老两客户端 —— 新版走新方案, 老版走老方案。实现 (全部老方案语义 gate 在 `engine.legacy`, 新方案代码路径逐字节不变):
+    - **选择流**: 首启 DFO 询问选「是」→ 新增第 1.5 弹「你玩的是哪个版本的 DNF?」(guide.rs `render_edition_ask_window`) → 使用说明; 非 DFO 玩家跳过。设置「DFO 震动功能」新增"客户端版本 (震动方案)"切换按钮 (`add_enabled_ui` 门控 dfo_player)。config 新增 `vib_legacy_client` (默认 false=新方案) + `vib_edition_asked`; state 新增 `vib_legacy_client: AtomicBool` (reload_config 同步, 震动线程每轮读 → 切换即时生效); 设置合并清单补 `vib_edition_asked` (主窗口所有)。
+    - **老方案语义 (自 `C:\srchk_src` v13.34/35/27/30 移植, 均用户在老客户端实机验证过)**: ① FONT 通道拆分: 0x60(0x20|0x40, 老 DLL stub10 CC tick)→mode1 hold / 纯 0x20 DOT→mode3 衰减脉冲 / 0x04 怪物 DOT→mode4 脉冲 (V3 的 DLL 现不发 0x40, 0x60 通道待 DLL 侧跟进, 纯 0x20 拆分立即可用); ② update() 合成式输出 (hold/rhythm/decay 三分量取 max, inject 不清共存通道); ③ FONT /100 量纲归一 (+Burst /100 +删 dot_active 0.03 保底); ④ finalize 重映射前置+死区只杀真零 (hi=阈值); ⑤ 分通道注入窗 last_font_ch[4] (补丁A); ⑥ vib_log 诊断日志 ([INJ]/[DROP]/[MV] → exe 同目录 SorahkDFO_vib.log, 老方案专属)。
+    - **防倒退红线 (移植时保住的 V3 独有优势)**: before()/wrapping_add 回绕安全、VIB_SHM_VERSION 握手、共享内存环校验、send_vibration 多槽扫描 —— 老宿主均无。
+    - **战斗事件统计不动** (用户明确要求"战斗事件不要删掉, 这是要记录的"): 计数在环读取层 (push_event 之外逐条 fetch_add), 与引擎路线无关, 两路线口径一致。
+    - **回归测试** (vibration.rs `legacy_route_tests`, bin 目标 4 个): 老方案 finalize 救起 25% 轻反馈 (≥28%)/新方案死区仍归零/老方案 inject 不打断 hold/finalize 两路线同构。全量 428/0。弹窗已离屏截图验证。
+    - **验收口径**: 新方案 = 90US 玩起来与升级前完全一致 (默认, 理论零变化); 老方案 = 配老 DLL 在 ACT1 客户端复现 v7 宿主手感。⚠ 老方案在 90US 上 = 用户不爽的"持续震"属预期 (那正是老方案语义), 别当 bug 报。

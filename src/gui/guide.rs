@@ -62,8 +62,13 @@ impl SorahkGui {
                                     self.active_page = Page::Gamepad;
                                 }
                                 let _ = self.config.save_to_file("Config.toml");
-                                /* 答完进入第 2 弹: 使用说明 */
-                                self.show_guide = true;
+                                /* DFO 玩家 → 第 1.5 弹问客户端版本 (S1 ACT / S4+ 新版);
+                                 * 非 DFO 玩家 (无震动) → 直接进第 2 弹使用说明 */
+                                if self.config.dfo_player {
+                                    self.show_edition_ask = true;
+                                } else {
+                                    self.show_guide = true;
+                                }
                             }
                             ui.add_space(theme::SP_XS);
                             ui.label(th.hint_text("该选择随时可在「设置 → DFO 震动功能」中更改"));
@@ -72,6 +77,70 @@ impl SorahkGui {
             });
     }
 
+
+    /// 首次运行 · 第 1.5 弹 (仅 DFO 玩家): 询问客户端版本, 决定震动引擎路线。
+    /// S1 ACT → 老方案 (配老版 DLL 的事件语义); S4+ 新版 → 现行新方案。设置里可随时切换。
+    pub(super) fn render_edition_ask_window(&mut self, ctx: &egui::Context) {
+        let th = self.theme();
+        egui::Window::new(" ")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .default_width(480.0)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(th.card)
+                    .stroke(egui::Stroke::new(1.0, th.stroke))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_CARD))
+                    .inner_margin(egui::Margin::same(24))
+                    .show(ui, |ui| {
+                        ui.set_min_width(420.0);
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new("🕹️ 你玩的是哪个版本的 DFO?")
+                                    .size(19.0)
+                                    .strong()
+                                    .family(Theme::font_bold())
+                                    .color(th.title),
+                            );
+                            ui.add_space(theme::SP_M);
+                        });
+                        ui.label(th.hint_text(
+                            "选「S1 ACT 老版本」: 使用老版专用采集 DLL 的震动方案 (通道保持震/\n跳字脉冲/量纲归一), 配合老客户端的事件节奏校调。",
+                        ));
+                        ui.add_space(theme::SP_XS);
+                        ui.label(th.hint_text(
+                            "选「S4 之后的新版本」: 使用现行震动方案 —— 清脆、无持续干扰,\n为本版本客户端的事件流校调 (推荐/默认)。",
+                        ));
+                        ui.add_space(theme::SP_M);
+                        ui.vertical_centered(|ui| {
+                            let s1 = ui.add_sized(
+                                [260.0, 34.0],
+                                th.primary_button("🕹️ S1 ACT 老版本 (2008 客户端)"),
+                            );
+                            ui.add_space(theme::SP_XS);
+                            let s4 = ui.add_sized(
+                                [260.0, 34.0],
+                                th.secondary_button("🆕 S4 之后的新版本 (推荐)"),
+                            );
+                            if s1.clicked() || s4.clicked() {
+                                self.config.vib_legacy_client = s1.clicked();
+                                self.config.vib_edition_asked = true;
+                                self.app_state
+                                    .vib_legacy_client
+                                    .store(s1.clicked(), std::sync::atomic::Ordering::Relaxed);
+                                let _ = self.config.save_to_file("Config.toml");
+                                self.show_edition_ask = false;
+                                /* 选完进入第 2 弹: 使用说明 */
+                                self.show_guide = true;
+                            }
+                            ui.add_space(theme::SP_XS);
+                            ui.label(th.hint_text("该选择随时可在「设置 → DFO 震动功能」中切换"));
+                        });
+                    });
+            });
+    }
 
     /// 首次运行 · 第 2 弹 / 标题栏「?」: 使用说明 (快速上手 + 基础功能)。
     pub(super) fn render_guide_window(&mut self, ctx: &egui::Context) {
@@ -99,7 +168,7 @@ impl SorahkGui {
                                     .color(th.title),
                             );
                             ui.add_space(theme::SP_XS);
-                            ui.label(th.hint_text("快速上手 · 所有修改实时生效, 无需手动保存 · 标题栏「?」可随时打开本说明"));
+                            ui.label(th.hint_text("快速上手 · 所有修改实时生效, 无需手动保存 · 标题栏「?」可随时重跑本向导 (重选 DFO / 版本)"));
                             ui.add_space(theme::SP_M);
                         });
                         let steps: Vec<(&str, &str)> = vec![
@@ -127,6 +196,7 @@ impl SorahkGui {
                             ui.add_space(theme::SP_XS);
                             if ui.add_sized([180.0, 34.0], th.primary_button("开始使用")).clicked() {
                                 self.config.guide_seen = true;
+                                self.first_run_rerun = false;
                                 self.show_guide = false;
                                 let _ = self.config.save_to_file("Config.toml");
                             }

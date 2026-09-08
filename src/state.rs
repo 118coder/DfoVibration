@@ -552,6 +552,9 @@ pub struct AppState {
     process_whitelist: Mutex<Vec<String>>,
     /// 白名单总开关 (false = 全部放行, 列表保留)
     whitelist_enabled: std::sync::atomic::AtomicBool,
+    /// ★S1 老方案总开关: true = 震动引擎走 S1 ACT1 老方案 (配老版 DLL 事件语义),
+    /// false = S4+ 新方案 (现行)。设置里切换, 震动线程每轮读取, 即时生效。
+    pub vib_legacy_client: std::sync::atomic::AtomicBool,
     /// Cached foreground process name with timestamp
     cached_process_info: RwLock<(Option<String>, Instant)>,
     /// Currently pressed keys for combo detection
@@ -800,6 +803,7 @@ impl AppState {
             worker_count: AtomicU64::new(0),
             process_whitelist: Mutex::new(config.process_whitelist.clone()),
             whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
+            vib_legacy_client: std::sync::atomic::AtomicBool::new(config.vib_legacy_client),
             configured_worker_count: config.worker_count,
             input_mappings,
             worker_pool: OnceLock::new(),
@@ -944,6 +948,10 @@ impl AppState {
             .store(config.show_tray_icon, Ordering::Relaxed);
         self.show_notifications
             .store(config.show_notifications, Ordering::Relaxed);
+
+        // ★S1 老方案总开关 (设置切换 / 首启选择后即时生效)
+        self.vib_legacy_client
+            .store(config.vib_legacy_client, Ordering::Relaxed);
 
         // Update input timeout
         self.input_timeout

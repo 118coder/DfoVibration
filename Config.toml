@@ -20,9 +20,23 @@ always_on_top = false
 dark_mode = false
 language = "SimplifiedChinese"
 guide_seen = true
+window_rect_normal = [
+    256.0,
+    256.0,
+    1180.0,
+    760.0,
+]
+window_rect_minimal = [
+    632.0,
+    217.6,
+    430.40002,
+    520.0,
+]
 minimal_mode = false
 minimal_vib_preset_job = false
 dfo_player = true
+vib_legacy_client = true
+vib_edition_asked = true
 switch_key = "DELETE"
 input_timeout = 5
 interval = 5
@@ -36,10 +50,10 @@ whitelist_enabled = true
 hid_baselines = []
 rawinput_capture_mode = "MostSustained"
 xinput_capture_mode = "MostSustained"
-current_preset = ""
+current_preset = "默认"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B25996.57944"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B25996.57944"
 target_keys = ["X"]
 turbo_enabled = true
 move_speed = 5
@@ -48,7 +62,7 @@ double_tap_gap_ms = 50
 note = "手柄X"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26252.58347"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26252.58347"
 target_keys = ["S"]
 turbo_enabled = true
 move_speed = 5
@@ -57,7 +71,7 @@ double_tap_gap_ms = 50
 note = "手柄Y"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26508.58750"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26508.58750"
 target_keys = [
     "DOWN",
     "C",
@@ -69,7 +83,7 @@ double_tap_gap_ms = 50
 note = "手柄A"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26764.59153"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26764.59153"
 target_keys = ["Z"]
 turbo_enabled = true
 move_speed = 5
@@ -78,7 +92,7 @@ double_tap_gap_ms = 50
 note = "手柄B"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27020.59556"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27020.59556"
 target_keys = ["ESCAPE"]
 turbo_enabled = false
 move_speed = 5
@@ -87,7 +101,7 @@ double_tap_gap_ms = 50
 note = "TURBO后退"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27276.59959"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27276.59959"
 target_keys = ["SPACE"]
 turbo_enabled = false
 move_speed = 5
@@ -121,7 +135,7 @@ target_keys = ["LEFT"]
 interval = 5
 turbo_enabled = false
 move_speed = 5
-double_tap_enabled = true
+double_tap_enabled = false
 double_tap_gap_ms = 50
 note = "左摇杆左"
 
@@ -131,7 +145,7 @@ target_keys = ["RIGHT"]
 interval = 5
 turbo_enabled = false
 move_speed = 5
-double_tap_enabled = true
+double_tap_enabled = false
 double_tap_gap_ms = 50
 note = "左摇杆右"
 
@@ -172,7 +186,7 @@ double_tap_gap_ms = 50
 note = "下遥感（下）"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B662732363"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B58590984"
 target_keys = ["A"]
 turbo_enabled = true
 move_speed = 5
@@ -181,7 +195,7 @@ double_tap_gap_ms = 50
 note = "上圆盘"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B29295.39635"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1209221095"
 target_keys = ["G"]
 turbo_enabled = true
 move_speed = 5
@@ -190,7 +204,7 @@ double_tap_gap_ms = 50
 note = "下圆盘"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B768889402"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1426494197"
 target_keys = ["D"]
 turbo_enabled = true
 move_speed = 5
@@ -199,7 +213,7 @@ double_tap_gap_ms = 50
 note = "左圆盘"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B30575.41650"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1225998714"
 target_keys = ["F"]
 turbo_enabled = true
 move_speed = 5
@@ -208,7 +222,7 @@ double_tap_gap_ms = 50
 note = "右圆盘"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27532.60362"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27532.60362"
 target_keys = ["Q"]
 turbo_enabled = true
 move_speed = 5
@@ -217,7 +231,7 @@ double_tap_gap_ms = 50
 note = "LB键"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B791.22142"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B791.22142"
 target_keys = ["E"]
 turbo_enabled = true
 move_speed = 5
@@ -226,7 +240,7 @@ double_tap_gap_ms = 50
 note = "LT键"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27788.60765"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27788.60765"
 target_keys = ["W"]
 turbo_enabled = true
 move_speed = 5
@@ -235,7 +249,7 @@ double_tap_gap_ms = 50
 note = "RB"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B24278.9386"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B24278.9386"
 target_keys = ["R"]
 turbo_enabled = true
 move_speed = 5
@@ -244,7 +258,7 @@ double_tap_gap_ms = 50
 note = "RT"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+trigger_key = "GAMEPAD_045E_LS_CLICK"
 target_keys = ["Y"]
 turbo_enabled = true
 move_speed = 5
@@ -253,7 +267,7 @@ double_tap_gap_ms = 50
 note = "背键（左）"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B679509982"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B679509982"
 target_keys = ["H"]
 turbo_enabled = true
 move_speed = 5
@@ -262,7 +276,7 @@ double_tap_gap_ms = 50
 note = "背键（右）"
 
 [[mappings]]
-trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B696287601"
 target_keys = ["T"]
 turbo_enabled = true
 move_speed = 5

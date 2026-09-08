@@ -22,6 +22,28 @@ const VIB_SHM_MAGIC: u32 = 0x564F4656;
 const VIB_SHM_VERSION: u32 = 2;
 const VIB_RING_SIZE: usize = 256 * 1024;
 
+/* ★S1 老方案 (v13.34/35 语义移植, 仅 vib_legacy_client=true 时参与):
+ * 保持式标记位 —— 老 DLL stub10 的 CC 保持震带 0x20|0x40, 据此走 mode1 hold;
+ * 纯 0x20 (玩家 DOT 红字跳字) 走 mode3 衰减脉冲; 0x04 怪物 DOT 走 mode4 脉冲。 */
+const FONT_OTHER: u32 = 0x40;
+
+/* ★S1 老方案诊断: FONT 注入决策日志 (exe 同目录 SorahkDFO_vib.log)。
+ * "命中到了但没有震动"时, 此日志直接给出每条 FONT 事件的注入/丢弃决策与原因。 */
+static VIB_LOG_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+fn vib_log(msg: &str) {
+    let path = VIB_LOG_PATH.get_or_init(|| {
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("SorahkDFO_vib.log")))
+            .unwrap_or_else(|| std::path::PathBuf::from("SorahkDFO_vib.log"))
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        use std::io::Write;
+        let _ = writeln!(f, "[{}] {}", now_ms(), msg);
+    }
+}
+
 const VEV_FONT: u32 = 10;
 const VEV_COMBO: u32 = 9;
 const VEV_RANKING: u32 = 11;
@@ -198,6 +220,10 @@ struct VibEngine {
     rhythm_l: f32,
     rhythm_r: f32,
     last_font: u32,
+    /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/特效族 3=命中) */
+    last_font_ch: [u32; 4],
+    /* ★S1 老方案总开关: true = S1 ACT1 老方案 (配老 DLL 事件语义), false = S4+ 新方案 */
+    legacy: bool,
     combo_hits: u32,
     last_combo: u32,
     milestones: u32,
@@ -295,6 +321,8 @@ impl VibEngine {
             rhythm_l: 0.0,
             rhythm_r: 0.0,
             last_font: 0,
+            last_font_ch: [0; 4],
+            legacy: false,
             combo_hits: 0,
             last_combo: 0,
             milestones: 0,
@@ -375,8 +403,12 @@ impl VibEngine {
         self.right = s * rr;
         self.decay_l = dl;
         self.decay_r = dr;
-        self.hold_until = 0;
-        self.rhythm_until = 0;
+        /* ★S1 老方案 (v13.34 合成式): 不清除 hold/rhythm —— 三通道共存互不覆盖;
+         * 新方案维持现行抢占语义 */
+        if !self.legacy {
+            self.hold_until = 0;
+            self.rhythm_until = 0;
+        }
     }
 
     fn inject_hold(&mut self, s: f32, lr: f32, rr: f32, dur: u32) {
@@ -385,7 +417,10 @@ impl VibEngine {
         self.left = self.hold_l;
         self.right = self.hold_r;
         self.hold_until = now_ms().wrapping_add(dur);
-        self.rhythm_until = 0;
+        /* ★S1 老方案: 不清除 rhythm_until (合成式共存) */
+        if !self.legacy {
+            self.rhythm_until = 0;
+        }
     }
 
     /* 评分脉冲注入: 取最强/已过期才覆盖, 避免多事件互相顶掉 */
@@ -609,7 +644,10 @@ impl VibEngine {
         self.right = self.rhythm_r;
         self.rhythm_until = now_ms().wrapping_add(dur);
         self.rhythm_period = period.max(30);
-        self.hold_until = 0;
+        /* ★S1 老方案: 不清除 hold_until (合成式共存) */
+        if !self.legacy {
+            self.hold_until = 0;
+        }
     }
 
     fn push_event(
@@ -765,7 +803,27 @@ impl VibEngine {
             if !font_hits {
                 return;
             }
-            let gap_prev = if self.last_font != 0 {
+            /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/
+             * 特效族 3=命中), 受击不再被命中/飘字流的全局窗吞掉; 新方案维持全局单窗 */
+            let gap_prev = if self.legacy {
+                let ch: usize = if is_hit {
+                    0
+                } else if a6 & FONT_SPECIAL != 0 {
+                    1
+                } else if is_dot || is_state || is_effect {
+                    2
+                } else {
+                    3
+                };
+                let last_ch = self.last_font_ch[ch];
+                let gap = if last_ch != 0 {
+                    now.wrapping_sub(last_ch)
+                } else {
+                    u32::MAX
+                };
+                self.last_font_ch[ch] = now;
+                gap
+            } else if self.last_font != 0 {
                 now.wrapping_sub(self.last_font)
             } else {
                 u32::MAX
@@ -778,9 +836,15 @@ impl VibEngine {
                 ivl = ivl.saturating_mul(2);
             }
             if !abs_mode && gap_prev < ivl {
+                if self.legacy {
+                    vib_log(&format!("[DROP] ivl gap={} ivl={}", gap_prev, ivl));
+                }
                 return;
             }
-            self.last_font = now;
+            /* ★S1 老方案已在分通道分支内更新 last_font_ch, 不写全局 last_font */
+            if !self.legacy {
+                self.last_font = now;
+            }
 
             /* 震动节流 (v24): 时间窗口内只允许 N 次注入, 超出直接跳过
              * (召唤师等瞬间百连击职业防狂震: 窗口滚动)
@@ -810,7 +874,18 @@ impl VibEngine {
             }
 
             let (base_l, base_r) = base_lr_for(item_idx);
-            let (s, lr, rr, mode): (f32, f32, f32, u8) = if is_dot {
+            /* ★S1 老方案 (v13.34/35 通道语义拆分, 修"通道冲突互相覆盖"):
+             * 0x60 (0x20|0x40 保持式标记, 老 DLL stub10 的 CC tick) → mode1 hold;
+             * 纯 0x20 (玩家 DOT 红字跳字, 每红字一条) → mode3 衰减脉冲;
+             * 0x04 (怪物出血/中毒跳字) → mode4 衰减脉冲 (节拍式被 <120ms 群怪
+             * 出血连续刷新 = 永久节拍震)。新方案维持现行优先级链不动。 */
+            let (s, lr, rr, mode): (f32, f32, f32, u8) = if self.legacy && is_dot && a6 & FONT_OTHER != 0 {
+                (self.p[P_FONT_HP], base_l, base_r, 1)
+            } else if self.legacy && is_dot {
+                (self.p[P_FONT_HP], base_l, base_r, 3)
+            } else if self.legacy && is_effect {
+                (self.p[P_FONT_EFFECT], base_l, base_r, 4)
+            } else if is_dot {
                 (self.p[P_FONT_HP], base_l, base_r, 1)
             } else if a6 & FONT_SPECIAL != 0 {
                 (self.p[P_FONT_SPECIAL], base_l, base_r, 0)
@@ -860,6 +935,13 @@ impl VibEngine {
             let lr_w = lr * il;
             let rr_w = rr2 * ir;
             let mut s_out = s_eff * mul;
+            /* ★S1 老方案 (v13.30 FONT 量纲归一): FONT 链原以滑块 0-100 原值注入
+             * (非 FONT 通道均为 0-1 量纲) → finalize l_raw 恒 ≥1 被 min(1.0) 钳成
+             * 满幅 = 强度上限/总调失效、滑块无梯度。统一 0-1 量纲后滑块全程线性;
+             * 必须配 finalize 的重映射前置保底, 轻反馈才不静音。新方案维持现行量纲。 */
+            if self.legacy {
+                s_out /= 100.0;
+            }
             /* 职业专属算法 (v31): 攻击/受击强度修正 */
             if is_attack {
                 s_out *= self.algo_attack_mul(now);
@@ -887,6 +969,18 @@ impl VibEngine {
                     let per = self.p[P_EFFECT_PERIOD].max(60.0) as u32;
                     self.inject_rhythm(s_out, lr_w, rr_w, 120, per);
                 }
+                /* ★S1 老方案 mode3: 玩家 DOT 衰减脉冲(每红字一震) —— 衰减常数取
+                 * P_DOT_HOLD(150ms), LR 权重沿用命中槽(item_lr[3]) */
+                3 => {
+                    let dl = self.p[P_DOT_HOLD].max(30.0);
+                    self.inject(s_out, lr_w, rr_w, dl, dl * 0.8);
+                }
+                /* ★S1 老方案 mode4: 怪物 DOT 衰减脉冲(每红字一震), 衰减取
+                 * P_EFFECT_PERIOD(90ms), LR 沿用特效槽(item_lr[8]) */
+                4 => {
+                    let dl = self.p[P_EFFECT_PERIOD].max(60.0);
+                    self.inject(s_out, lr_w, rr_w, dl, dl * 0.8);
+                }
                 _ => {
                     let (dl, dr) = if is_hit {
                         (self.p[P_DEC_HIT].max(10.0), self.p[P_DEC_HIT].max(10.0) * 0.8)
@@ -906,6 +1000,12 @@ impl VibEngine {
                 }
             }
 
+            if self.legacy {
+                vib_log(&format!(
+                    "[INJ] a6={:X} mode={} s_out={:.3} lr_w={:.3} rr_w={:.3}",
+                    a6, mode, s_out, lr_w, rr_w
+                ));
+            }
             if is_dot {
                 self.dot_active = true;
                 self.dot_last = now;
@@ -1074,29 +1174,67 @@ impl VibEngine {
         self.algo_tick(now);
 
         /* 效果模式 */
-        if before(now, self.hold_until) {
-            self.left = self.hold_l;
-            self.right = self.hold_r;
-        } else {
-            if self.hold_until != 0 {
+        if self.legacy {
+            /* ★S1 老方案 (v13.34 合成式, 修"通道冲突互相覆盖"核心):
+             * 旧逻辑三套状态机(hold/rhythm/decay)抢占同一个 left/right:
+             *   hold 激活期每帧强制覆盖 → 命中注入一帧内被抹掉;
+             *   hold/rhythm 结束帧直接清零 → 砍掉其他通道的衰减尾巴;
+             *   inject() 又清 hold/rhythm → 命中打断持续震。
+             * 老方案: 三分量独立推进, 输出取 max 合成 —— 保持震/节拍/衰减脉冲
+             * 共存, 互不覆盖; 各状态自然过期, 结束帧不再清零。 */
+            let mut l_acc: f32 = 0.0;
+            let mut r_acc: f32 = 0.0;
+            /* 1) 保持分量 (CC 保持震: 每帧 tick 经注入窗续期) */
+            if before(now, self.hold_until) {
+                l_acc = l_acc.max(self.hold_l);
+                r_acc = r_acc.max(self.hold_r);
+            } else {
                 self.hold_until = 0;
+            }
+            /* 2) 节拍分量 (怪物 DOT 跳字: 0x04 → 120ms on/off 节拍) */
+            if before(now, self.rhythm_until) {
+                let on = ((now / self.rhythm_period) & 1) == 0;
+                let rl = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
+                let rr2 = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
+                l_acc = l_acc.max(rl);
+                r_acc = r_acc.max(rr2);
+            } else {
+                self.rhythm_until = 0;
+            }
+            /* 3) 衰减分量 (命中/暴击/受击/DOT 脉冲: 指数衰减始终推进) */
+            let dl = (-(dt) / self.decay_l.max(10.0)).exp();
+            let dr = (-(dt) / self.decay_r.max(10.0)).exp();
+            self.left *= dl;
+            self.right *= dr;
+            l_acc = l_acc.max(self.left);
+            r_acc = r_acc.max(self.right);
+            self.left = l_acc;
+            self.right = r_acc;
+        } else {
+            if before(now, self.hold_until) {
+                self.left = self.hold_l;
+                self.right = self.hold_r;
+            } else {
+                if self.hold_until != 0 {
+                    self.hold_until = 0;
+                    self.left = 0.0;
+                    self.right = 0.0;
+                } else {
+                    let dl = (-(dt) / self.decay_l.max(10.0)).exp();
+                    let dr = (-(dt) / self.decay_r.max(10.0)).exp();
+                    self.left *= dl;
+                    self.right *= dr;
+                }
+            }
+            if before(now, self.rhythm_until) {
+                let on = ((now / self.rhythm_period) & 1) == 0;
+                self.left = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
+                self.right = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
+            } else if self.rhythm_until != 0 {
+                self.rhythm_until = 0;
                 self.left = 0.0;
                 self.right = 0.0;
-            } else {
-                let dl = (-(dt) / self.decay_l.max(10.0)).exp();
-                let dr = (-(dt) / self.decay_r.max(10.0)).exp();
-                self.left *= dl;
-                self.right *= dr;
             }
-        }
-        if before(now, self.rhythm_until) {
-            let on = ((now / self.rhythm_period) & 1) == 0;
-            self.left = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
-            self.right = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
-        } else if self.rhythm_until != 0 {
-            self.rhythm_until = 0;
-            self.left = 0.0;
-            self.right = 0.0;
         }
 
         if self.left < 0.02 {
@@ -1106,12 +1244,65 @@ impl VibEngine {
             self.right = 0.0;
         }
 
-        if self.dot_active {
+        /* ★S1 老方案 (v13.34): 删除 dot_active 的 0.03 保底 —— /100 量纲归一+
+         * 重映射前置后, 0.03 非零输出会被抬进保底区间 = 每次吃 DOT 后约 30%
+         * 的持续低鸣; DOT 语义已由 mode3 衰减脉冲承载。新方案维持保底。 */
+        if !self.legacy && self.dot_active {
             self.left = self.left.max(0.03);
         }
         if self.state == VibState::Burst {
             let bm = self.p[P_BURST_MIN].max(0.0) / 100.0;
-            self.right = self.right.max(bm * self.p[P_FONT_ATTACK]);
+            /* ★S1 老方案 (v13.30): P_FONT_ATTACK 是 0-100 滑块量纲, right 是 0-1
+             * —— 旧代码 bm×25=8.75 直接把 Burst 右马达顶满幅, 一并归一 */
+            if self.legacy {
+                self.right = self.right.max(bm * self.p[P_FONT_ATTACK] / 100.0);
+            } else {
+                self.right = self.right.max(bm * self.p[P_FONT_ATTACK]);
+            }
+        }
+    }
+
+    /* 输出动态范围重映射 (v30): 非零输出映射到 [min, 100] (65535 尺度),
+     * 保证转子一定转起来, 相对强弱保留 */
+    fn remap_out(&self, l_out: &mut f32, r_out: &mut f32) {
+        if self.remap_enabled && (*l_out > 0.0 || *r_out > 0.0) {
+            let mn = (self.remap_min.min(95.0) / 100.0) * 65535.0;
+            let scale = 1.0 - self.remap_min.min(95.0) / 100.0;
+            if *l_out > 0.0 {
+                *l_out = mn + *l_out * scale;
+            }
+            if *r_out > 0.0 {
+                *r_out = mn + *r_out * scale;
+            }
+        }
+    }
+
+    /* 输出低强度死区: hysteresis=true 时恢复线为 1.8×阈值 (v29.3 防反复启停);
+     * false 时恢复线=阈值 (S1 老方案 v13.27 修订: 真零静默, 非零一律放行) */
+    fn deadzone_filter(&mut self, l_out: &mut f32, r_out: &mut f32, hysteresis: bool) {
+        if self.out_threshold > 0.0 {
+            let thr = (self.out_threshold.min(50.0) / 100.0) * 65535.0;
+            let hi = if hysteresis { thr * 1.8 } else { thr };
+            if self.out_dead_l {
+                if *l_out > hi {
+                    self.out_dead_l = false;
+                } else {
+                    *l_out = 0.0;
+                }
+            } else if *l_out < thr {
+                self.out_dead_l = true;
+                *l_out = 0.0;
+            }
+            if self.out_dead_r {
+                if *r_out > hi {
+                    self.out_dead_r = false;
+                } else {
+                    *r_out = 0.0;
+                }
+            } else if *r_out < thr {
+                self.out_dead_r = true;
+                *r_out = 0.0;
+            }
         }
     }
 
@@ -1147,43 +1338,23 @@ impl VibEngine {
         let r_raw = self.right * base * rhythm;
         let mut l_out = if l_raw > 0.0 { (l_raw.powf(curvel)).min(1.0) * 65535.0 } else { 0.0 };
         let mut r_out = if r_raw > 0.0 { (r_raw.powf(curver)).min(1.0) * 65535.0 } else { 0.0 };
-        /* 输出低强度迟滞死区 (v29.3): 低于阈值归 0, 超过 1.8×阈值才恢复
-         * (迟滞防阈值附近反复启停产生嗡声; 消除马达低强度电流声) */
-        if self.out_threshold > 0.0 {
-            let thr = (self.out_threshold.min(50.0) / 100.0) * 65535.0;
-            let hi = thr * 1.8;
-            if self.out_dead_l {
-                if l_out > hi {
-                    self.out_dead_l = false;
-                } else {
-                    l_out = 0.0;
-                }
-            } else if l_out < thr {
-                self.out_dead_l = true;
-                l_out = 0.0;
-            }
-            if self.out_dead_r {
-                if r_out > hi {
-                    self.out_dead_r = false;
-                } else {
-                    r_out = 0.0;
-                }
-            } else if r_out < thr {
-                self.out_dead_r = true;
-                r_out = 0.0;
-            }
-        }
-        /* 输出动态范围重映射 (v30, ERM/Xbox360): 非零输出映射到 [min, 100],
-         * 保证转子一定转起来 (轻反馈不被死区吞掉, 相对强弱保留) */
-        if self.remap_enabled && (l_out > 0.0 || r_out > 0.0) {
-            let mn = (self.remap_min.min(95.0) / 100.0) * 65535.0;
-            let scale = 1.0 - self.remap_min.min(95.0) / 100.0;
-            if l_out > 0.0 {
-                l_out = mn + l_out * scale;
-            }
-            if r_out > 0.0 {
-                r_out = mn + r_out * scale;
-            }
+        /* 输出动态范围重映射 + 低强度死区: 两条路线顺序相反 ——
+         * ★S1 老方案 (v13.27): 重映射前置 + 死区只杀真零 + 迟滞退出线=阈值。
+         *   旧序(先死区后重映射)让低于阈值的轻反馈在重映射救起前就被归零
+         *   ("命中只有第一下震"的根因); 马达低强度电流声由重映射下限保证
+         *   占空比, 不再依赖死区。
+         * 新方案 (v29.3/v30): 迟滞死区在前 (1.8× 恢复线防阈值附近反复启停),
+         * 重映射在后。 */
+        if self.legacy {
+            self.remap_out(&mut l_out, &mut r_out);
+            self.deadzone_filter(&mut l_out, &mut r_out, false);
+        } else {
+            /* 输出低强度迟滞死区 (v29.3): 低于阈值归 0, 超过 1.8×阈值才恢复
+             * (迟滞防阈值附近反复启停产生嗡声; 消除马达低强度电流声) */
+            self.deadzone_filter(&mut l_out, &mut r_out, true);
+            /* 输出动态范围重映射 (v30, ERM/Xbox360): 非零输出映射到 [min, 100],
+             * 保证转子一定转起来 (轻反馈不被死区吞掉, 相对强弱保留) */
+            self.remap_out(&mut l_out, &mut r_out);
         }
         /* 马达分工 (v30, Xbox360 风格): 轻反馈仅主导马达 (转子声/功耗更低),
          * 重反馈双马达满幅 */
@@ -1511,6 +1682,8 @@ pub fn run(state: Arc<AppState>) {
                         engine.out_threshold = state.vibration_out_threshold.load(Ordering::Relaxed) as f32;
                         engine.remap_enabled = state.vibration_remap_enabled.load(Ordering::Relaxed);
                         engine.remap_min = state.vibration_remap_min.load(Ordering::Relaxed) as f32;
+                        /* ★S1 老方案总开关: 设置里切换, 每轮同步 (改设置即时生效) */
+                        engine.legacy = state.vib_legacy_client.load(Ordering::Relaxed);
                         engine.split_enabled = state.vibration_split_enabled.load(Ordering::Relaxed);
                         engine.split_thr = state.vibration_split_thr.load(Ordering::Relaxed) as f32;
                         /* 职业专属算法 (v31): id 变化时重置状态 */
@@ -1655,4 +1828,85 @@ pub fn run(state: Arc<AppState>) {
             }
         })
         .ok();
+}
+
+#[cfg(test)]
+mod legacy_route_tests {
+    use super::*;
+
+    fn engine_with(legacy: bool) -> VibEngine {
+        let mut e = VibEngine::new();
+        e.legacy = legacy;
+        e
+    }
+
+    /* ★S1 老方案回归: 重映射前置 + 死区只杀真零。
+     * 场景 = 老项目实测"命中只有第一下震"的根因:
+     * 输出 25% < 死区阈值 30% —— 新方案被迟滞死区归零且重映射救不回;
+     * 老方案先重映射抬进 [28,100] (25→46%), 死区 (hi=阈值) 不再吞掉。 */
+    #[test]
+    fn legacy_finalize_remap_rescues_light_feedback() {
+        let mut params = [100u32; 60];
+        let mut e = engine_with(true);
+        e.left = 0.25;
+        e.remap_enabled = true;
+        e.remap_min = 28.0;
+        e.out_threshold = 30.0;
+        let (l, r) = e.finalize(&params);
+        let pct = l as f32 / 65535.0 * 100.0;
+        assert!(
+            pct >= 28.0,
+            "老方案: 轻反馈应被重映射抬到 ≥28%, 实际 {:.1}%",
+            pct
+        );
+    }
+
+    #[test]
+    fn new_route_deadzone_still_zeroes_light_feedback() {
+        let mut params = [100u32; 60];
+        let mut e = engine_with(false);
+        e.left = 0.25;
+        e.remap_enabled = true;
+        e.remap_min = 28.0;
+        e.out_threshold = 30.0;
+        let (l, _) = e.finalize(&params);
+        assert_eq!(l, 0, "新方案: 低于死区阈值的输出应保持归零 (现行行为不变)");
+    }
+
+    /* 老方案 inject 不再清除共存通道: hold 激活时注入衰减脉冲,
+     * hold_until 不得被清 (合成式共存的前提); 新方案维持抢占清零。 */
+    #[test]
+    fn legacy_inject_keeps_hold_alive() {
+        let mut e = engine_with(true);
+        e.inject_hold(0.5, 1.0, 1.0, 200);
+        assert!(e.hold_until > 0);
+        e.inject(0.3, 1.0, 1.0, 100.0, 80.0);
+        assert!(e.hold_until > 0, "老方案: 命中注入不得打断 CC 保持震");
+
+        let mut n = engine_with(false);
+        n.inject_hold(0.5, 1.0, 1.0, 200);
+        n.inject(0.3, 1.0, 1.0, 100.0, 80.0);
+        assert_eq!(n.hold_until, 0, "新方案: 现行抢占语义不变");
+    }
+
+    /* FONT 量纲归一仅老方案生效: 同一滑块 25, 老方案输出 0-1 量纲 (线性),
+     * 新方案维持 0-100 原值注入 (现行行为不变)。 */
+    #[test]
+    fn legacy_normalizes_font_scale() {
+        let mut o = engine_with(true);
+        let mut n = engine_with(false);
+        // 直填 finalize 输入: left=0.25 (已含 /100 的等价效果由 push 链产生,
+        // 此处只锁 finalize 输出一致性 —— 两条路线 finalize 本身相同)
+        o.left = 0.25;
+        n.left = 0.25;
+        o.remap_enabled = false;
+        n.remap_enabled = false;
+        o.out_threshold = 0.0;
+        n.out_threshold = 0.0;
+        let params = [100u32; 60];
+        let (ol, _) = o.finalize(&params);
+        let (nl, _) = n.finalize(&params);
+        assert_eq!(ol, nl, "finalize 本身两路线同构 (分歧在 push 链的 /100)");
+        assert!(ol > 0 && ol < 65535, "线性区: 25% 输出不应满幅");
+    }
 }

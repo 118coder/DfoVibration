@@ -554,9 +554,16 @@ impl SorahkGui {
     pub(super) fn render_shell(&mut self, ctx: &egui::Context, frame_state: &FrameState) {
         let th = self.theme();
 
-        /* 首次运行: 第 1 弹问「是否 DFO 玩家」→ 答完进第 2 弹使用说明; 「?」直达说明 */
-        if !self.config.guide_seen && !self.dfo_ask_answered && !self.show_guide {
+        /* 首次运行: 第 1 弹问「是否 DFO 玩家」→ (是) 第 1.5 弹问「S1 ACT / S4+ 新版」
+         * → 第 2 弹使用说明; 非 DFO 玩家跳过版本询问; 「?」重跑完整流程 (旁路 guide_seen) */
+        if (!self.config.guide_seen || self.first_run_rerun)
+            && !self.dfo_ask_answered
+            && !self.show_guide
+        {
             self.render_dfo_ask_window(ctx);
+        }
+        if self.show_edition_ask {
+            self.render_edition_ask_window(ctx);
         }
         if self.show_guide {
             self.render_guide_window(ctx);
@@ -753,7 +760,6 @@ impl SorahkGui {
         out
     }
 
-
     /// 顶栏: 品牌 | 预设快切 …… 图标按钮组 (设置/设备/关于/主题)。
     pub(super) fn render_top_bar(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, _frame_state: &FrameState) {
         let app_title = self.translations.app_title().to_owned();
@@ -813,9 +819,15 @@ impl SorahkGui {
         let theme_tip = self.translations.light_theme().to_owned();
         let th = self.theme();
 
-        // 使用说明 (标题栏「?」: 随时重看快速上手与手柄排查指南)
-        if widgets::icon_button(ui, &th, widgets::Icon::Question, "使用说明 / 快速上手").clicked() {
-            self.show_guide = true;
+        // 使用说明 (标题栏「?」: 重新运行首次向导 —— DFO 询问 → 版本询问 → 使用说明,
+        // 方便玩家随时重选; 说明末尾「开始使用」后结束)
+        if widgets::icon_button(ui, &th, widgets::Icon::Question, "使用说明 / 重新选择向导 (DFO·版本)")
+            .clicked()
+        {
+            self.first_run_rerun = true;
+            self.dfo_ask_answered = false;
+            self.show_edition_ask = false;
+            self.show_guide = false;
         }
 
         // 主题切换 (半月图标)

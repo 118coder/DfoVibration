@@ -22,8 +22,19 @@ impl Page {
     /// 选项卡从左到右的固定顺序。
     pub const TABS: &'static [Page] = &[Page::Gamepad, Page::Turbo, Page::Whitelist, Page::Vibration, Page::JobPresets];
 
-    /// 导航文案 (纯文字, 图标由 widgets 矢量绘制)。
+    /// 导航文案 (左侧选项卡; 2026-09-08 用户定稿: 除手柄映射外带「修改」后缀)。
     pub fn label(self) -> &'static str {
+        match self {
+            Page::Gamepad => "手柄映射",
+            Page::Turbo => "连发映射修改",
+            Page::Whitelist => "白名单修改",
+            Page::Vibration => "通用震动修改",
+            Page::JobPresets => "全职业预设修改",
+        }
+    }
+
+    /// 页面大标题 (内容页头部, 不带「修改」后缀)。
+    pub fn title(self) -> &'static str {
         match self {
             Page::Gamepad => "手柄映射",
             Page::Turbo => "连发映射",
@@ -31,11 +42,6 @@ impl Page {
             Page::Vibration => "通用震动",
             Page::JobPresets => "全职业预设",
         }
-    }
-
-    /// 页面大标题 (内容页头部)。
-    pub fn title(self) -> &'static str {
-        self.label()
     }
 
     /// 导航矢量图标。

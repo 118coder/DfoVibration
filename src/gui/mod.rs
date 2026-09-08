@@ -101,6 +101,12 @@ pub struct SorahkGui {
     pub show_guide: bool,
     /// 首次运行 DFO 询问已回答 (会话内瞬态, 不持久化)
     dfo_ask_answered: bool,
+    /// 标题栏「?」触发的首次流程重跑 (旁路 guide_seen, 让玩家重选 DFO/版本;
+    /// 会话内瞬态, 使用说明「开始使用」后清除)
+    pub first_run_rerun: bool,
+    /// 首次运行 · 第 1.5 弹「客户端版本」询问窗 (仅 DFO 玩家; 选完写入
+    /// config.vib_legacy_client / vib_edition_asked 并进使用说明)
+    pub show_edition_ask: bool,
     /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
     new_whitelist_name: String,
     whitelist_error: Option<String>,
@@ -251,6 +257,8 @@ impl SorahkGui {
             show_about_dialog: false,
             show_guide: false,
             dfo_ask_answered: false,
+            first_run_rerun: false,
+            show_edition_ask: false,
             new_whitelist_name: String::new(),
             whitelist_error: None,
             quick_gamepad_pending: None,

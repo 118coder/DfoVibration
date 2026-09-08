@@ -751,6 +751,45 @@ impl SorahkGui {
                                                     ui.checkbox(&mut temp_config.dfo_player, "");
                                                     ui.end_row();
 
+                                                    /* ★客户端版本路线 (仅 DFO 玩家可用):
+                                                     * S1 ACT → 老方案 (配老版 DLL 事件语义);
+                                                     * S4+ 新版 → 现行新方案。下拉选择。 */
+                                                    ui.label(
+                                                        egui::RichText::new("客户端版本 (震动方案)")
+                                                            .size(13.0),
+                                                    );
+                                                    ui.add_enabled_ui(
+                                                        temp_config.dfo_player,
+                                                        |ui| {
+                                                            let routes =
+                                                                ["S4+ 新版本方案 (推荐)", "S1 ACT 老版本方案"];
+                                                            let idx =
+                                                                if temp_config.vib_legacy_client {
+                                                                    1
+                                                                } else {
+                                                                    0
+                                                                };
+                                                            egui::ComboBox::from_id_salt(
+                                                                "settings_client_edition",
+                                                            )
+                                                            .selected_text(routes[idx])
+                                                            .width(190.0)
+                                                            .show_ui(ui, |ui| {
+                                                                ui.selectable_value(
+                                                                    &mut temp_config.vib_legacy_client,
+                                                                    false,
+                                                                    routes[0],
+                                                                );
+                                                                ui.selectable_value(
+                                                                    &mut temp_config.vib_legacy_client,
+                                                                    true,
+                                                                    routes[1],
+                                                                );
+                                                            });
+                                                        },
+                                                    );
+                                                    ui.end_row();
+
                                                     ui.label(t.dark_mode());
                                                     ui.checkbox(&mut temp_config.dark_mode, "");
                                                     ui.end_row();
@@ -2054,6 +2093,7 @@ impl SorahkGui {
                 temp_config.hid_baselines = self.config.hid_baselines.clone();
                 temp_config.device_api_preferences = self.config.device_api_preferences.clone();
                 temp_config.guide_seen = self.config.guide_seen;
+                temp_config.vib_edition_asked = self.config.vib_edition_asked;
                 temp_config.window_rect_normal = self.config.window_rect_normal;
                 temp_config.window_rect_minimal = self.config.window_rect_minimal;
                 temp_config.minimal_mode = self.config.minimal_mode;

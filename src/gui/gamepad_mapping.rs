@@ -217,8 +217,14 @@ pub fn slot_targets(config: &AppConfig, slot: &GamepadSlot) -> Vec<String> {
 }
 
 /// 使用 resvg 将内嵌手柄 SVG 渲染为 egui 纹理 (2x 超采样, HiDPI 清晰)。
-pub fn load_gamepad_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
-    let svg_data: &[u8] = include_bytes!("../../resources/gamepad.svg");
+pub fn load_gamepad_texture(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
+    // 双主题变体: 亮色 = resources/gamepad-light.svg (仅 style 颜色不同, 几何一致,
+    // 热点坐标共用同一 viewBox)
+    let svg_data: &[u8] = if dark {
+        include_bytes!("../../resources/gamepad.svg")
+    } else {
+        include_bytes!("../../resources/gamepad-light.svg")
+    };
 
     let mut opt = resvg::usvg::Options::default();
     opt.fontdb_mut().load_system_fonts();
@@ -236,7 +242,7 @@ pub fn load_gamepad_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> 
     let image_size = [pixmap.width() as usize, pixmap.height() as usize];
     let color_image = egui::ColorImage::from_rgba_unmultiplied(image_size, pixmap.data());
     Some(ctx.load_texture(
-        "gamepad_svg",
+        if dark { "gamepad_svg_dark" } else { "gamepad_svg_light" },
         color_image,
         egui::TextureOptions::LINEAR,
     ))
@@ -255,8 +261,10 @@ fn hotspot_rect(rect: egui::Rect, slot: &GamepadSlot) -> (egui::Pos2, f32) {
 impl SorahkGui {
     /// 手柄可视化快速映射页主体: 左 (大图+图例) / 右 (槽位面板) + 底部已配置映射。
     pub(super) fn render_gamepad_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        if self.gamepad_texture.is_none() {
-            self.gamepad_texture = load_gamepad_texture(ctx);
+        // 主题切换时重渲染对应变体 (按 dark 标记缓存)
+        if self.gamepad_texture.is_none() || self.gamepad_texture_dark != self.dark_mode {
+            self.gamepad_texture = load_gamepad_texture(ctx, self.dark_mode);
+            self.gamepad_texture_dark = self.dark_mode;
         }
         let th = Theme::new(self.dark_mode);
 

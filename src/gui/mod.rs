@@ -65,6 +65,8 @@ pub struct SorahkGui {
     pub active_page: Page,
     /// 手柄 SVG 渲染后的纹理
     pub gamepad_texture: Option<egui::TextureHandle>,
+    /// gamepad_texture 对应的主题 (false=亮色变体, true=深色变体)
+    pub gamepad_texture_dark: bool,
     /// 当前选中的手柄槽位
     pub gamepad_selected_slot: Option<usize>,
     pub vib_preset_idx: usize,
@@ -226,6 +228,7 @@ impl SorahkGui {
             translations,
             active_page: Page::Gamepad,
             gamepad_texture: None,
+            gamepad_texture_dark: false,
             gamepad_selected_slot: None,
             vib_preset_idx: 0,
             vib_preset_name: String::new(),

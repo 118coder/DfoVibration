@@ -672,10 +672,12 @@ impl SorahkGui {
                     ui.add_space(3.0);
                     ui.horizontal(|ui| {
                         ui.label(th.weak("通用预设"));
+                        self.ensure_act1_preset_listed();
                         let names: Vec<String> = self
                             .config
                             .vibration_presets
                             .iter()
+                            .filter(|p| self.config.vib_legacy_client || p.name != "ACT1 特供")
                             .map(|x| x.name.clone())
                             .collect();
                         let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));
@@ -752,6 +754,36 @@ impl SorahkGui {
                             },
                         );
                     });
+                }
+
+                /* ★震动模块状态行: 按版本分流 (ACT1=自动注入 / S4+=模块已启用) */
+                ui.add_space(theme::SP_XS);
+                if self.config.vib_legacy_client {
+                    let ready = crate::auto_inject::host_dir_dll();
+                    let (itext, ifg, ibg) = if ready {
+                        ("ACT1 自动注入 · 已启用 (DLL: 主程序目录)", th.good, th.good_soft)
+                    } else {
+                        ("ACT1 自动注入 · 已启用 (DLL: 游戏目录)", th.good, th.good_soft)
+                    };
+                    let inj_btn = egui::Button::new(
+                        egui::RichText::new(itext).size(12.5).strong().color(ifg),
+                    )
+                    .fill(ibg)
+                    .corner_radius(egui::CornerRadius::same(10));
+                    ui.add_sized([ui.available_width(), 30.0], inj_btn);
+                    ui.label(th.hint_text(
+                        "把 DfoVibration_OLD.dll 放入游戏目录后开游戏即自动注入; 未检测到 DLL 时不注入",
+                    ));
+                } else {
+                    let s4_btn = egui::Button::new(
+                        egui::RichText::new("S4 震动模块自动注入 · 已启用")
+                            .size(12.5)
+                            .strong()
+                            .color(th.good),
+                    )
+                    .fill(th.good_soft)
+                    .corner_radius(egui::CornerRadius::same(10));
+                    ui.add_sized([ui.available_width(), 30.0], s4_btn);
                 }
             }
         });

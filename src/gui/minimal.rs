@@ -276,10 +276,12 @@ impl SorahkGui {
 
             /* 预设选择 (来源由上面的分段开关决定) */
             if !mode_job {
+                self.ensure_act1_preset_listed();
                 let names: Vec<String> = self
                     .config
                     .vibration_presets
                     .iter()
+                    .filter(|p| self.config.vib_legacy_client || p.name != "ACT1 特供")
                     .map(|x| x.name.clone())
                     .collect();
                 let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));

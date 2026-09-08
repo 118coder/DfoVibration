@@ -8,6 +8,7 @@ mod input_manager;
 mod input_ownership;
 mod job_presets;
 mod keyboard;
+mod auto_inject;
 mod mouse;
 mod rawinput;
 mod safety;
@@ -110,6 +111,10 @@ fn main() -> Result<()> {
     // Start vibration engine (reads DFO battle events via shared memory)
     vibration::run(app_state.clone());
 
+    // ★S1 ACT1 老方案: 免 Loader 自动注入线程 (路线关闭时线程待机不注入;
+    // 检测到 DNF.exe 且 DLL 就位才注入, 普通连发玩家零影响)
+    auto_inject::run(app_state.clone());
+
     // Give hooks and input managers time to initialize
     thread::sleep(std::time::Duration::from_millis(200));
 
@@ -132,5 +137,7 @@ fn main() -> Result<()> {
         });
     }
 
-    SorahkGui::run(app_state.clone(), config)
+    let gui_result = SorahkGui::run(app_state.clone(), config);
+
+    gui_result
 }

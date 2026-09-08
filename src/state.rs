@@ -694,7 +694,102 @@ impl AppState {
     /// # Errors
     ///
     /// Returns an error if the toggle key name is invalid or key mappings cannot be created.
-    pub fn new(config: AppConfig) -> anyhow::Result<Self> {
+    pub fn new(mut config: AppConfig) -> anyhow::Result<Self> {
+        /* ★启动参数兜底 (修"进震动页才有震动"): Config.toml 的 [vibration] 强度
+         * 三闸 (attack/master/max) 在 GUI 里从不回写、长期为 0 —— 真实参数在
+         * 内置默认预设与 JobVibration.toml, 此前只在震动页首帧的 INIT_DONE 块
+         * 加载, 不进页面引擎拿全 0 → finalize 静音。此处镜像该初始化:
+         * pristine → 内置默认预设; JobVibration applied → 职业参数覆盖。
+         * 震动页首渲染的同名块保留 (此时已非 pristine, 自然跳过)。 */
+        let mut job_algo_id: u32 = 0;
+        let mut job_algo_ap: [u32; 4] = [0; 4];
+        {
+            let pristine =
+                config.vibration.master_gain == 0 && config.vibration.attack_gain == 0;
+            if pristine {
+                if let Some(pr) = crate::config::default_vibration_presets().first() {
+                    config.vibration.attack_gain = pr.params[0];
+                    config.vibration.damage_gain = pr.params[1];
+                    config.vibration.shake_gain = pr.params[2];
+                    config.vibration.move_gain = pr.params[3];
+                    config.vibration.max_strength = pr.params[4];
+                    config.vibration.decay_ms = pr.params[5];
+                    config.vibration.hit_boost = pr.params[6];
+                    config.vibration.start_pulse = pr.params[7];
+                    config.vibration.kill_pulse = pr.params[8];
+                    config.vibration.master_gain = pr.params[9];
+                    config.vibration.font_strength = pr.params[10];
+                    config.vibration.font_interval = pr.params[11];
+                    config.vibration.font_hp = pr.params[12];
+                    config.vibration.font_special = pr.params[13];
+                    config.vibration.font_state = pr.params[14];
+                    config.vibration.font_effect = pr.params[15];
+                    config.vibration.font_attack = pr.params[16];
+                    config.vibration.font_hit = pr.params[17];
+                    config.vibration.rhythm = pr.params[18];
+                    config.vibration.advanced.copy_from_slice(&pr.params[19..60]);
+                    config.vibration.item_lr = pr.item_lr;
+                    config.vibration.rank_lr = pr.rank_lr;
+                    config.vibration.rank_type_gain = pr.rank_type_gain;
+                    config.vibration.rank_level_gain = pr.rank_level_gain;
+                    config.vibration.rank_duration = pr.rank_duration;
+                    config.vibration.out_smooth = pr.out_smooth;
+                }
+            }
+            if let Some(jcfg) = crate::job_presets::load_job_vibration() {
+                if jcfg.applied {
+                    if let Some((_bi, _ci, cls)) =
+                        crate::job_presets::find_class(&jcfg.base_job, &jcfg.class_name)
+                    {
+                        let params: Vec<u32> = if jcfg.params.len() == 60 {
+                            jcfg.params.clone()
+                        } else {
+                            cls.params.to_vec()
+                        };
+                        /* 职业参数 (60 槽布局与 init_params 一致) → config.vibration */
+                        config.vibration.attack_gain = params[0];
+                        config.vibration.damage_gain = params[1];
+                        config.vibration.shake_gain = params[2];
+                        config.vibration.move_gain = params[3];
+                        config.vibration.max_strength = params[4];
+                        config.vibration.decay_ms = params[5];
+                        config.vibration.hit_boost = params[6];
+                        config.vibration.start_pulse = params[7];
+                        config.vibration.kill_pulse = params[8];
+                        config.vibration.master_gain = params[9];
+                        config.vibration.font_strength = params[10];
+                        config.vibration.font_interval = params[11];
+                        config.vibration.font_hp = params[12];
+                        config.vibration.font_special = params[13];
+                        config.vibration.font_state = params[14];
+                        config.vibration.font_effect = params[15];
+                        config.vibration.font_attack = params[16];
+                        config.vibration.font_hit = params[17];
+                        config.vibration.rhythm = params[18];
+                        config.vibration.advanced.copy_from_slice(&params[19..60]);
+                        config.vibration.rank_lr = cls.rank_lr.map(|v| v as u32);
+                        config.vibration.rank_type_gain = cls.rank_type_gain;
+                        config.vibration.rank_level_gain = if jcfg.rank_level_gain > 0 {
+                            jcfg.rank_level_gain
+                        } else {
+                            cls.rank_level_gain
+                        };
+                        config.vibration.rank_duration = if jcfg.rank_duration > 0 {
+                            jcfg.rank_duration
+                        } else {
+                            cls.rank_duration
+                        };
+                        config.vibration.out_smooth = cls.out_smooth;
+                        config.vibration.throttle_window_ms = cls.throttle_window;
+                        config.vibration.throttle_max_hits = cls.throttle_max;
+                        config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
+                        config.vibration.abs_freq_enabled = cls.abs_freq_enabled;
+                        job_algo_id = cls.algo_id as u32;
+                        job_algo_ap = cls.algo_params;
+                    }
+                }
+            }
+        }
         let switch_key_cache = SwitchKeyCache::new();
         Self::update_switch_key_cache(&switch_key_cache, &config.switch_key)?;
 
@@ -915,8 +1010,10 @@ impl AppState {
             vibration_split_thr: std::sync::atomic::AtomicU32::new(
                 config.vibration.split_thr,
             ),
-            vibration_algo_id: std::sync::atomic::AtomicU32::new(0),
-            vibration_algo_ap: std::array::from_fn(|_| std::sync::atomic::AtomicU32::new(0)),
+            vibration_algo_id: std::sync::atomic::AtomicU32::new(job_algo_id),
+            vibration_algo_ap: std::array::from_fn(|i| {
+                std::sync::atomic::AtomicU32::new(job_algo_ap[i])
+            }),
             vibration_item_lr: std::array::from_fn(|i| {
                 std::sync::atomic::AtomicU32::new(config.vibration.item_lr[i])
             }),

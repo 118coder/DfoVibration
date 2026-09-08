@@ -2108,6 +2108,7 @@ impl SorahkGui {
                     }
                 }
 
+                // ★客户端版本切换到 S1: 预设列表出现「ACT1 特供」(玩家自选)
                 // Check if always_on_top changed
                 let always_on_top_changed = temp_config.always_on_top != self.config.always_on_top;
                 // Check if dark_mode changed

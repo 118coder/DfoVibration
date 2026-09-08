@@ -374,7 +374,8 @@ impl SorahkGui {
             static INIT_DONE: AtomicBool = AtomicBool::new(false);
             if !INIT_DONE.load(Ordering::Relaxed) {
                 INIT_DONE.store(true, Ordering::Relaxed);
-                let p = &self.app_state.vibration_params;
+                self.ensure_act1_preset_listed();
+        let p = &self.app_state.vibration_params;
                 let pristine = self.config.vibration.master_gain == 0
                     && self.config.vibration.attack_gain == 0;
                 if pristine {
@@ -725,6 +726,7 @@ impl SorahkGui {
                         .config
                         .vibration_presets
                         .iter()
+                        .filter(|p| self.config.vib_legacy_client || p.name != "ACT1 特供")
                         .map(|p| p.name.clone())
                         .collect();
                     let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));
@@ -2176,7 +2178,16 @@ impl SorahkGui {
         let p = &app_state.vibration_params;
         let pr0 = match config.vibration_presets.iter().find(|x| x.name == name) {
             Some(x) => x.clone(),
-            None => return,
+            None => {
+                /* ★ACT1 特供: 内置预设, 不必落在用户列表 (仅 S1 路线在列表显示) */
+                match crate::config::default_vibration_presets()
+                    .into_iter()
+                    .find(|x| x.name == name)
+                {
+                    Some(x) => x,
+                    None => return,
+                }
+            }
         };
         let pr = crate::config::default_vibration_presets()
             .into_iter()
@@ -2323,6 +2334,33 @@ impl SorahkGui {
 
 
     /// 便捷包装 (极简模式等无借用冲突的调用点)。
+    /// ★ACT1 特供预设: S1 路线时确保出现在预设列表 (持久注册一次);
+    /// S4/非 DFO 由各列表处的过滤隐藏
+    pub(super) fn ensure_act1_preset_listed(&mut self) {
+        if self.config.vib_legacy_client
+            && !self
+                .config
+                .vibration_presets
+                .iter()
+                .any(|x| x.name == "ACT1 特供")
+        {
+            if let Some(pr) = crate::config::default_vibration_presets()
+                .into_iter()
+                .find(|p| p.name == "ACT1 特供")
+            {
+                /* 插在「默认」之后 (用户要求: 默认下面), 无默认则置顶 */
+                let pos = self
+                    .config
+                    .vibration_presets
+                    .iter()
+                    .position(|x| x.name == "默认")
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
+                self.config.vibration_presets.insert(pos, pr);
+            }
+        }
+    }
+
     pub(super) fn apply_general_vibration_preset(&mut self, name: &str) {
         Self::apply_general_vibration_preset_in(
             name,

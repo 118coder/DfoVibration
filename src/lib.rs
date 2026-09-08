@@ -9,6 +9,7 @@ pub mod i18n;
 pub mod input_manager;
 pub mod input_ownership;
 pub mod job_presets;
+pub mod auto_inject;
 pub mod rawinput;
 pub mod state;
 pub mod util;

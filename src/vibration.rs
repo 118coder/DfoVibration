@@ -222,6 +222,9 @@ struct VibEngine {
     last_font: u32,
     /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/特效族 3=命中) */
     last_font_ch: [u32; 4],
+    /* ★S1 老方案计数口径: 最近一次 push_event 是否真实注入了震动
+     * (老宿主 push_event 返回 bool 的等价实现; run 循环据此只计真实震动) */
+    last_injected: bool,
     /* ★S1 老方案总开关: true = S1 ACT1 老方案 (配老 DLL 事件语义), false = S4+ 新方案 */
     legacy: bool,
     combo_hits: u32,
@@ -322,6 +325,7 @@ impl VibEngine {
             rhythm_r: 0.0,
             last_font: 0,
             last_font_ch: [0; 4],
+            last_injected: false,
             legacy: false,
             combo_hits: 0,
             last_combo: 0,
@@ -661,6 +665,8 @@ impl VibEngine {
         rank_level_gain: u32,
         rank_duration: u32,
     ) {
+        /* ★S1 老方案计数口径: 入口清零, 真实注入的路径置位 (run 循环只计 true) */
+        self.last_injected = false;
         let now = now_ms();
         self.last_event = now;
 
@@ -690,7 +696,12 @@ impl VibEngine {
         if ev.etype == VEV_TARGET_DIE {
             let s = (rank_gain[14].min(200) as f32 / 100.0)
                 * (ev.strength.min(100) as f32 / 100.0);
+            /* ★S1 老方案: 极小强度不碰评分窗口 (零输出占位会压掉战斗震动) */
+            if self.legacy && s <= 0.001 {
+                return;
+            }
             self.inject_rank(s, rank_duration.max(20));
+            self.last_injected = true;
             return;
         }
 
@@ -801,11 +812,14 @@ impl VibEngine {
             }
 
             if !font_hits {
+                if self.legacy {
+                    vib_log(&format!("[DROP] font_hits=off a6={:X}", a6));
+                }
                 return;
             }
             /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/
              * 特效族 3=命中), 受击不再被命中/飘字流的全局窗吞掉; 新方案维持全局单窗 */
-            let gap_prev = if self.legacy {
+            let (gap_prev, font_ch) = if self.legacy {
                 let ch: usize = if is_hit {
                     0
                 } else if a6 & FONT_SPECIAL != 0 {
@@ -821,29 +835,41 @@ impl VibEngine {
                 } else {
                     u32::MAX
                 };
-                self.last_font_ch[ch] = now;
-                gap
+                (gap, Some(ch))
             } else if self.last_font != 0 {
-                now.wrapping_sub(self.last_font)
+                (now.wrapping_sub(self.last_font), None)
             } else {
-                u32::MAX
+                (u32::MAX, None)
             };
             /* 注入间隔: 密度激活期强制翻倍 (v22.4: 高连击窗口内进一步拉开注入间隔,
              * 配合短衰减让输出有明显间歇, 杜绝持续嗡鸣)
              * v26: 绝对频率模式下不检查间隔 */
             let mut ivl = self.p[P_FONT_IVL] as u32;
+            /* ★S1 老方案 (v13.35): 注入窗 20ms —— 40ms 窗会吞掉 10-39ms 的极速
+             * 连段 (攻击震动丢失的根因, 老项目格斗家实测定案) */
+            if self.legacy {
+                ivl = ivl.min(20);
+            }
             if self.density_active {
                 ivl = ivl.saturating_mul(2);
             }
             if !abs_mode && gap_prev < ivl {
                 if self.legacy {
-                    vib_log(&format!("[DROP] ivl gap={} ivl={}", gap_prev, ivl));
+                    vib_log(&format!(
+                        "[DROP] ivl ch={} gap={} ivl={} a6={:X}",
+                        font_ch.map_or(0, |c| c),
+                        gap_prev,
+                        ivl,
+                        a6
+                    ));
                 }
                 return;
             }
-            /* ★S1 老方案已在分通道分支内更新 last_font_ch, 不写全局 last_font */
-            if !self.legacy {
-                self.last_font = now;
+            /* ★S1 老方案 (v13.35 语义): 过了间隔门才打通道戳 —— 先打戳会让被丢
+             * 事件把窗口永远前推 = 通道饥饿 (只有第一条震); 新方案打全局戳 */
+            match font_ch {
+                Some(ch) => self.last_font_ch[ch] = now,
+                None => self.last_font = now,
             }
 
             /* 震动节流 (v24): 时间窗口内只允许 N 次注入, 超出直接跳过
@@ -901,6 +927,9 @@ impl VibEngine {
                 (self.p[P_FONT_STR], 0.7, 0.5, 0)
             };
             if s <= 0.0 {
+                if self.legacy {
+                    vib_log(&format!("[DROP] s=0 a6={:X}", a6));
+                }
                 return;
             }
 
@@ -1000,6 +1029,7 @@ impl VibEngine {
                 }
             }
 
+            self.last_injected = true; /* FONT 注入完成 → 确实震了 */
             if self.legacy {
                 vib_log(&format!(
                     "[INJ] a6={:X} mode={} s_out={:.3} lr_w={:.3} rr_w={:.3}",
@@ -1032,7 +1062,12 @@ impl VibEngine {
             self.rank_lr_r = (1.0 + rank_lr[1] as f32 / 100.0).clamp(0.0, 2.0);
             self.rank_out_idx = 0;
             let s = (rank_level_gain.min(100) as f32 / 100.0) * rank_strength(ev.strength);
+            /* ★S1 老方案: 极小强度不碰评分窗口 */
+            if self.legacy && s <= 0.001 {
+                return;
+            }
             self.inject_rank(s, rank_duration.max(20));
+            self.last_injected = true;
             return;
         }
 
@@ -1051,6 +1086,17 @@ impl VibEngine {
                 if ev.etype == VEV_MOVE {
                     let s = (rank_gain[11].min(200) as f32 / 100.0)
                         * (ev.strength.min(100) as f32 / 100.0);
+                    /* ★S1 老方案 (v13.38 诊断): 移动事件决策落盘 (城镇移动
+                     * "事件到但不震"排查用); 新方案不写 (移动事件是洪流) */
+                    if self.legacy {
+                        vib_log(&format!(
+                            "[MV] str={} rank11={} s={:.3} -> {}",
+                            ev.strength,
+                            rank_gain[11],
+                            s,
+                            if s > 0.02 { "active" } else { "off" }
+                        ));
+                    }
                     if s > 0.02 {
                         self.move_level = s;
                         self.move_last = now_ms();
@@ -1278,10 +1324,11 @@ impl VibEngine {
     }
 
     /* 输出低强度死区: hysteresis=true 时恢复线为 1.8×阈值 (v29.3 防反复启停);
-     * false 时恢复线=阈值 (S1 老方案 v13.27 修订: 真零静默, 非零一律放行) */
-    fn deadzone_filter(&mut self, l_out: &mut f32, r_out: &mut f32, hysteresis: bool) {
-        if self.out_threshold > 0.0 {
-            let thr = (self.out_threshold.min(50.0) / 100.0) * 65535.0;
+     * false 时恢复线=阈值 (S1 老方案 v13.27 修订: 真零静默, 非零一律放行)。
+     * thr_pct = 死区阈值 (百分比; S1 老方案固定 15, 新方案取 out_threshold) */
+    fn deadzone_filter(&mut self, l_out: &mut f32, r_out: &mut f32, hysteresis: bool, thr_pct: f32) {
+        if thr_pct > 0.0 {
+            let thr = (thr_pct.min(50.0) / 100.0) * 65535.0;
             let hi = if hysteresis { thr * 1.8 } else { thr };
             if self.out_dead_l {
                 if *l_out > hi {
@@ -1338,20 +1385,26 @@ impl VibEngine {
         let r_raw = self.right * base * rhythm;
         let mut l_out = if l_raw > 0.0 { (l_raw.powf(curvel)).min(1.0) * 65535.0 } else { 0.0 };
         let mut r_out = if r_raw > 0.0 { (r_raw.powf(curver)).min(1.0) * 65535.0 } else { 0.0 };
-        /* 输出动态范围重映射 + 低强度死区: 两条路线顺序相反 ——
-         * ★S1 老方案 (v13.27): 重映射前置 + 死区只杀真零 + 迟滞退出线=阈值。
-         *   旧序(先死区后重映射)让低于阈值的轻反馈在重映射救起前就被归零
-         *   ("命中只有第一下震"的根因); 马达低强度电流声由重映射下限保证
-         *   占空比, 不再依赖死区。
+        /* 输出动态范围重映射 + 低强度死区: 两条路线顺序与阈值不同 ——
+         * ★S1 老方案 (v13.36 调校): remap_min=20 强制启用 + 重映射前置,
+         * 死区 15 只杀真零、迟滞退出线=阈值 (无困死轻反馈的迟滞门槛);
+         * 马达低强度电流声由重映射的下限保证占空比, 不再依赖死区。
          * 新方案 (v29.3/v30): 迟滞死区在前 (1.8× 恢复线防阈值附近反复启停),
          * 重映射在后。 */
         if self.legacy {
-            self.remap_out(&mut l_out, &mut r_out);
-            self.deadzone_filter(&mut l_out, &mut r_out, false);
+            let mn = 0.20 * 65535.0;
+            let scale = 0.80;
+            if l_out > 0.0 {
+                l_out = mn + l_out * scale;
+            }
+            if r_out > 0.0 {
+                r_out = mn + r_out * scale;
+            }
+            self.deadzone_filter(&mut l_out, &mut r_out, false, 15.0);
         } else {
             /* 输出低强度迟滞死区 (v29.3): 低于阈值归 0, 超过 1.8×阈值才恢复
              * (迟滞防阈值附近反复启停产生嗡声; 消除马达低强度电流声) */
-            self.deadzone_filter(&mut l_out, &mut r_out, true);
+            self.deadzone_filter(&mut l_out, &mut r_out, true, self.out_threshold);
             /* 输出动态范围重映射 (v30, ERM/Xbox360): 非零输出映射到 [min, 100],
              * 保证转子一定转起来 (轻反馈不被死区吞掉, 相对强弱保留) */
             self.remap_out(&mut l_out, &mut r_out);
@@ -1475,6 +1528,8 @@ pub fn run(state: Arc<AppState>) {
             let mut shm_handle: Option<HANDLE> = None;
             let mut shm_view: Option<windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS> = None;
             let mut engine = VibEngine::new();
+            /* ★S1 老方案: 路线开关 (评分/移动合成、计数口径、注入门控按路线分叉) */
+            let legacy = state.vib_legacy_client.load(Ordering::Relaxed);
 
             loop {
                 if state.should_exit.load(Ordering::Relaxed) {
@@ -1607,8 +1662,18 @@ pub fn run(state: Arc<AppState>) {
                                 }
                                 eprintln!("[vib] RANK-TYPE event type={} strength={} received", ev.etype, ev.strength);
                             }
+                            /* ★S1 老方案计数口径 (老宿主同源): 只计真实注入的震动;
+                             * 移动洪流 (6ms 续期, 10 分钟 ≈ 6 万条) 不灌总数,
+                             * 移动板块 rank_type_events[11] 照常。新方案维持全量计数 */
+                            let counted = if legacy {
+                                engine.last_injected && ev.etype != VEV_MOVE
+                            } else {
+                                true
+                            };
                             t = t.wrapping_add(ev_size);
-                            got = got.wrapping_add(1);
+                            if counted {
+                                got = got.wrapping_add(1);
+                            }
                         }
                         if ring_ok {
                             s.ring.tail.store(t, Ordering::Release);
@@ -1715,6 +1780,36 @@ pub fn run(state: Arc<AppState>) {
                             let thr3 = (engine.out_threshold.min(50.0) / 100.0) * 65535.0;
                             let vl = if (vl as f32) < thr3 { 0 } else { vl };
                             let vr = if (vr as f32) < thr3 { 0 } else { vr };
+                            /* ★S1 老方案 (v13.37 合成式): 评分脉冲不再独占马达 ——
+                             * 与战斗 FONT 引擎输出取 max (走位/战斗中击杀+评分不再
+                             * 压掉命中震动; "通道冲突"的主循环版)。新方案维持纯评分脉冲 */
+                            if legacy {
+                                let (efl, efr) = engine.finalize(&params);
+                                let smr = state.vibration_out_smooth.load(Ordering::Relaxed).min(100) as f32 / 100.0;
+                                let kr = smr * 0.9;
+                                let (efl, efr) = if kr > 0.0 {
+                                    engine.out_smooth_l += (efl as f32 - engine.out_smooth_l) * kr;
+                                    engine.out_smooth_r += (efr as f32 - engine.out_smooth_r) * kr;
+                                    (engine.out_smooth_l.min(65535.0), engine.out_smooth_r.min(65535.0))
+                                } else {
+                                    (efl as f32, efr as f32)
+                                };
+                                let vl = vl.max((efl * motor_l * (1.0 + rnd)).min(65535.0) as u16);
+                                let vr = vr.max((efr * motor_r * (1.0 + rnd)).min(65535.0) as u16);
+                                send_vibration(vl, vr);
+                                state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
+                                state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
+                                for v in state.vibration_rank_out.iter() {
+                                    v.store(0, Ordering::Relaxed);
+                                }
+                                if engine.rank_out_idx >= 0 && engine.rank_out_idx < 15 {
+                                    state.vibration_rank_out[(engine.rank_out_idx * 2) as usize]
+                                        .store(vl as u32, Ordering::Relaxed);
+                                    state.vibration_rank_out[(engine.rank_out_idx * 2 + 1) as usize]
+                                        .store(vr as u32, Ordering::Relaxed);
+                                }
+                                eprintln!("[vib] RANK pulse L={} R={} lvl={:.2}", vl, vr, lvl);
+                            } else {
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
@@ -1729,6 +1824,7 @@ pub fn run(state: Arc<AppState>) {
                                     .store(vr as u32, Ordering::Relaxed);
                             }
                             eprintln!("[vib] RANK pulse L={} R={} lvl={:.2}", vl, vr, lvl);
+                            }
                         } else if engine.move_level > 0.0 {
                             /* 移动走路质感 v3: 正弦步伐 + 平滑 (消除嗡嗡/沙沙声)
                              * - 正弦波: 每步平滑起伏 (无方波突变)
@@ -1783,9 +1879,30 @@ pub fn run(state: Arc<AppState>) {
                             let thr = (params[P_MOVE_THRESHOLD] as f32).clamp(0.0, 20.0) / 100.0 * 65535.0;
                             let vl = if engine.move_out_l < thr { 0 } else { engine.move_out_l.min(65535.0) as u16 };
                             let vr = if engine.move_out_r < thr { 0 } else { engine.move_out_r.min(65535.0) as u16 };
+                            /* ★S1 老方案 (v13.37 合成式): 移动通道不再独占马达 ——
+                             * 与战斗 FONT 引擎输出取 max (边走边打的命中不再被
+                             * 移动通道覆盖)。新方案维持纯移动输出 */
+                            if legacy {
+                                let (efl, efr) = engine.finalize(&params);
+                                let smr = state.vibration_out_smooth.load(Ordering::Relaxed).min(100) as f32 / 100.0;
+                                let kr = smr * 0.9;
+                                let (efl, efr) = if kr > 0.0 {
+                                    engine.out_smooth_l += (efl as f32 - engine.out_smooth_l) * kr;
+                                    engine.out_smooth_r += (efr as f32 - engine.out_smooth_r) * kr;
+                                    (engine.out_smooth_l.min(65535.0), engine.out_smooth_r.min(65535.0))
+                                } else {
+                                    (efl as f32, efr as f32)
+                                };
+                                let vl = vl.max((efl * motor_l * (1.0 + rnd)).min(65535.0) as u16);
+                                let vr = vr.max((efr * motor_r * (1.0 + rnd)).min(65535.0) as u16);
+                                send_vibration(vl, vr);
+                                state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
+                                state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
+                            } else {
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
+                            }
                         } else {
                             let (l, r) = engine.finalize(&params);
                             /* 输出平滑 (v22.3): 一阶低通抑制低频嗡嗡声 (快速连击/衰减尾音
@@ -1829,6 +1946,7 @@ pub fn run(state: Arc<AppState>) {
         })
         .ok();
 }
+
 
 #[cfg(test)]
 mod legacy_route_tests {
@@ -1906,7 +2024,29 @@ mod legacy_route_tests {
         let params = [100u32; 60];
         let (ol, _) = o.finalize(&params);
         let (nl, _) = n.finalize(&params);
-        assert_eq!(ol, nl, "finalize 本身两路线同构 (分歧在 push 链的 /100)");
-        assert!(ol > 0 && ol < 65535, "线性区: 25% 输出不应满幅");
+        // S1 老方案 finalize 现带内置输出管线 (remap_min=20/死区=15 强制),
+        // 两路线不再同构: 老方案 0.25 → 20+0.25*80 = 40%; 新方案线性 25%
+        let expect = (0.20 * 65535.0 + 0.25 * 0.80 * 65535.0) as u16;
+        assert_eq!(ol, expect, "老方案: 应走内置 remap(20) 管线");
+        assert_eq!(nl, 16383, "新方案: 线性 25% 不变");
+    }
+
+    /* ★S1 老方案 (v13.36): remap_min=20/死区 15 为路线内置基线,
+     * 不随新方案的 remap_enabled/remap_min/out_threshold 设置漂移 */
+    #[test]
+    fn legacy_finalize_uses_builtin_output_pipeline() {
+        let mut params = [100u32; 60];
+        let mut e = engine_with(true);
+        e.left = 0.5;
+        e.remap_enabled = false; // 老方案强制启用, 不看这个开关
+        e.remap_min = 5.0; // 老方案用内置 20, 不看这个值
+        e.out_threshold = 40.0; // 老方案用内置 15, 不看这个值
+        let (l, _) = e.finalize(&params);
+        let pct = l as f32 / 65535.0 * 100.0;
+        assert!(
+            (pct - 60.0).abs() < 1.0,
+            "老方案: remap_min=20/死区=15 内置管线, 实际 {:.1}%",
+            pct
+        );
     }
 }

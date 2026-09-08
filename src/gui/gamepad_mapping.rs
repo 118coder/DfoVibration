@@ -385,12 +385,7 @@ impl SorahkGui {
             KeyCaptureMode::QuickGamepadTarget(id) => Some((id, false)),
             _ => None,
         };
-        // 捕获等待态的呼吸动画 (0.5Hz)
-        let pulse = if capture_slot.is_some() {
-            0.5 + 0.5 * (ui.ctx().input(|i| i.time) * std::f64::consts::TAU / 2.0).sin() as f32
-        } else {
-            0.0
-        };
+        // 捕获等待态: 各槽位独立雷达动画 (见下方 is_capturing 分支)
 
         for slot in SLOTS {
             let (center, radius) = hotspot_rect(rect, slot);
@@ -407,64 +402,109 @@ impl SorahkGui {
             let is_selected = selected_id == Some(slot.id);
             let is_capturing = matches!(capture_slot, Some((cid, _)) if cid == slot.id);
             let (base_r, base_g, base_b) = slot.kind.base_rgb();
+            let slot_col = |a: u8| egui::Color32::from_rgba_unmultiplied(base_r, base_g, base_b, a);
+            let configured = find_slot_mapping_index(&self.config, slot).is_some();
+            let is_click = matches!(slot.kind, SlotKind::StickClick);
 
-            let (fill, stroke, text_color) = if is_capturing {
-                (
-                    egui::Color32::from_rgba_unmultiplied(255, 180, 40, 190),
-                    egui::Stroke::new(
-                        2.5,
-                        egui::Color32::from_rgba_unmultiplied(
-                            255,
-                            220,
-                            110,
-                            (120.0 + 100.0 * pulse) as u8,
+            // 悬停/选中/捕获的放大动画 (150ms 缓动)
+            let hot = is_capturing || is_selected || response.hovered();
+            let scale = 1.0 + 0.10 * ui.ctx().animate_bool_with_time(
+                ui.id().with("gamepad_hotspot_anim").with(slot.id),
+                hot,
+                0.15,
+            );
+            let r_eff = radius * scale;
+
+            if !is_click {
+                if is_capturing {
+                    /* 捕获态: 雷达扩散环 + 琥珀主环 */
+                    let phase = (ui.ctx().input(|i| i.time) * 1.6) % 1.0;
+                    painter.circle_stroke(
+                        center,
+                        r_eff * (1.05 + 0.40 * phase as f32),
+                        egui::Stroke::new(
+                            2.0,
+                            egui::Color32::from_rgba_unmultiplied(
+                                255,
+                                190,
+                                60,
+                                (190.0 * (1.0 - phase as f32)) as u8,
+                            ),
                         ),
-                    ),
-                    egui::Color32::BLACK,
-                )
-            } else if is_selected {
-                (
-                    egui::Color32::from_rgba_unmultiplied(
-                        th.accent.r(),
-                        th.accent.g(),
-                        th.accent.b(),
-                        210,
-                    ),
-                    egui::Stroke::new(2.0, egui::Color32::from_rgb(255, 255, 255)),
-                    egui::Color32::WHITE,
-                )
-            } else if response.hovered() {
-                (
-                    egui::Color32::from_rgba_unmultiplied(base_r, base_g, base_b, 170),
-                    egui::Stroke::new(1.8, egui::Color32::from_rgb(255, 255, 255)),
-                    egui::Color32::WHITE,
-                )
-            } else {
-                (
-                    egui::Color32::from_rgba_unmultiplied(base_r, base_g, base_b, 95),
-                    egui::Stroke::new(
-                        1.2,
-                        egui::Color32::from_rgba_unmultiplied(base_r, base_g, base_b, 190),
-                    ),
-                    egui::Color32::WHITE,
-                )
-            };
+                    );
+                    painter.circle_filled(center, r_eff, egui::Color32::from_rgba_unmultiplied(255, 190, 60, 60));
+                    painter.circle_stroke(center, r_eff, egui::Stroke::new(2.2, egui::Color32::from_rgb(255, 200, 80)));
+                } else {
+                    /* 悬停/选中: 外柔光 */
+                    if hot {
+                        painter.circle_filled(center, r_eff * 1.5, slot_col(if is_selected { 55 } else { 40 }));
+                    }
+                    /* 玻璃底 (深机身增透, 亮机身轻压暗) */
+                    painter.circle_filled(
+                        center,
+                        r_eff,
+                        if th.dark {
+                            egui::Color32::from_black_alpha(64)
+                        } else {
+                            egui::Color32::from_black_alpha(30)
+                        },
+                    );
+                    /* 主环: 选中=强调色 / 已配置=类色实线 / 空槽=类色细线 */
+                    painter.circle_stroke(
+                        center,
+                        r_eff,
+                        if is_selected {
+                            egui::Stroke::new(2.6, th.accent)
+                        } else if configured {
+                            egui::Stroke::new(2.0, slot_col(235))
+                        } else {
+                            egui::Stroke::new(1.4, slot_col(125))
+                        },
+                    );
+                    /* 中心点 (单字符槽位; Back/Start 保留文字空间) */
+                    if slot.short.chars().count() == 1 {
+                        painter.circle_filled(
+                            center,
+                            r_eff * 0.15,
+                            if is_selected {
+                                th.accent
+                            } else {
+                                slot_col(if configured { 255 } else { 140 })
+                            },
+                        );
+                    }
+                }
+            }
 
-            painter.circle_filled(center, radius, fill);
-            painter.circle_stroke(center, radius, stroke);
-            // 热点短标签 (方向箭头/按键字母), 完整名称放悬停提示
-            if !slot.short.is_empty() {
+            /* 短标签 (方向箭头/按键字母) 带微投影; 摇杆按下为隐形热点不绘字 */
+            if !slot.short.is_empty() && !is_click {
                 let font_size = match slot.short.chars().count() {
                     1 => 13.0,
                     2 => 9.5,
                     _ => 8.5,
                 };
+                let tcol = if is_capturing || is_selected || response.hovered() {
+                    egui::Color32::WHITE
+                } else if configured {
+                    slot_col(255)
+                } else if th.dark {
+                    egui::Color32::from_rgba_unmultiplied(255, 255, 255, 190)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(58, 65, 82, 235)
+                };
+                painter.text(
+                    center + egui::vec2(0.0, 1.0),
+                    egui::Align2::CENTER_CENTER,
+                    slot.short,
+                    egui::FontId::proportional(font_size),
+                    egui::Color32::from_black_alpha(if th.dark { 130 } else { 60 }),
+                );
                 painter.text(
                     center,
                     egui::Align2::CENTER_CENTER,
                     slot.short,
                     egui::FontId::proportional(font_size),
-                    text_color,
+                    tcol,
                 );
             }
 
@@ -484,6 +524,65 @@ impl SorahkGui {
 
     /// 右侧槽位详情面板。
     fn render_gamepad_slot_panel(&mut self, ui: &mut egui::Ui, th: &Theme) {
+        /* 待确认捕获条: 捕获结果不再立即生效, 防止误操作 (确认应用 / 取消) */
+        if let Some((slot_id, is_trigger, captured)) = self.quick_gamepad_pending.clone() {
+            let slot_label = crate::gui::gamepad_mapping::get_slot(slot_id)
+                .map(|s| s.label)
+                .unwrap_or("未知槽位");
+            th.panel(ui, None, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("⚠ 待确认")
+                            .size(13.0)
+                            .strong()
+                            .color(th.warn),
+                    );
+                    ui.label(th.body(format!(
+                        "「{}」{} = {}",
+                        slot_label,
+                        if is_trigger { "触发键" } else { "目标键" },
+                        captured
+                    )));
+                });
+                ui.add_space(theme::SP_XS);
+                ui.horizontal(|ui| {
+                    if ui.add(th.primary_button("✓ 确认应用")).clicked() {
+                        self.quick_gamepad_pending = None;
+                        if let Some(sl) = crate::gui::gamepad_mapping::get_slot(slot_id) {
+                            if is_trigger {
+                                crate::gui::gamepad_mapping::set_slot_trigger(
+                                    &mut self.config,
+                                    sl,
+                                    captured.clone(),
+                                );
+                            } else {
+                                crate::gui::gamepad_mapping::add_slot_target(
+                                    &mut self.config,
+                                    sl,
+                                    captured,
+                                );
+                            }
+                            let _ = self.config.save_to_file("Config.toml");
+                            if let Err(e) =
+                                self.app_state.reload_config(self.config.clone())
+                            {
+                                eprintln!(
+                                    "Failed to reload config after quick gamepad mapping: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
+                    if ui.add(th.secondary_button("✕ 取消")).clicked() {
+                        self.quick_gamepad_pending = None;
+                        self.just_captured_input = false;
+                    }
+                    ui.label(th.hint_text("确认前不会写入任何映射"));
+                });
+            });
+            ui.add_space(theme::SP_S);
+        }
+
         let Some(slot_id) = self.gamepad_selected_slot else {
             render_slot_empty_state(ui, th);
             return;
@@ -601,6 +700,23 @@ impl SorahkGui {
                 self.start_quick_target_capture(slot.id);
             }
 
+            /* 绑定 Esc 本身: 物理 Esc = 取消捕获, 因此绑定 Esc 走显式按钮,
+             * 结果同样进入「待确认」条 (确认应用才生效) */
+            if is_capturing_trigger || is_capturing_target {
+                if ui
+                    .add(th.secondary_button("或直接绑定 Esc 键"))
+                    .on_hover_text("物理 Esc 键用于取消捕获; 点此按钮可把 Esc 绑定为触发键/目标键")
+                    .clicked()
+                {
+                    self.quick_gamepad_pending =
+                        Some((slot.id, is_capturing_trigger, "ESC".to_string()));
+                    self.key_capture_mode = KeyCaptureMode::None;
+                    self.capture_pressed_keys.clear();
+                    self.app_state.set_raw_input_capture_mode(false);
+                    self.just_captured_input = false;
+                }
+            }
+
             ui.add_space(12.0);
 
             // 管理按钮行
@@ -644,6 +760,7 @@ impl SorahkGui {
 
     fn start_quick_trigger_capture(&mut self, slot_id: usize) {
         self.key_capture_mode = KeyCaptureMode::QuickGamepadTrigger(slot_id);
+        self.quick_gamepad_pending = None; // 新捕获开始, 丢弃旧待确认
         self.capture_pressed_keys.clear();
         self.capture_initial_pressed = Self::poll_all_pressed_keys();
         self.app_state.set_raw_input_capture_mode(true);
@@ -652,6 +769,7 @@ impl SorahkGui {
 
     fn start_quick_target_capture(&mut self, slot_id: usize) {
         self.key_capture_mode = KeyCaptureMode::QuickGamepadTarget(slot_id);
+        self.quick_gamepad_pending = None; // 新捕获开始, 丢弃旧待确认
         self.capture_pressed_keys.clear();
         self.capture_initial_pressed = Self::poll_all_pressed_keys();
         self.just_captured_input = true;

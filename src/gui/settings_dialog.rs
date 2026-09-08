@@ -2176,6 +2176,7 @@ impl SorahkGui {
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
             self.app_state.set_raw_input_capture_mode(false);
+            self.quick_gamepad_pending = None;
             return;
         }
 
@@ -2189,7 +2190,7 @@ impl SorahkGui {
             self.key_capture_mode = KeyCaptureMode::None;
             return;
         };
-        let Some(slot) = crate::gui::gamepad_mapping::get_slot(slot_id) else {
+        let Some(_slot) = crate::gui::gamepad_mapping::get_slot(slot_id) else {
             self.key_capture_mode = KeyCaptureMode::None;
             return;
         };
@@ -2239,25 +2240,9 @@ impl SorahkGui {
         }
 
         if let Some(input_name) = captured_input {
-            if is_trigger {
-                crate::gui::gamepad_mapping::set_slot_trigger(
-                    &mut self.config,
-                    slot,
-                    input_name.clone(),
-                );
-            } else {
-                crate::gui::gamepad_mapping::add_slot_target(
-                    &mut self.config,
-                    slot,
-                    input_name.clone(),
-                );
-            }
-
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after quick gamepad mapping: {}", e);
-            }
-
+            // 捕获完成 → 进入待确认状态 (不立即写映射, 防误操作);
+            // 用户在槽位面板点「确认应用」才落盘生效, 「取消」直接丢弃
+            self.quick_gamepad_pending = Some((slot_id, is_trigger, input_name));
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
             self.app_state.set_raw_input_capture_mode(false);

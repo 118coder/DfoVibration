@@ -1,4 +1,4 @@
-//! 统一设计系统 (Design System) v3.1 — "Obsidian Console Vivid" (Linear/Raycast 实证令牌)。
+//! 统一设计系统 (Design System) v4 — "Violet Night 霓虹紫夜空" (ui-ux-pro-max 检索方向: 霓虹紫 + 深靛夜空)。
 //! 规范文档: 源码根目录 design.md (新页面开发前必读)。
 //!
 //! 设计原则 (源自 egui 生态侦察 + Fluent/Linear 规范研究 + 设计审计):
@@ -106,60 +106,60 @@ impl Theme {
         egui::FontFamily::Name("Bold".into())
     }
 
-    /// 暗色: 蓝调深灰三阶 + indigo 强调。
+    /// 暗色: 深靛夜空三阶 + 霓虹紫强调 (v4, 设计系统检索方向)。
     pub fn dark() -> Self {
         Self {
             dark: true,
-            bg: egui::Color32::from_rgb(11, 13, 17),        // #0B0D11 (Linear #08090A 带蓝相)
-            surface: egui::Color32::from_rgb(20, 22, 28),   // #14161C (slate2 系)
-            card: egui::Color32::from_rgb(26, 29, 37),      // #1A1D25 (raised)
-            card_alt: egui::Color32::from_rgb(33, 36, 46),  // #21242E
-            faint: egui::Color32::from_rgb(41, 45, 57),     // #292D39 (悬停层)
-            extreme: egui::Color32::from_rgb(8, 9, 13),     // #08090D
+            bg: egui::Color32::from_rgb(15, 15, 35),        // #0F0F23 深靛夜空
+            surface: egui::Color32::from_rgb(22, 21, 43),   // #16152B
+            card: egui::Color32::from_rgb(30, 28, 53),      // #1E1C35 (raised)
+            card_alt: egui::Color32::from_rgb(39, 37, 64),  // #272540
+            faint: egui::Color32::from_rgb(44, 42, 72),     // #2C2A48 (悬停层)
+            extreme: egui::Color32::from_rgb(10, 10, 26),   // #0A0A1A
             stroke: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),        // 白 8.6% 分隔/描边
             stroke_strong: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 50), // 白 20% 悬停/浮层
-            accent: egui::Color32::from_rgb(108, 124, 255),   // #6C7CFF 电光靛蓝 (更鲜明)
-            accent_hover: egui::Color32::from_rgb(139, 152, 255), // #8B98FF
-            accent_soft: egui::Color32::from_rgba_unmultiplied(108, 124, 255, 46), // 18% subtle bg
-            accent_text: egui::Color32::from_rgb(168, 178, 255), // #A8B2FF
-            title: egui::Color32::from_rgb(240, 242, 247),  // #F0F2F7
-            heading: egui::Color32::from_rgb(220, 224, 234), // #DCE0EA
-            text: egui::Color32::from_rgb(192, 197, 212),   // #C0C5D4
-            text_weak: egui::Color32::from_rgb(154, 162, 184), // #9AA2B8
-            hint: egui::Color32::from_rgb(130, 138, 160),   // #828AA0 (card 上 ≥4.9:1)
-            good: egui::Color32::from_rgb(61, 214, 140),    // #3DD68C
-            good_soft: egui::Color32::from_rgba_unmultiplied(61, 214, 140, 26),
-            bad: egui::Color32::from_rgb(229, 72, 77),      // #E5484D (Radix red9)
-            bad_soft: egui::Color32::from_rgba_unmultiplied(229, 72, 77, 26),
-            warn: egui::Color32::from_rgb(255, 178, 36),    // #FFB224
-            warn_soft: egui::Color32::from_rgba_unmultiplied(255, 178, 36, 26),
-            info: egui::Color32::from_rgb(76, 196, 230),    // #4CC4E6
+            accent: egui::Color32::from_rgb(139, 92, 246),    // #8B5CF6 霓虹紫 (暗底更亮)
+            accent_hover: egui::Color32::from_rgb(167, 139, 250), // #A78BFA
+            accent_soft: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 46), // subtle bg
+            accent_text: egui::Color32::from_rgb(196, 181, 253), // #C4B5FD
+            title: egui::Color32::from_rgb(244, 242, 251),  // #F4F2FB
+            heading: egui::Color32::from_rgb(226, 222, 239), // #E2DEEF
+            text: egui::Color32::from_rgb(200, 196, 220),   // #C8C4DC
+            text_weak: egui::Color32::from_rgb(162, 157, 189), // #A29DBD
+            hint: egui::Color32::from_rgb(139, 134, 168),   // #8B86A8 (card 上 ≥5:1)
+            good: egui::Color32::from_rgb(52, 211, 153),    // emerald-400
+            good_soft: egui::Color32::from_rgba_unmultiplied(52, 211, 153, 26),
+            bad: egui::Color32::from_rgb(244, 63, 94),      // #F43F5E (rose-500)
+            bad_soft: egui::Color32::from_rgba_unmultiplied(244, 63, 94, 26),
+            warn: egui::Color32::from_rgb(251, 191, 36),    // amber-400
+            warn_soft: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 26),
+            info: egui::Color32::from_rgb(56, 189, 248),    // sky-400
             trigger_fg: egui::Color32::from_rgb(252, 211, 77),  // amber-300
             trigger_bg: egui::Color32::from_rgba_unmultiplied(252, 211, 77, 24),
             target_fg: egui::Color32::from_rgb(125, 211, 252),  // sky-300
             target_bg: egui::Color32::from_rgba_unmultiplied(125, 211, 252, 22),
-            btn_primary: egui::Color32::from_rgb(90, 100, 242),  // #5A64F2 (白字 4.9:1, 电光感)
-            btn_secondary: egui::Color32::from_rgb(41, 45, 57), // faint
-            btn_secondary_text: egui::Color32::from_rgb(206, 211, 222),
-            btn_danger: egui::Color32::from_rgb(196, 60, 72),
+            btn_primary: egui::Color32::from_rgb(124, 58, 237), // #7C3AED (白字 5.9:1)
+            btn_secondary: egui::Color32::from_rgb(44, 42, 72), // faint
+            btn_secondary_text: egui::Color32::from_rgb(214, 210, 232),
+            btn_danger: egui::Color32::from_rgb(225, 29, 72), // #E11D48 (白字 4.7:1)
             motor_l: egui::Color32::from_rgb(251, 146, 60),   // orange-400
             motor_r: egui::Color32::from_rgb(248, 113, 113),  // red-400
         }
     }
 
-    /// 亮色: 冷白三阶 + indigo 强调 (深档保证对比)。
+    /// 亮色: 蓝白基调 (用户偏好) + 靛蓝强调 (深档保证对比)。
     pub fn light() -> Self {
         Self {
             dark: false,
             bg: egui::Color32::from_rgb(244, 245, 247),      // #F4F5F7
-            surface: egui::Color32::from_rgb(236, 238, 241), // #ECEEF1 (Linear 控件灰系)
+            surface: egui::Color32::from_rgb(236, 238, 241), // #ECEEF1
             card: egui::Color32::from_rgb(255, 255, 255),
             card_alt: egui::Color32::from_rgb(246, 247, 249),
             faint: egui::Color32::from_rgb(231, 233, 238),   // #E7E9EE
             extreme: egui::Color32::from_rgb(255, 255, 255),
-            stroke: egui::Color32::from_rgb(226, 228, 231),   // #E2E4E7 (Linear 实测控件边)
+            stroke: egui::Color32::from_rgb(226, 228, 231),   // #E2E4E7
             stroke_strong: egui::Color32::from_rgb(208, 213, 224), // #D0D5E0 hover 边
-            accent: egui::Color32::from_rgb(79, 85, 232),    // #4F55E8 电光靛蓝 (更鲜明)
+            accent: egui::Color32::from_rgb(79, 85, 232),    // #4F55E8 电光靛蓝 (白底 5.2:1)
             accent_hover: egui::Color32::from_rgb(91, 98, 242), // #5B62F2
             accent_soft: egui::Color32::from_rgba_unmultiplied(79, 85, 232, 26),
             accent_text: egui::Color32::from_rgb(63, 69, 208), // #3F45D0 (白底 6.4:1)

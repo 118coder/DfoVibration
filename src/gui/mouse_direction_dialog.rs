@@ -35,7 +35,7 @@ impl MouseDirectionDialog {
             if dark_mode {
                 (
                     egui::Color32::from_rgb(20, 22, 28),     // 对话框背景 #11131C
-                    egui::Color32::from_rgb(152, 162, 255),  // 标题强调紫 #7C8CF8
+                    egui::Color32::from_rgb(196, 181, 253),  // 标题强调紫 #7C8CF8
                     egui::Color32::from_rgb(41, 45, 57),     // 按钮底
                     egui::Color32::from_rgb(51, 56, 70),     // 按钮悬停
                     egui::Color32::from_rgb(237, 238, 240),  // 高对比文字
@@ -44,7 +44,7 @@ impl MouseDirectionDialog {
             } else {
                 (
                     egui::Color32::from_rgb(255, 255, 255),  // 对话框背景 #FFFFFF
-                    egui::Color32::from_rgb(94, 106, 210),   // 标题强调紫 #6C5CE7
+                    egui::Color32::from_rgb(124, 58, 237),   // 标题强调紫 #6C5CE7
                     egui::Color32::from_rgb(231, 233, 238),  // 按钮底
                     egui::Color32::from_rgb(208, 213, 224),  // 按钮悬停
                     egui::Color32::from_rgb(74, 80, 96),     // 高对比文字

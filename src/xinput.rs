@@ -89,6 +89,25 @@ unsafe extern "system" fn fallback_enable(on: i32) {
     unsafe { XInputEnable(on != 0) }
 }
 
+/// xinput1_3 专用 Enable 句柄 (惰性解析一次)。
+/// XInputEnable 在 xinput1_4 / xinput9_1_0 (Win8+) 是文档明确的空操作,
+/// 只有 xinput1_3 的 Enable 能真正切断/恢复手柄电源 —— 蓝牙/国产手柄
+/// 的「强制重新握手」完全依赖它。本机 (Win11) 存在 1_3, 正常返回 Some。
+fn xinput13_enable() -> Option<XInputEnableFn> {
+    static F: OnceLock<Option<XInputEnableFn>> = OnceLock::new();
+    *F.get_or_init(|| unsafe {
+        let wide: Vec<u16> = "xinput1_3.dll".encode_utf16().chain([0]).collect();
+        let Ok(h) = LoadLibraryW(PCWSTR(wide.as_ptr())) else {
+            return None;
+        };
+        if h.is_invalid() {
+            return None;
+        }
+        GetProcAddress(h, s!("XInputEnable"))
+            .map(|f| std::mem::transmute::<_, XInputEnableFn>(f))
+    })
+}
+
 /// 供 vibration.rs 输出端复用同一 DLL 实例 (输入与震动必须同源, 否则部分
 /// 国产手柄会出现"输入有反应、马达没反应")。
 pub unsafe fn xinput_get_state(slot: u32, state: *mut XINPUT_STATE) -> u32 {
@@ -274,28 +293,48 @@ impl XInputHandler {
         self.device_states.iter().any(|d| d.is_some())
     }
 
+    /// 处理重置请求: 清应用层缓存 + (经 xinput1_3) 真实切断/恢复手柄电源。
+    fn handle_xinput_reset(&mut self) {
+        // 切断电源: 优先 xinput1_3 的 Enable; 1_4/9_1_0 的同名函数是空操作,
+        // 只调它们会让「重置」退化成清缓存 (实测: 重置无效)。
+        let en13 = xinput13_enable();
+        unsafe {
+            match en13 {
+                Some(f) => f(0),
+                None => (api().enable)(0),
+            }
+        }
+        for user_index in 0..XUSER_MAX_COUNT {
+            let idx = user_index as usize;
+            if let Some(mut ds) = self.device_states[idx].take() {
+                // 重置前补发 Released: 已派发 Pressed 的组合不回收 →
+                // worker 侧连发永不停/注入键悬空
+                if let Some(pool) = self.state.get_worker_pool().cloned() {
+                    for combo in ds.active_combos.drain(..) {
+                        pool.dispatch(InputEvent::Released(InputDevice::XInputCombo {
+                            device_type: DeviceType::Gamepad(ds.vid_pid.0),
+                            button_ids: combo,
+                        }));
+                    }
+                }
+                self.ownership.release_device(ds.vid_pid);
+            }
+        }
+        // 真实断电窗口: 立刻恢复会让握手来不及断开
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        unsafe {
+            match en13 {
+                Some(f) => f(1),
+                None => (api().enable)(1),
+            }
+        }
+    }
+
     /// Polls all XInput devices for state changes.
     pub fn poll(&mut self) {
         /* 蓝牙/手柄重置请求: XInputEnable 开关 + 清空设备缓存, 强制重新握手 */
         if crate::input_manager::take_xinput_reset() {
-            unsafe { (api().enable)(0); }
-            for user_index in 0..XUSER_MAX_COUNT {
-                let idx = user_index as usize;
-                if let Some(mut ds) = self.device_states[idx].take() {
-                    // 重置前补发 Released: 已派发 Pressed 的组合不回收 →
-                    // worker 侧连发永不停/注入键悬空
-                    if let Some(pool) = self.state.get_worker_pool().cloned() {
-                        for combo in ds.active_combos.drain(..) {
-                            pool.dispatch(InputEvent::Released(InputDevice::XInputCombo {
-                                device_type: DeviceType::Gamepad(ds.vid_pid.0),
-                                button_ids: combo,
-                            }));
-                        }
-                    }
-                    self.ownership.release_device(ds.vid_pid);
-                }
-            }
-            unsafe { (api().enable)(1); }
+            self.handle_xinput_reset();
         }
 
         // Check and clear cache if configuration was reloaded
@@ -1369,6 +1408,26 @@ impl XInputHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_xinput13_enable_resolves() {
+        // Win10/11 自带 xinput1_3.dll: 「重置手柄」依赖它的真实 XInputEnable
+        // (1_4/9_1_0 上该函数是空操作)
+        assert!(
+            xinput13_enable().is_some(),
+            "xinput1_3.dll 应可加载并导出 XInputEnable"
+        );
+    }
+
+    #[test]
+    fn test_reset_request_wiring() {
+        crate::input_manager::request_xinput_reset();
+        assert!(crate::input_manager::take_xinput_reset(), "请求应被取到");
+        assert!(
+            !crate::input_manager::take_xinput_reset(),
+            "取走即清除, 不应重复消费"
+        );
+    }
 
     #[test]
     fn test_hash_vid_pid_static() {

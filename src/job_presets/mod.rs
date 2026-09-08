@@ -244,10 +244,57 @@ pub fn list_export_files(prefix: &str) -> Vec<String> {
     out
 }
 
+/* ── 导入值上限 (2026-09-08) ─────────────────────────────────────
+ * 导出文件可被手改/损坏: 此前解析只查数组长度, u32::MAX 级数值会
+ * 直送震动引擎 (幅度/时长无界 → 手柄狂震/电机长鸣), rank_lr 负数
+ * 经 `as u32` 回绕成天文数字。此处按震动页滑块范围统一钳位;
+ * 程序生成的合法导出永远在范围内, 不受影响。 */
+
+/// ±100 权重以 u32 二补码存储 (与 item_lr/rank_lr 滑块 -100..=100 一致)
+fn clamp_signed_u32(v: u32) -> u32 {
+    (v as i32).clamp(-100, 100) as u32
+}
+
+fn clamp_params(p: &mut [u32]) {
+    /* 上限 = 震动页滑块 hi; 未列出的索引均为 % 类 (0..=100) */
+    let hi = |idx: usize| -> u32 {
+        match idx {
+            5 => 500,        // 衰减时间 ms
+            11 => 500,       // 飘字最小间隔 ms
+            19 | 20 => 300,  // 马达输出曲线 %
+            21 => 20,        // 移动积累速率 %/秒
+            23 => 800,       // 移动步频 ms
+            28 => 20,        // 移动最低输出阈值 %
+            30 => 1500,      // 密度检测窗口 ms
+            31 => 80,        // 密度窗口期降幅 %
+            32 => 3000,      // 密度恢复判定 ms
+            34 => 800,       // 密度恢复平滑 ms
+            35..=38 => 150,  // 各类事件衰减 ms
+            39 => 200,       // 装备特效衰减 ms (39 槽位另有引擎冲突, 见 HANDOFF)
+            40 => 1000,      // DOT 持续反馈 ms
+            41 => 600,       // 装备特效节奏周期 ms
+            42 => 1000,      // 爆发窗口 ms
+            44 => 2000,      // 反击窗口 ms
+            45 => 5000,      // 连击统计窗口 ms
+            46 => 10000,     // 空闲判定 ms
+            47 => 500,       // 连击放大上限 x
+            48 => 300,       // 连击增强斜率
+            50 => 300,       // 自适应阈值 ms
+            52 => 1000,      // 自适应上限间隔 ms
+            54 => 500,       // 特殊攻击后静默 ms
+            55 => 300,       // 反击强化倍数 %
+            _ => 100,
+        }
+    };
+    for (idx, v) in p.iter_mut().enumerate() {
+        *v = (*v).min(hi(idx));
+    }
+}
+
 /// 解析职业导出文件 (规范: base_job/class_name/params/rank_lr/rank_type_gain/...)
 pub fn parse_job_export(path: &str) -> Option<ImportedJob> {
     let content = std::fs::read_to_string(path).ok()?;
-    let job: ImportedJob = toml::from_str(&content).ok()?;
+    let mut job: ImportedJob = toml::from_str(&content).ok()?;
     if job.base_job.is_empty()
         || job.class_name.is_empty()
         || job.params.len() != 60
@@ -256,6 +303,19 @@ pub fn parse_job_export(path: &str) -> Option<ImportedJob> {
     {
         return None;
     }
+    clamp_params(&mut job.params);
+    for v in &mut job.rank_lr {
+        *v = (*v).clamp(-100, 100);
+    }
+    for v in &mut job.rank_type_gain {
+        *v = (*v).min(100);
+    }
+    job.rank_level_gain = job.rank_level_gain.min(100);
+    job.rank_duration = job.rank_duration.min(1000);
+    job.out_smooth = job.out_smooth.min(100);
+    job.throttle_window = job.throttle_window.min(10000);
+    job.throttle_max = job.throttle_max.min(30);
+    job.throttle_dense_ratio = job.throttle_dense_ratio.min(100);
     Some(job)
 }
 
@@ -297,9 +357,28 @@ pub struct ImportedVibration {
 /// 解析通用震动导出文件
 pub fn parse_vibration_export(path: &str) -> Option<ImportedVibration> {
     let content = std::fs::read_to_string(path).ok()?;
-    let v: ImportedVibration = toml::from_str(&content).ok()?;
+    let mut v: ImportedVibration = toml::from_str(&content).ok()?;
     if v.params.len() != 60 || v.item_lr.len() != 26 || v.rank_lr.len() != 30 || v.rank_type_gain.len() != 15 {
         return None;
     }
+    clamp_params(&mut v.params);
+    for x in &mut v.item_lr {
+        *x = clamp_signed_u32(*x);
+    }
+    for x in &mut v.rank_lr {
+        *x = clamp_signed_u32(*x);
+    }
+    for x in &mut v.rank_type_gain {
+        *x = (*x).min(100);
+    }
+    v.rank_level_gain = v.rank_level_gain.min(100);
+    v.rank_duration = v.rank_duration.min(1000);
+    v.out_smooth = v.out_smooth.min(100);
+    v.throttle_window_ms = v.throttle_window_ms.min(10000);
+    v.throttle_max_hits = v.throttle_max_hits.min(30);
+    v.throttle_dense_ratio = v.throttle_dense_ratio.min(100);
+    v.random_gain = v.random_gain.min(100);
+    v.motor_l_gain = v.motor_l_gain.min(100);
+    v.motor_r_gain = v.motor_r_gain.min(100);
     Some(v)
 }

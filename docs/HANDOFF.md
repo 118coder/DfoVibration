@@ -12,31 +12,49 @@
 - **震动**: DLL 采集游戏战斗事件 → Xbox 手柄马达, 参数可调
 - 技术栈: **Rust + egui 0.33.3 + eframe(glow) + windows-rs**, 单文件 exe
 
-目录 `E:\网页小工具\DfoVibration V3版本\`:
-- `SorahkDFO源码\` — 全部源码 (GUI 约 9k 行, 设计系统在 `src/gui/theme.rs`) — **独立 git 仓库 (DfoVibration 主程序)**
-- `DLL源码\` — 采集 DLL 源码 — **独立 git 仓库 (DfoVibration-DLL)**
-- `研究文档\` — 逆向研究资料 — **独立 git 仓库 (逆向研究, 含 00总览/会话记录/IDA 报告)**
-- `SorahkDFO-新UI版.exe` — **最新交付版** (文件名沿用旧名, 显示名已改 DfoVibration-V3)
-- `Config.toml` / `Vibration.toml` — 用户配置 (App 自管理)
+仓库布局 (2026-09-08 拆分为三个独立 git 仓库, 父目录是纯运行时目录):
+- `SorahkDFO源码\` — **主程序仓库** (本目录): 全部源码 + docs 全套文档 + UI部件
+- `DLL源码\` — **DfoVibration-DLL 仓库**: 采集 DLL 源码 (含 vib_protocol.h ABI 契约)
+- `研究文档\` — **逆向研究仓库**: IDA 报告/分析合集/会话记录/00总览(接手必读)
+- `SorahkDFO-新UI版.exe` — **最新交付版** (显示名 DfoVibration-V3)
+- `Config.toml` / `Vibration.toml` / `JobVibration.toml` — 用户配置 (App 自管理, serde 全字段落盘)
 
-> 2026-09-07 文档重组: 原父目录「开发文档」已按归属并入本仓库 docs/ (震动规范/全职业预设/稳定性记录/UI规范/使用说明/更新说明) 与研究仓库 (00总览/会话记录); UI部件 移入本仓库。
+构建目录: `E:\Sorahk-build\` (中文路径 MinGW 链接会失败, 必须用此 ASCII 目录)。
+日常快速自测: `cargo build --profile iter` (无 LTO, 增量); **交付一律 `--release`**。
 
-构建目录: `E:\Sorahk-build\` (中文路径 MinGW 链接会失败, 必须用此 ASCII 目录)
+## 二、当前状态 (2026-09-08)
 
-## 二、当前状态 (2026-09-07 凌晨)
+✅ **417→420 测试全绿** (+3 导入钳位回归) · 最新 exe 已交付 (2026-09-08 晚: 潜藏 bug 修复轮)
+✅ **潜藏 bug 修复轮 (2026-09-08 晚, 详见第八节 18 条)**: avx2 转义 UB+乱码 / 震动导入值无上限 两处真修复;
+   新发现 params[39] 引擎槽位冲突 (需 schema 扩容, P1 待办); 旧记录「ownership 竞态」细节已随旧版 HANDOFF 丢失
+⚠ **弹窗收编已回退 (fdc0725 revert 53e4d0d, 用户决定)**: 四窗迁到 modal_window 后全部塌成点状小窗。
+   **modal_window 构建器本身存在未解 bug** (见第八节 17 条调查记录), 收编遗留项冻结: 修复前不要再把任何弹窗迁进去;
+   鼠标×2 弹窗同用此构建器, 疑似同样受影响, 未实测。
+✅ 设计系统 **v4 "Violet Night"**: 深色 = 深靛夜空紫韵 (bg #0F0F23 / accent #8B5CF6);
+   亮色 = **蓝白基调** (bg #F4F5F7 / accent #4F55E8, 用户明确偏好, 勿改紫)
+✅ 手柄 SVG 双变体: 深色版黑机身+**白字母**, 亮色版白机身+**深灰字母**;
+   **XABY 彩色字母为用户明确要求保留 (不准改!)**; 机身只允许黑白灰
+✅ 设计规范: design.md (v3.2 按钮语义层级强制 + v4 配色说明)
 
-✅ 174 lib tests 全绿 · 最新 exe 已交付 (构建 00:53 后)
-✅ UI 风格 v3.1 "Obsidian Console Vivid" (规范见 `design.md`, 与 theme.rs 完全同步)
-✅ 用户已实际使用并逐项验收; 唯一未决: 各项微调 (1px 级) 是否合意, 等用户反馈
+### 今日全部成果 (按提交序, 均已验证):
+53e4d0d 弹窗收编四窗 (**已回退 by fdc0725, 构建器点状 bug**) · 64fb370 XABY还原 ·
+1820f15 main_window(4797行)拆五模块 · e7f927d modal构建器+iter profile ·
+6fae285 v4配色 · ed5dbdd 亮色蓝白+手柄纯黑白 · c780794 热点三层重绘 ·
+5f41dc2 手柄双主题 · 34d15ab 紫色圆点图标+托盘加固 · 78e1bac 重置真修复(xinput1_3) ·
+9b5f1d8 捕获确认/取消 · db1418f Esc绑定 · 1c864f6 白名单页 ·
+6930677 DFO引导/?按钮/多DLL · ff30725 托盘隐藏式修复 · 早期: serde配置迁移+卡键P0批次
 
-### 已完成大项 (时间序)
-1. UI 全量重构: 侧边栏导航/类型系统/自绘标题栏/Phosphor 图标/极简模式
-2. v3.0 风格迭代: Linear 实证令牌、深浅双主题、真粗体字体族、卡片柔影、顶部微光、悬停动效 (12 子代理调研)
-3. v3.1: 色板提饱和、设置单齿轮、改名 DfoVibration-V3、极简震动预设分段开关、窗口位置记忆
-4. v3.2: 100% 小窗强制、两级职业选择、连发映射预设管理卡(删除双确认)、首次运行指引、预设逻辑重构
-5. v3.3: 全职业两级 combo 垂直对齐(等高槽位)、剑魂微调(显式矩形 class_nudge)、移除「不应用」、分段切换直接启用、**双重 DPI 换算修复**
-6. v3.4 (2026-09-07): 遗留缺陷批次 — 共享内存版本校验(VIB_SHM_VERSION=2)/断连整引擎重置/震动输出自动发现槽位(修硬编码 0 号槽)/u32 毫秒回绕安全比较 before()(49.7 天卡死)/EVENT_BACKLOG 发送失败回收/托盘通知通道 OnceLock→Mutex(重启可换 sender)/config serde 全字段落盘迁移 + roundtrip 测试/卡键 P0 批次(闸门放行抬起/worker 暂停补发 release/XInput 断连派发 Released/hook FFI catch_unwind/重启容错)/职业导入长度校验/振动 params 启动恢复
-7. v3.2 视觉 (2026-09-07): 按钮语义层级强制 (规范见 design.md v3.2 增补) — 设置弹窗 保存绿/取消红 → primary/secondary, 三套强调色字面量收敛到主题令牌, 测试评分震动按钮入体系
+### 功能清单 (全部已交付): 白名单独立页 / 两段式首启弹窗(DFO询问→使用说明) /
+标题栏「?」/ 手柄快速捕获确认取消+Esc绑定 / XInput 多DLL探测+1_3真实重置 /
+托盘隐藏式最小化+Win32恢复 / 手柄双主题+热点重绘 / 配置serde全字段落盘+roundtrip
+
+### 遗留 (下一会话按此接):
+1. **弹窗收编 (冻结中)**: 前置 = 先查明 modal_window 构建器点状塌缩根因 (见第八节 17 条), 否则不要动
+2. **C1 VibrationParams**: ~50 个震动原子收拢为深模块 (触点多, 需独立会话)
+3. **params[39] 槽位冲突 schema 扩容 (P1)**: P_DEC_EFFECT 与 P_MOVE_BOOST_WIN 共用 39, 需 params 60→61 (见第八节 18 条③)
+4. C6 job_presets TOML 数据驱动 / C7 i18n 透传 getter 删除 / 双胞胎弹窗完全合并
+5. 待实机验证: 重置蓝牙重连效果 / 国产手柄多DLL适配 / X→托盘→恢复全流程
+6. 导入值上限 (已修 18 条②) / avx2 UB (已修 18 条①) / ownership 竞态 (记录丢失, 见 18 条④)
 
 ## 三、构建与验证流程 (铁律)
 
@@ -135,3 +153,14 @@ design.md              设计规范 (新页面必读, 与 theme.rs 同步维护)
 11. 图标 + 托盘加固 (2026-09-08): resources/sorahk.ico 换为主题紫 #6C7CFF 圆角方块 (纯 Python 生成 PNG 条目式 ICO, 16-256 七尺寸, 3.2KB); 托盘四条外部建议核实: V2 cbSize 与 NIM_ADD 检查早已存在、NIF_SHOWTIP 本就不在代码中, 仅采纳 restore_main_window (FindWindowW 按视口标题 "DfoVibration-V3 连发与映射工具" → ShowWindowAsync(SW_RESTORE) → SetForegroundWindow, 托盘双击/菜单"显示窗口"/"关于"三入口调用, 之后仍 request_show_window 双保险); sync_and_build.sh 补 resources/build.rs 同步 (此前漏拷导致图标改动不生效)。
 12. 托盘最小化真修复 (2026-09-08): 根因 = 旧实现「最小化到托盘」发 Minimized(true) (最小化到任务栏), 而 winit set_minimized(false) 在 Win11 恢复常静默失效 (上游已知问题)。修复 = 改为 ViewportCommand::Visible(false) 真隐藏 (任务栏按钮消失), 恢复 = 托盘侧 Win32 直连 (restore_main_window) + update 轮询 Visible(true)/Minimized(false)/Focus 三连; FindWindowW 失败会写 TRAY_RESTORE 崩溃日志便于排查。端到端验证: SW_HIDE → 托盘同款 Win32 恢复调用 → 窗口可见且内容完整重绘。
 13. 手柄图双主题 (2026-09-08): resources/gamepad-light.svg (亮色变体, 仅 <style> 颜色不同, 几何/viewBox 与 dark 版完全一致 — 热点坐标共用); load_gamepad_texture(ctx, dark) 双变体嵌入, 纹理按主题缓存 (SorahkGui.gamepad_texture_dark 标记, 切主题自动重渲染)。改手柄颜色时两个文件都要改, 且只许动 <style>, 不许动几何。
+14. 手柄热点重绘 (2026-09-08): 热点从单层半透明圆改为「玻璃底 + 主环 + 中心点」三层结构; 状态语义: 选中=accent 环+柔光放大 / 已配置=类色 2.0 实线环+实心点 / 空槽=类色 1.4 细线+淡点 / 悬停=柔光+150ms 放大 / 捕获=雷达扩散环; 摇杆按下 (StickClick) 改为隐形热点 (不绘制, 保留命中优先); 文字带微投影且主题感知配色。所有绘制在 gamepad_mapping.rs render_gamepad_svg 内, 几何/命中逻辑未动。
+15. 重置手柄真修复 (2026-09-08): 根因 = XInputEnable 在 xinput1_4/9_1_0 (Win8+) 是空操作, 多 DLL 探测选中 1_4 后「重置」退化成清缓存。修复 = xinput.rs 新增 xinput13_enable() (惰性加载 xinput1_3.dll 专取其真实 Enable) + handle_xinput_reset() (1_3 切断电源 → 150ms 断电窗口 → 恢复, 期间清缓存+补发 Released); 回归测试: 1_3 可解析 + 重置接线。
+16. 手柄快速捕获确认/取消 (2026-09-08): 捕获不再立即写映射 — SorahkGui.quick_gamepad_pending (槽位 id, is_trigger, 输入名) 暂存捕获结果, 槽位面板顶部渲染「⚠ 待确认」条 (✓ 确认应用 / ✕ 取消, 确认才 save+reload_config); 新捕获开始/Esc 自动丢弃待确认; capture 处理函数 (settings_dialog.rs) 只暂存不再直接落盘。
+17. 捕获 Esc 键支持 (2026-09-08): 物理 Esc = 取消捕获 (不变); 槽位面板捕获等待态新增「或直接绑定 Esc 键」按钮 → 结果进待确认条 (确认应用才生效)。ESC 键名在 string_to_vk 已支持 ("ESCAPE"|"ESC")。连发编辑行的 TextEdit 本就可手输键名, 此改动补齐了快速捕获 (无文本框) 这条路径。
+16b. 亮色主题回调蓝白 + 手柄纯黑白 (2026-09-08 用户偏好): light() 恢复蓝白基调 (bg #F4F5F7 / accent #4F55E8 电光靛蓝) — 深浅两主题各自成立 (dark=Violet Night, light=蓝白); 手柄双 SVG 移除彩色功能键 (st9-12 字母: dark→#F5F5F5, light→#2B2B2B), 亮色机身蓝灰调全部转纯中性灰。规则: 手柄 SVG 只允许黑白灰。
+17. **弹窗收编回退 + modal_window 点状 bug 调查记录 (2026-09-08, 未结案)**: 53e4d0d 把设置/设备/关于/关闭四窗迁到 theme::modal_window 后, 四窗全部塌成 ~24px 点状小窗 (用户实测 + 离屏复现均确认), 已 revert (fdc0725) 回内联样板。调查事实 (全部离屏实测, 复现工具 = work/offscreen_capture.ps1: 启动→移屏外(2600,100)→PrintWindow 抓帧): ① 点确认为经由构建器渲染的弹窗本身 (fill 换红点即变红); ② 二分排除法: id 加 `.with("modal_win")` 后缀 / 标题文本 / radius16+stroke NONE+shadow 三件套 —— 逐项加回内联链全部正常渲染, 与构建器逐字等价却一个点一个全尺寸; ③ 唯一未排除变量 = 「闭包经函数参数转发」(builder 内 `.show(ctx, |ui| add_contents)` vs 内联闭包); ④ 海森堡: 给构建器加每帧文件日志后点状消失, 日志显示此时 egui 布局完全健康 (rect 512×499 居中), 即点状 = 布局正常但绘制塌缩, 与首帧 sizing pass / Area state.size 卡死类机制吻合但未定案; ⑤ egui 源码事实: Window::fixed_size 只作用于内部 Resize 容器 (不设 area.default_size), 窗口可见尺寸实取 Resize::end 的 last_content_size; CollapsingState::show_body_unindented 在 openness≤0 时返回 None (内容不渲染); animate_bool 新 id 首调即返回目标值 1.0。⑥ 鼠标×2 弹窗同用此构建器, 自 e7f927d 起可能一直是点状, 无人开过未察觉。结论: 修复需独立会话专攻 (建议方向: 复现时对比两版的 egui Area state.size / sizing pass 时序), 修复前构建器禁用。
+18. **潜藏 bug 修复轮 (2026-09-08 晚, 睡眠时段自主执行)**: 按 diagnosing-bugs 纪律「红灯测试→修复→绿灯」闭环:
+    ① **tray.rs xml_escape_avx2 双 bug 修复**: 旧实现 32 字节数据块用 `from_utf8_unchecked` 整块 push (跨块汉字切出非法 UTF-8 = UB), 且尾部兜底按 `byte as char` 处理 (非 ASCII 全变 Latin-1 乱码)。修复 = SIMD 块加纯 ASCII 守卫 (`_mm256_movemask_epi8(chunk)` 高位检查, 混入非 ASCII 即断出), 尾部改 `xml_escape_scalar(&s[i..])` 字符级转义 (i 恒为字符边界)。回归测试 `xml_escape_fast_matches_scalar` (cfg avx2, tray.rs 在 **bin** crate 非 lib, 测试要 `cargo test --bin sorahk` 跑): 红灯确认 case2 跨块汉字不一致 → 修复后 8/8 绿 (RUSTFLAGS="-C target-feature=+avx2")。发布构建未开 avx2 = 此前该路径是死代码, 无线上影响。
+    ② **震动导入值上限修复 (job_presets/mod.rs)**: parse_job_export / parse_vibration_export 此前只查数组长度不查数值范围, u32::MAX 级数值直送引擎, rank_lr 负数 `as u32` 回绕。新增 `clamp_params` (60 槽逐一按震动页滑块 hi 钳位, 未列出索引按 % 类 100) + `clamp_signed_u32` (±100 二补码), 两个解析器收口。回归测试 4 个 (越界钳位/合法值不误伤/二补码保留/长度校验) 全绿, 全量 420/0。同时修了一个编译错 (i32 引用上 clamp 需 `(*v)`)。
+    ③ **新发现 P1 待办 — params[39] 引擎槽位冲突**: vibration.rs `P_DEC_EFFECT=39` (装备特效衰减) 与 `P_MOVE_BOOST_WIN=39` (移动积累增强窗口, v22 新增) 共用同一槽, 震动页两个滑块写同一位, 后动者覆盖前者; 0..59 无空闲位, 正解需 params 60→61 / advanced 41→42 schema 扩容 (牵动导出格式 len==60 校验 / 内置预设 / config 数组), 需专项会话。
+    ④ **旧记录核实**: 「ownership 竞态」细节随旧版 HANDOFF 重写丢失 (全历史 blob 检索只剩一句话), 候选位置 = temp_config 字段级合并 / 原子双写, 无红灯判据不动手; state.rs CaptureMode from_str().unwrap() 为假警报 (Err=Infallible 永不失败); clippy 无 correctness 级新发现 (93 条全是 unused import / cast); rawinput from_raw_parts 越界防护已在 (v1.6 继承)。

@@ -1,227 +1,979 @@
 # ═══════════════════════════════════════════════════════
 #  🌸 Sorahk Configuration File 🌸
 # ═══════════════════════════════════════════════════════
-
-# ─── General Settings ───
-show_tray_icon = true        # Show system tray icon on startup
-show_notifications = true    # Enable/disable system notifications
-always_on_top = false        # Keep window always on top of other windows
-dark_mode = false            # Use dark theme (false = light theme, true = dark theme)
-language = "English"         # UI language: "English", "SimplifiedChinese", "TraditionalChinese", "Japanese"
-
-# ─── Performance Settings ───
-input_timeout = 10           # Input timeout in ms
-interval = 5                 # Default repeat interval between keystrokes (ms)
-event_duration = 5           # Duration of each simulated key press (ms)
-worker_count = 0             # Number of turbo workers (0 = auto-detect based on CPU cores)
-
-# ─── XInput Settings ───
-xinput_capture_mode = "DiagonalPriority"  # XInput capture mode: "DiagonalPriority", "MostSustained", "LastStable"
-                                          # DiagonalPriority: Prioritizes diagonal stick directions over straight directions
-                                          # MostSustained: Captures the most sustained input pattern
-                                          # LastStable: Captures the last stable input before release
-                                          # Note: Compile with RUSTFLAGS="-C target-feature=+avx2" for AVX2 optimizations
-
-# ─── Control Settings ───
-switch_key = "DELETE"        # Reserved key to toggle SoraHK behavior
-
-# ─── Process Whitelist ───
-# Process whitelist (empty = all processes enabled)
-# Only processes in this list will have turbo-fire enabled
-process_whitelist = []       # Example: ["notepad.exe", "game.exe"]
-
-# ─── Input Mappings ───
-# Input mapping definitions (supports keyboard, mouse, and HID devices)
-# Supported mouse buttons: LBUTTON, RBUTTON, MBUTTON, XBUTTON1, XBUTTON2
-# Key combinations: Use '+' to separate keys (e.g., "LALT+A", "RCTRL+RSHIFT+S")
-
-# Turbo Mode Behavior:
-# - turbo_enabled = true: Auto-repeat with configurable interval (for rapid fire/continuous action)
-# - turbo_enabled = false: Press-to-press, release-to-release behavior
-#   * Keyboard targets: Supports Windows key repeat (holding trigger sends repeated key presses)
-#   * Mouse button targets: Pure follow mode (press follows trigger press, release follows trigger release)
-#   * Note: event_duration is ignored in non-turbo mode
-
-# ─── Single Key Examples ───
-[[mappings]]
-trigger_key = "A"            # Physical key you press
-target_keys = ["A"]          # Key(s) that get repeatedly sent
-interval = 5                 # Override global interval
-event_duration = 5           # Override global press duration
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "B"            # Physical key you press
-target_keys = ["F"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "F1"           # Physical key you press
-target_keys = ["1"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "F2"           # Physical key you press
-target_keys = ["2"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "LSHIFT"       # Physical key you press
-target_keys = ["3"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-# ─── Key Combo Examples ───
-# Combo key mappings: Use '+' to separate keys (e.g., "LALT+A", "CTRL+SHIFT+S")
-# - Supports modifier keys: LSHIFT/RSHIFT, LCTRL/RCTRL, LALT/RALT, LWIN/RWIN
-# - Supports single modifier keys as triggers (e.g., "LSHIFT")
-# - Multiple combos with shared modifiers work simultaneously (e.g., LALT+1, RALT+2)
-# - Distinguishes left/right modifiers (e.g., "LSHIFT+1" only triggers with left Shift)
-# Uncomment to enable combo key mappings:
-# [[mappings]]
-# trigger_key = "LALT+1"     # Left ALT + 1 (won't trigger with right ALT)
-# target_keys = ["F1"]       # Auto-press F1
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "CTRL+SHIFT+F"  # Multiple modifiers
-# target_keys = ["ALT+F4"]      # Output can also be combo
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# ─── Mouse Button Examples ───
-# Uncomment to enable mouse button mappings:
-# [[mappings]]
-# trigger_key = "LBUTTON"    # Left mouse button trigger
-# target_keys = ["LBUTTON"]  # Auto-click left button
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "RBUTTON"    # Right mouse button trigger
-# target_keys = ["SPACE"]    # Press space when right-clicking
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "XBUTTON1"   # Side button 1 trigger
-# target_keys = ["F"]        # Auto-press F key
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# ─── Mouse Movement Examples ───
-# [[mappings]]
-# trigger_key = "W"          # Trigger key
-# target_keys = ["MOUSE_UP"] # Move cursor upward
-# move_speed = 5             # Speed in pixels (1-100)
-# interval = 5               # Update interval in ms
-# turbo_enabled = true       # Required for continuous movement
-
-# [[mappings]]
-# trigger_key = "S"
-# target_keys = ["MOUSE_DOWN"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# [[mappings]]
-# trigger_key = "A"
-# target_keys = ["MOUSE_LEFT"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# [[mappings]]
-# trigger_key = "D"
-# target_keys = ["MOUSE_RIGHT"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# Multiple target keys for diagonal movement (simultaneous press):
-# [[mappings]]
-# trigger_key = "Q"
-# target_keys = ["MOUSE_UP", "MOUSE_LEFT"]  # Move diagonally up-left
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# Or use built-in diagonal directions:
-# Diagonal: MOUSE_UP_LEFT, MOUSE_UP_RIGHT, MOUSE_DOWN_LEFT, MOUSE_DOWN_RIGHT
-
-# ─── Mouse Scroll Examples ───
-# [[mappings]]
-# trigger_key = "PAGEUP"       # Trigger key
-# target_keys = ["SCROLL_UP"]  # Scroll wheel upward
-# move_speed = 120             # Wheel delta (120 = standard notch)
-# interval = 5                 # Repeat interval in ms
-# turbo_enabled = true         # true = continuous, false = Windows repeat
-
-# [[mappings]]
-# trigger_key = "PAGEDOWN"
-# target_keys = ["SCROLL_DOWN"]
-# move_speed = 240             # Wheel delta (240 = 2x)
-# interval = 5
-# turbo_enabled = true
-
-# ─── HID Device Examples (Gamepads, Joysticks, Custom Controllers) ───
-# Automatic support for any HID device via GUI capture!
+# 本文件由程序自动管理: 请在 GUI 内修改设置, 手改内容会在下次保存时被覆盖。
 #
-# XInput Controllers (Xbox, compatible gamepads):
-#   Format: GAMEPAD_VID_ButtonName[+ButtonName...] (readable format)
-#   Buttons: A, B, X, Y, Start, Back, LB, RB, LS_Click, RS_Click, LT, RT
-#   D-Pad: DPad_Up, DPad_Down, DPad_Left, DPad_Right, DPad_UpLeft, DPad_UpRight, DPad_DownLeft, DPad_DownRight
-#   Left Stick: LS_Up, LS_Down, LS_Left, LS_Right, LS_LeftUp, LS_LeftDown, LS_RightUp, LS_RightDown
-#   Right Stick: RS_Up, RS_Down, RS_Left, RS_Right, RS_LeftUp, RS_LeftDown, RS_RightUp, RS_RightDown
-#   Combos: Use '+' to combine buttons (e.g., "LS_RightUp+A+B")
+# 字段速查:
+#   language = "English" / "SimplifiedChinese" / "TraditionalChinese" / "Japanese"
+#   xinput_capture_mode / rawinput_capture_mode = "DiagonalPriority" / "MostSustained" / "LastStable"
+#   组合键: 用 + 连接, 如 "LALT+1"; 左右修饰键区分: "LALT1" 只响应左 Alt
+#   鼠标按键: LBUTTON / RBUTTON / MBUTTON / XBUTTON1 / XBUTTON2
+#   鼠标移动/滚轮: MOUSE_UP / MOUSE_DOWN / MOUSE_LEFT / MOUSE_RIGHT / SCROLL_UP / SCROLL_DOWN
+#   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 "GAMEPAD_045E_LS_RightUp+A"
+#   Raw Input 设备: DEVICE_VID_PID_SERIAL_Bx.x (首次使用会在 GUI 引导激活)
 #
-# Raw Input Devices (other gamepads, joysticks):
-#   Format: DEVICE_VID_PID_SERIAL_Bx.x (with serial) or DEVICE_VID_PID_DEVxxxxxxxx_Bx.x (without serial)
-#
-# How to configure:
-# 1. Connect your device (XInput controllers work automatically, others require activation)
-# 2. First-time use for non-XInput devices: Activation dialog will appear when you press any button
-#    - Follow instructions: press and release a single button to establish baseline
-#    - Device activation data is saved automatically
-# 3. Open settings dialog, click Capture button for trigger key
-# 4. Press button(s) on your device (supports single button or combo keys)
-# 5. Release all buttons to complete capture
-#
-# XInput Examples:
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_A"              # Xbox controller A button
-# target_keys = ["SPACE"]                     # Press space
-# turbo_enabled = true                        # Enable turbo mode
+# 震动设置在旁边的 Vibration.toml; 全职业微调在 JobVibration.toml。
 
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_LS_RightUp+A"   # Left stick right-up + A button
-# target_keys = ["LCTRL+C"]                   # Press Ctrl+C
-# turbo_enabled = true                        # Enable turbo mode
+show_tray_icon = true
+show_notifications = true
+always_on_top = false
+dark_mode = false
+language = "SimplifiedChinese"
+guide_seen = true
+minimal_mode = false
+minimal_vib_preset_job = false
+dfo_player = true
+switch_key = "DELETE"
+input_timeout = 5
+interval = 5
+event_duration = 5
+worker_count = 0
+process_whitelist = [
+    "DFO.exe",
+    "DNF.exe",
+]
+whitelist_enabled = true
+hid_baselines = []
+rawinput_capture_mode = "MostSustained"
+xinput_capture_mode = "MostSustained"
+current_preset = ""
 
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_DPad_Up+B+X"    # D-Pad up + B + X buttons
-# target_keys = ["F"]                         # Auto-press F
-# turbo_enabled = true                        # Enable turbo mode
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B25996.57944"
+target_keys = ["X"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄X"
 
-# Raw Input Examples:
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_0B05_ABC123_B2.0"  # Raw Input format (with serial)
-# target_keys = ["SPACE"]                        # Press space
-# turbo_enabled = true                           # Enable turbo mode
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26252.58347"
+target_keys = ["S"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄Y"
 
-# [[mappings]]
-# trigger_key = "JOYSTICK_046D_C21D_B1.0"        # Logitech joystick button
-# target_keys = ["LBUTTON"]                      # Left mouse click
-# turbo_enabled = true                           # Enable turbo mode
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26508.58750"
+target_keys = [
+    "DOWN",
+    "C",
+]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄A"
 
-# ─── HID Device Baselines (Auto-generated, Do Not Edit) ───
-# This section is managed automatically by the application
-# Device activation data for press/release detection
-# Format: VID:PID:Serial or VID:PID (without serial)
-# [[hid_baselines]]
-# device_id = "045E:028E:1234567"
-# baseline_data = [0, 255, 127, 255, 127, 0, 128, 0, 0, 0, 0]
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26764.59153"
+target_keys = ["Z"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄B"
 
-# ─── Device API Preferences (Auto-managed) ───
-# Preferred input API for each device (VID:PID format)
-# Options: "Auto" (default), "XInput", "RawInput"
-# Configure via Device Manager GUI window
-# [device_api_preferences]
-# "045E:028E" = "XInput"    # Force XInput for Xbox 360 controller
-# "046D:C21D" = "RawInput"  # Force Raw Input for Logitech device
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27020.59556"
+target_keys = ["ESCAPE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "TURBO后退"
 
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27276.59959"
+target_keys = ["SPACE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "STAT开始"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_LS_Up"
+target_keys = ["UP"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆上"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_LS_Down"
+target_keys = ["DOWN"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆下"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_LS_Left"
+target_keys = ["LEFT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = true
+double_tap_gap_ms = 50
+note = "左摇杆左"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_LS_Right"
+target_keys = ["RIGHT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = true
+double_tap_gap_ms = 50
+note = "左摇杆右"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left"
+target_keys = ["MOUSE_LEFT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（左）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_RS_Right"
+target_keys = ["MOUSE_RIGHT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（右）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_RS_UP"
+target_keys = ["MOUSE_UP"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（上）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left+RS_Down"
+target_keys = ["MOUSE_DOWN"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（下）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B662732363"
+target_keys = ["A"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "上圆盘"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B29295.39635"
+target_keys = ["G"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下圆盘"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B768889402"
+target_keys = ["D"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左圆盘"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B30575.41650"
+target_keys = ["F"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "右圆盘"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27532.60362"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LB键"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B791.22142"
+target_keys = ["E"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LT键"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27788.60765"
+target_keys = ["W"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RB"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B24278.9386"
+target_keys = ["R"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RT"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+target_keys = ["Y"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（左）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B679509982"
+target_keys = ["H"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（右）"
+
+[[mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+target_keys = ["T"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "按下左遥感"
+
+[device_api_preferences]
+"045E:028E" = "Auto"
+
+[[presets]]
+name = "默认"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B25996.57944"
+target_keys = ["X"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄X"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26252.58347"
+target_keys = ["S"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄Y"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26508.58750"
+target_keys = [
+    "DOWN",
+    "C",
+]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄A"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B26764.59153"
+target_keys = ["Z"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄B"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27020.59556"
+target_keys = ["ESCAPE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "TURBO后退"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27276.59959"
+target_keys = ["SPACE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "STAT开始"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Up"
+target_keys = ["UP"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆上"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Down"
+target_keys = ["DOWN"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆下"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Left"
+target_keys = ["LEFT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆左"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Right"
+target_keys = ["RIGHT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆右"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left"
+target_keys = ["MOUSE_LEFT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Right"
+target_keys = ["MOUSE_RIGHT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_UP"
+target_keys = ["MOUSE_UP"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（上）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left+RS_Down"
+target_keys = ["MOUSE_DOWN"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（下）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B58590984"
+target_keys = ["A"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "上圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1209221095"
+target_keys = ["G"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1426494197"
+target_keys = ["D"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B1225998714"
+target_keys = ["F"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "右圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27532.60362"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LB键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B791.22142"
+target_keys = ["E"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LT键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B27788.60765"
+target_keys = ["W"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RB"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B24278.9386"
+target_keys = ["R"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RT"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_CLICK"
+target_keys = ["Y"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B679509982"
+target_keys = ["H"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_02E0_DEVC16E7A53_B696287601"
+target_keys = ["T"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "按下左遥感"
+
+[[presets]]
+name = "USB无线"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B25996.57944"
+target_keys = ["X"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄X"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26252.58347"
+target_keys = ["S"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄Y"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26508.58750"
+target_keys = [
+    "DOWN",
+    "C",
+]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄A"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B26764.59153"
+target_keys = ["Z"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄B"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27020.59556"
+target_keys = ["ESCAPE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "TURBO后退"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27276.59959"
+target_keys = ["SPACE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "STAT开始"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Up"
+target_keys = ["UP"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆上"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Down"
+target_keys = ["DOWN"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆下"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Left"
+target_keys = ["LEFT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆左"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Right"
+target_keys = ["RIGHT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆右"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left"
+target_keys = ["MOUSE_LEFT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Right"
+target_keys = ["MOUSE_RIGHT"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_UP"
+target_keys = ["MOUSE_UP"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（上）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left+RS_Down"
+target_keys = ["MOUSE_DOWN"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（下）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B662732363"
+target_keys = ["A"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "上圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B29295.39635"
+target_keys = ["G"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B768889402"
+target_keys = ["D"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B30575.41650"
+target_keys = ["F"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "右圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27532.60362"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LB键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B791.22142"
+target_keys = ["E"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LT键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B27788.60765"
+target_keys = ["W"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RB"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B24278.9386"
+target_keys = ["R"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RT"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+target_keys = ["Y"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B679509982"
+target_keys = ["H"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5159_DEV5A27EA46_B696287601"
+target_keys = ["T"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "按下左遥感"
+
+[[presets]]
+name = "连线专用"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B25996.57944"
+target_keys = ["X"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄X"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B26252.58347"
+target_keys = ["S"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄Y"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B26508.58750"
+target_keys = [
+    "DOWN",
+    "C",
+]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄A"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B26764.59153"
+target_keys = ["Z"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "手柄B"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B27020.59556"
+target_keys = ["ESCAPE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "TURBO后退"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B27276.59959"
+target_keys = ["SPACE"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "STAT开始"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Up"
+target_keys = ["UP"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆上"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Down"
+target_keys = ["DOWN"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆下"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Left"
+target_keys = ["LEFT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆左"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_LS_Right"
+target_keys = ["RIGHT"]
+interval = 5
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左摇杆右"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left"
+target_keys = []
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Right"
+target_keys = []
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_UP"
+target_keys = []
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（上）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_045E_RS_Left+RS_Down"
+target_keys = []
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下遥感（下）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B662732363"
+target_keys = ["A"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "上圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B29295.39635"
+target_keys = ["G"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "下圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B768889402"
+target_keys = ["D"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "左圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B30575.41650"
+target_keys = ["F"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "右圆盘"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B27532.60362"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LB键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B791.22142"
+target_keys = ["E"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "LT键"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B27788.60765"
+target_keys = ["W"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RB"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B24278.9386"
+target_keys = ["R"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "RT"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B696287601"
+target_keys = ["Y"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（左）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B679509982"
+target_keys = ["H"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "背键（右）"
+
+[[presets.mappings]]
+trigger_key = "GAMEPAD_20BC_5158_DEV5A27EBF9_B696287601"
+target_keys = ["T"]
+turbo_enabled = true
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+note = "按下左遥感"

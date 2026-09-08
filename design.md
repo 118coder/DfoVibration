@@ -262,3 +262,15 @@
    —— v3.1 曾把设置弹窗的 保存=绿 / 取消=红, 已纠正为 primary/secondary;
 2. 强调色全 UI 唯一: 设置弹窗旧靛蓝 #696FDB / #5E6AD2 系字面量已全部收敛到主题令牌;
 3. 控件圆角一律 RADIUS_CTRL(8), 15.0 等游离值清除。
+
+---
+
+## v4 配色重制 (2026-09-08) — "Violet Night 霓虹紫夜空"
+
+方向来自 ui-ux-pro-max 设计系统检索 (gaming tool / neon purple / deep indigo)。
+与 v3 的差异: 深色整体迁到紫韵靛蓝夜空 (bg #0F0F23 / card #1E1C35 / accent #8B5CF6);
+亮色按用户偏好保持蓝白基调不变 (bg #F4F5F7 / accent #4F55E8) —— 两套主题各自成立,
+theme.rs 中 light/dark 是独立函数。手柄 SVG 双变体同步改为纯黑白 (彩色功能键移除)。
+外部建议的 rose 全局 CTA **不采纳** (与破坏性红语义冲突)。
+紫色应用图标 (#6C7CFF 圆角方块) 保持不变; 亮色主题强调色 (#4F55E8 靛蓝) 与图标同族。
+手柄 SVG 双变体为纯黑白配色: dark 版字母白色, light 版字母深灰。

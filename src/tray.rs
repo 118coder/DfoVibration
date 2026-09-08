@@ -480,8 +480,13 @@ impl TrayIcon {
                 );
 
                 let has_special = _mm256_movemask_epi8(mask);
+                // 非 ASCII 字节 (最高位为 1) 必须交还标量路径: 一旦混入,
+                // 32 字节块会把跨块的多字节汉字切出非法 UTF-8 (UB), 尾部
+                // 也无法再按字节对齐字符边界。
+                let has_non_ascii = _mm256_movemask_epi8(chunk);
 
-                if has_special == 0 {
+                if has_special == 0 && has_non_ascii == 0 {
+                    // 纯 ASCII 32 字节, 必为合法 UTF-8
                     result.push_str(std::str::from_utf8_unchecked(&bytes[i..i + 32]));
                     i += 32;
                 } else {
@@ -490,16 +495,8 @@ impl TrayIcon {
             }
         }
 
-        for &byte in &bytes[i..] {
-            match byte {
-                b'&' => result.push_str("&amp;"),
-                b'<' => result.push_str("&lt;"),
-                b'>' => result.push_str("&gt;"),
-                b'"' => result.push_str("&quot;"),
-                b'\'' => result.push_str("&apos;"),
-                _ => result.push(byte as char),
-            }
-        }
+        // i 只在纯 ASCII 块上前进, 恒为字符边界; 尾部按字符走标量转义
+        result.push_str(&Self::xml_escape_scalar(&s[i..]));
 
         result
     }
@@ -753,6 +750,29 @@ mod tests {
     fn test_xml_escape_basic_chars() {
         assert_eq!(TrayIcon::xml_escape_scalar("hello"), "hello");
         assert_eq!(TrayIcon::xml_escape_scalar("test123"), "test123");
+    }
+
+    /* avx2 快路径与标量路径一致性回归 (2026-09-08):
+     * 修复前 ① 32 字节纯数据块按 from_utf8_unchecked 整块 push, 跨块汉字被
+     *    切出非法 UTF-8 (UB); ② 尾部按 `byte as char` 兜底, 非 ASCII 字节
+     *    全部变 Latin-1 乱码。仅在 avx2 目标特性编译下可复现。 */
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    #[test]
+    fn xml_escape_fast_matches_scalar() {
+        let cases: Vec<String> = vec![
+            "a".repeat(64),
+            format!("{}<&>\"'{}", "b".repeat(40), "c".repeat(10)),
+            format!("{}汉y", "a".repeat(32)), // 汉 跨 32 字节块边界 + 非 ASCII 尾部
+            "汉字测试".repeat(12),            // 全多字节且超块长
+            format!("{}攻击{}&{}", "震".repeat(8), "x".repeat(20), "y".repeat(20)),
+        ];
+        for (i, s) in cases.iter().enumerate() {
+            assert_eq!(
+                TrayIcon::xml_escape_fast(s),
+                TrayIcon::xml_escape_scalar(s),
+                "case {i} 快慢路径结果不一致"
+            );
+        }
     }
 
     #[test]

@@ -189,6 +189,37 @@ impl TrayIcon {
         Ok(instance)
     }
 
+    /// 经 Win32 直接恢复主窗口: winit 事件循环在窗口隐藏后可能被 Win11 节流,
+    /// ViewportCommand::Minimized(false) 路径偶尔不生效。FindWindowW + ShowWindow
+    /// 绕过事件循环, 保证托盘恢复可靠; 之后仍发 request_show_window 让
+    /// eframe 状态同步 (双保险)。
+    fn restore_main_window(state: &crate::state::AppState) {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            FindWindowW, SetForegroundWindow, ShowWindowAsync, SW_RESTORE,
+        };
+        unsafe {
+            if let Ok(hwnd) =
+                FindWindowW(PCWSTR::null(), w!("DfoVibration-V3 连发与映射工具"))
+            {
+                if !hwnd.is_invalid() {
+                    let _ = ShowWindowAsync(hwnd, SW_RESTORE);
+                    let _ = SetForegroundWindow(hwnd);
+                } else {
+                    crate::util::crash_log(
+                        "TRAY_RESTORE",
+                        "FindWindowW 返回无效句柄 (主窗口尚未创建?)",
+                    );
+                }
+            } else {
+                crate::util::crash_log(
+                    "TRAY_RESTORE",
+                    "FindWindowW 未找到主窗口 (标题不匹配? 请回报此日志)",
+                );
+            }
+        }
+        state.request_show_window();
+    }
+
     /// Check and update translations if language changed
     #[inline]
     fn check_and_update_language(&mut self) {
@@ -579,7 +610,7 @@ impl TrayIcon {
             }
             WM_LBUTTONDBLCLK => {
                 if let Some(state) = get_global_state() {
-                    state.request_show_window();
+                    Self::restore_main_window(state);
                 }
             }
             _ => {}
@@ -615,10 +646,16 @@ impl TrayIcon {
                     };
                     state.send_notification(msg);
                 }
-                1020 => state.request_show_window(),
+                1020 => {
+                    if let Some(state) = get_global_state() {
+                        Self::restore_main_window(state);
+                    }
+                }
                 1030 => {
-                    state.request_show_window();
-                    state.request_show_about();
+                    if let Some(state) = get_global_state() {
+                        Self::restore_main_window(state);
+                        state.request_show_about();
+                    }
                 }
                 1000 => state.exit(),
                 _ => {}

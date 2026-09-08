@@ -428,7 +428,12 @@ impl SorahkGui {
                         .clicked()
                     {
                         self.show_close_dialog = false;
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                        // 真正的托盘化: 隐藏窗口 (任务栏按钮消失, 只剩托盘图标)。
+                        // 旧实现 Minimized(true) 只是最小化到任务栏, 且 winit 的
+                        // set_minimized(false) 在 Win11 上恢复经常静默失效。
+                        // 隐藏/显示 (Visible) 是 winit 可靠路径; 恢复另有托盘侧
+                        // Win32 直连 (TrayIcon::restore_main_window) 双保险。
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
                     }
 
                     ui.add_space(12.0);

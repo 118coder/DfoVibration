@@ -7,8 +7,10 @@ SRC="/e/网页小工具/DfoVibration V3版本/SorahkDFO源码"
 DST="/e/Sorahk-build"
 # 递归同步整个 src/ (含 gui/ 与 job_presets/ 等子目录; 旧版只拷顶层 *.rs 会漏掉子目录改动)
 cp -r "$SRC/src/." "$DST/src/"
-cp "$SRC/resources/gamepad.svg" "$DST/resources/"
+# resources 全量同步 (gamepad.svg + sorahk.ico/sorahk.rc 图标资源, 漏拷会导致图标改动不生效)
+cp -r "$SRC/resources/." "$DST/resources/"
 cp "$SRC/Cargo.toml" "$DST/Cargo.toml"
+cp "$SRC/build.rs" "$DST/build.rs"
 cp -r "$SRC/tests/." "$DST/tests/" 2>/dev/null || true
 cd "$DST"
 cargo build --release 2>&1 | tail -1

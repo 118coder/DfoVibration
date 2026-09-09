@@ -646,10 +646,41 @@ pub struct AppState {
     pub vibration_hitcap_win: std::sync::atomic::AtomicU32,
     /// 命中聚合窗 ms (v15.2, 群怪一刀多条命中事件合并, 一刀一震)
     pub vibration_hitmerge_ms: std::sync::atomic::AtomicU32,
+    /// 持续压制·触发秒数 (v15.3, 限频持续咬合后命中再降档, 0=关闭)
+    pub vibration_sustain_secs: std::sync::atomic::AtomicU32,
+    /// 持续压制·降幅 %
+    pub vibration_sustain_reduce: std::sync::atomic::AtomicU32,
     /// 脉冲落地·阈值 % (v15, 高负载期尾巴归零判据, 0=关闭)
     pub vibration_tail_land_pct: std::sync::atomic::AtomicU32,
     /// 怪物异常反馈·强度 % (v15, 仅 S1; 0x04 出血/中毒跳字独立通道)
     pub vibration_monster_abnormal: std::sync::atomic::AtomicU32,
+    /// 命中风暴·阈值 (v16, 仅 S1; 窗内纯命中事件达此数入风暴, 0=关闭)
+    pub vibration_storm_thr: std::sync::atomic::AtomicU32,
+    /// 命中风暴·保留比例 % (风暴期每 N 条命中保留 1 条)
+    pub vibration_storm_keep_pct: std::sync::atomic::AtomicU32,
+    /// 命中风暴·统计窗口 ms
+    pub vibration_storm_win_ms: std::sync::atomic::AtomicU32,
+    /// 命中风暴·恢复暂停 ms (停手此时长即恢复刀刀震)
+    pub vibration_storm_pause_ms: std::sync::atomic::AtomicU32,
+    /// 命中风暴·风暴期间静音怪物异常反馈 (v16.6, 仅 S1, 默认关)
+    pub vibration_storm_mute_abnormal: std::sync::atomic::AtomicBool,
+    /// 命中风暴·风暴期间静音评分点系统 (v16.7, 仅 S1, 默认关)
+    pub vibration_storm_mute_rank: std::sync::atomic::AtomicBool,
+    /* ★高级算法总开关 (v16.8): false = 该算法回到旧行为, 滑块值保留 */
+    pub vibration_merge_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_hitcap_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_storm_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_sustain_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_tail_land_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_density_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_adapt_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_move_charge_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_decay_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_algo_windows_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_pulse_enabled: std::sync::atomic::AtomicBool,
+    /// 统合衰减期 (v17, 仅 S1 风暴期, 默认关) + 固定衰减周期 ms
+    pub vibration_storm_unified_enabled: std::sync::atomic::AtomicBool,
+    pub vibration_storm_unified_ms: std::sync::atomic::AtomicU32,
     /// 独立测试模式 (v24.2: 评分/移动通道独立于全局总调整)
     pub vibration_independent_test: std::sync::atomic::AtomicBool,
     /// 移动持续震动独立于全局强度 (v24.5: 默认开)
@@ -1000,11 +1031,74 @@ impl AppState {
             vibration_hitmerge_ms: std::sync::atomic::AtomicU32::new(
                 config.vibration.hitmerge_ms,
             ),
+            vibration_sustain_secs: std::sync::atomic::AtomicU32::new(
+                config.vibration.sustain_secs,
+            ),
+            vibration_sustain_reduce: std::sync::atomic::AtomicU32::new(
+                config.vibration.sustain_reduce,
+            ),
             vibration_tail_land_pct: std::sync::atomic::AtomicU32::new(
                 config.vibration.tail_land_pct,
             ),
             vibration_monster_abnormal: std::sync::atomic::AtomicU32::new(
                 config.vibration.monster_abnormal_gain,
+            ),
+            vibration_storm_thr: std::sync::atomic::AtomicU32::new(
+                config.vibration.storm_thr,
+            ),
+            vibration_storm_keep_pct: std::sync::atomic::AtomicU32::new(
+                config.vibration.storm_keep_pct,
+            ),
+            vibration_storm_win_ms: std::sync::atomic::AtomicU32::new(
+                config.vibration.storm_win_ms,
+            ),
+            vibration_storm_pause_ms: std::sync::atomic::AtomicU32::new(
+                config.vibration.storm_pause_ms,
+            ),
+            vibration_storm_mute_abnormal: std::sync::atomic::AtomicBool::new(
+                config.vibration.storm_mute_abnormal,
+            ),
+            vibration_storm_mute_rank: std::sync::atomic::AtomicBool::new(
+                config.vibration.storm_mute_rank,
+            ),
+            vibration_merge_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.merge_enabled,
+            ),
+            vibration_hitcap_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.hitcap_enabled,
+            ),
+            vibration_storm_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.storm_enabled,
+            ),
+            vibration_sustain_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.sustain_enabled,
+            ),
+            vibration_tail_land_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.tail_land_enabled,
+            ),
+            vibration_density_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.density_enabled,
+            ),
+            vibration_adapt_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.adapt_enabled,
+            ),
+            vibration_move_charge_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.move_charge_enabled,
+            ),
+            vibration_decay_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.decay_enabled,
+            ),
+            vibration_algo_windows_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.algo_windows_enabled,
+            ),
+            vibration_pulse_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.pulse_enabled,
+            ),
+            vibration_storm_unified_enabled: std::sync::atomic::AtomicBool::new(
+                config.vibration.storm_unified_enabled,
+            ),
+            vibration_storm_unified_ms: std::sync::atomic::AtomicU32::new(
+                config.vibration.storm_unified_ms,
             ),
             vibration_independent_test: std::sync::atomic::AtomicBool::new(
                 config.vibration.independent_test,

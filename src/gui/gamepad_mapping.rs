@@ -660,7 +660,7 @@ impl SorahkGui {
                 }
                 if r_resp.clicked() {
                     self.minimal_vib_preset_job = true;
-                    let jobs = crate::job_presets::builtin_jobs();
+                    let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
                     let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                     let class_sel =
                         self.vib_job_class.min(jobs[base_sel].classes.len().saturating_sub(1));
@@ -673,79 +673,78 @@ impl SorahkGui {
                 }
                 ui.add_space(theme::SP_XS);
 
-                /* 选择行 (选中即应用); 行整体下调 3px (用户微调 2026-09-08) */
+                /* 选择行 (选中即应用); ★v19.3 与上方分段控件拉开间距 (用户: 贴太紧不美观) */
                 if !mode_job {
-                    ui.add_space(3.0);
+                    ui.add_space(9.0);
                     ui.horizontal(|ui| {
                         ui.label(th.weak("通用预设"));
                         self.ensure_act1_preset_listed();
-                        let names: Vec<String> = self
-                            .config
-                            .vibration_presets
+                        /* ★v19: 用真实下标, 修过滤下标错位 */
+                        let entries = crate::config::visible_preset_entries(
+                            &self.config.vibration_presets,
+                            self.config.vib_legacy_client,
+                        );
+                        let sel_pos = entries
                             .iter()
-                            .filter(|p| self.config.vib_legacy_client || p.name != "ACT1 特供")
-                            .map(|x| x.name.clone())
-                            .collect();
-                        let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));
-                        let selected = names.get(sel).cloned().unwrap_or_default();
+                            .position(|(real, _)| *real == self.vib_preset_idx)
+                            .unwrap_or(0);
+                        if let Some((real, _)) = entries.get(sel_pos) {
+                            self.vib_preset_idx = *real;
+                        }
+                        let selected = entries.get(sel_pos).map(|(_, n)| n.clone()).unwrap_or_default();
                         egui::ComboBox::from_id_salt("gp_vib_general")
                             .selected_text(selected)
                             .width(150.0)
                             .show_ui(ui, |ui| {
-                                for (i, n) in names.iter().enumerate() {
-                                    if ui.selectable_label(i == sel, n).clicked() {
-                                        self.vib_preset_idx = i;
+                                for (pos, (real, n)) in entries.iter().enumerate() {
+                                    if ui.selectable_label(pos == sel_pos, n).clicked() {
+                                        self.vib_preset_idx = *real;
                                         self.apply_general_vibration_preset(n);
                                     }
                                 }
                             });
                     });
                 } else {
-                    let jobs = crate::job_presets::builtin_jobs();
+                    let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
                     let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                     let classes = &jobs[base_sel].classes;
                     let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
-                    /* 行整体下调 3px; 转职槽上调 3px (用户微调 2026-09-08,
-                     * 做法同极简模式 class_nudge: 定块 + 绝对定位子 Ui) */
-                    ui.add_space(3.0);
+                    /* ★v19.3 与上方分段控件拉开间距 (用户: 贴太紧不美观);
+                     * 转职槽仍按原微调上调 1.5px (定块 + 绝对定位子 Ui) */
+                    ui.add_space(9.0);
                     ui.horizontal(|ui| {
                         ui.label(th.weak("职业选择"));
-                        let combo_w = 110.0_f32;
+                        /* ★v19.6 S1 专属 (用户定稿): "-ACT" 职业名比槽位宽 → 转职槽
+                         * 自然排在职业框真实宽度之后, 再右移 30px, 彻底消除左右重叠。
+                         * 改为自然流式布局 (不再绝对定位), S4 分支不受影响。 */
+                        egui::ComboBox::from_id_salt("gp_vib_job_base")
+                            .selected_text(jobs[base_sel].base_job)
+                            .width(124.0)
+                            .show_ui(ui, |ui| {
+                                for (i, j) in jobs.iter().enumerate() {
+                                    if ui.selectable_label(i == base_sel, j.base_job).clicked() {
+                                        self.vib_job_base = i;
+                                        self.vib_job_class = 0;
+                                    }
+                                }
+                            });
+                        /* ★v19.7 用户定稿: 转职槽再左移 25px (30 → 5) 并上移 3px
+                         * (自然流式预留空间 + 抬高 3px 的矩形内绘制, 行高不变) */
+                        ui.add_space(5.0);
                         let combo_h = ui.spacing().interact_size.y;
-                        let (block, _) = ui.allocate_exact_size(
-                            egui::vec2(combo_w * 2.0 + 8.0, combo_h),
+                        let (class_slot, _) = ui.allocate_exact_size(
+                            egui::vec2(96.0, combo_h),
                             egui::Sense::hover(),
                         );
-                        /* 基础职业: 块内左槽 (原位) */
                         ui.allocate_new_ui(
                             egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                                block.min,
-                                egui::vec2(combo_w, combo_h),
-                            )),
-                            |ui| {
-                                egui::ComboBox::from_id_salt("gp_vib_job_base")
-                                    .selected_text(jobs[base_sel].base_job)
-                                    .width(combo_w)
-                                    .show_ui(ui, |ui| {
-                                        for (i, j) in jobs.iter().enumerate() {
-                                            if ui.selectable_label(i == base_sel, j.base_job).clicked() {
-                                                self.vib_job_base = i;
-                                                self.vib_job_class = 0;
-                                            }
-                                        }
-                                    });
-                            },
-                        );
-                        /* 转职: 右槽, 上调 1.5px (用户微调 2026-09-08: 3.0 回调 1.5) */
-                        ui.allocate_new_ui(
-                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
-                                egui::pos2(block.min.x + combo_w + 8.0, block.min.y - 1.5),
-                                egui::vec2(combo_w, combo_h),
+                                egui::pos2(class_slot.min.x, class_slot.min.y - 3.0),
+                                egui::vec2(96.0, combo_h),
                             )),
                             |ui| {
                                 egui::ComboBox::from_id_salt("gp_vib_job_class")
                                     .selected_text(classes[class_sel].name.clone())
-                                    .width(combo_w)
+                                    .width(96.0)
                                     .show_ui(ui, |ui| {
                                         for (i, c) in classes.iter().enumerate() {
                                             if ui.selectable_label(i == class_sel, c.name).clicked() {
@@ -762,8 +761,9 @@ impl SorahkGui {
                     });
                 }
 
-                /* ★震动模块状态行: 按版本分流 (ACT1=自动注入 / S4+=模块已启用) */
-                ui.add_space(theme::SP_XS);
+                /* ★震动模块状态行: 按版本分流 (ACT1=自动注入 / S4+=模块已启用)
+                 * ★v19.5 S1 专属: 职业选择行与状态行之间多留一点间距 (S4 不变) */
+                ui.add_space(if mode_job { 10.0 } else { theme::SP_XS });
                 if self.config.vib_legacy_client {
                     let ready = crate::auto_inject::host_dir_dll();
                     let (itext, ifg, ibg) = if ready {

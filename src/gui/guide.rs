@@ -14,7 +14,9 @@ impl SorahkGui {
     /// 首次运行 · 第 1 弹: 询问是否 DFO 玩家 (决定震动入口显示; 答完进入使用说明)。
     pub(super) fn render_dfo_ask_window(&mut self, ctx: &egui::Context) {
         let th = self.theme();
-        egui::Window::new(" ")
+        /* ★v19: 窗口 ID 必须唯一 —— 三个向导弹窗曾共用 ID " ", 同帧弹出的新窗口
+         * 按钮与刚点击的按钮 ID 重合, 一次点击被吃两遍 (选完 DFO 直接跳过版本询问) */
+        egui::Window::new("dfo_ask_window")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
@@ -66,8 +68,10 @@ impl SorahkGui {
                                  * 非 DFO 玩家 (无震动) → 直接进第 2 弹使用说明 */
                                 if self.config.dfo_player {
                                     self.show_edition_ask = true;
+                                    self.modal_defer = 1; /* 防同帧点击穿透 */
                                 } else {
                                     self.show_guide = true;
+                                    self.modal_defer = 1;
                                 }
                             }
                             ui.add_space(theme::SP_XS);
@@ -82,7 +86,7 @@ impl SorahkGui {
     /// S1 ACT → 老方案 (配老版 DLL 的事件语义); S4+ 新版 → 现行新方案。设置里可随时切换。
     pub(super) fn render_edition_ask_window(&mut self, ctx: &egui::Context) {
         let th = self.theme();
-        egui::Window::new(" ")
+        egui::Window::new("edition_ask_window")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
@@ -132,8 +136,9 @@ impl SorahkGui {
                                     .store(s1.clicked(), std::sync::atomic::Ordering::Relaxed);
                                 let _ = self.config.save_to_file("Config.toml");
                                 self.show_edition_ask = false;
-                                /* 选完进入第 2 弹: 使用说明 */
+                                /* 选完进入第 2 弹: 使用说明 (延迟一帧防点击穿透) */
                                 self.show_guide = true;
+                                self.modal_defer = 1;
                             }
                             ui.add_space(theme::SP_XS);
                             ui.label(th.hint_text("该选择随时可在「设置 → DFO 震动功能」中切换"));
@@ -145,7 +150,7 @@ impl SorahkGui {
     /// 首次运行 · 第 2 弹 / 标题栏「?」: 使用说明 (快速上手 + 基础功能)。
     pub(super) fn render_guide_window(&mut self, ctx: &egui::Context) {
         let th = self.theme();
-        egui::Window::new(" ")
+        egui::Window::new("guide_window")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)

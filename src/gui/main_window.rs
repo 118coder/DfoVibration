@@ -27,8 +27,28 @@ impl eframe::App for SorahkGui {
 
         // Check if exit was requested at the very beginning
         if frame_state.should_exit {
+            /* ★v16.2b: 退出前强制落盘 (不等 1 秒去抖窗口) —— 修"拖完滑块立刻关软件
+             * 丢最后一次改动"的边界 (去抖落盘在下面, 早退时不会执行) */
+            if self.vib_params_dirty_since.is_some() {
+                let _ = self.config.save_vibration_to_file(
+                    crate::config::AppConfig::vibration_path_for("Config.toml"),
+                );
+                self.vib_params_dirty_since = None;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
+        }
+
+        /* ★v16.2: 60 槽滑块自动落盘 (去抖 1 秒) —— 滑块拖动只镜像进 config 并打脏标,
+         * 静默 1 秒后在此统一写 Vibration.toml (职业模式不打脏标, 走 JobVibration 快照)。
+         * 修"拖动滑块不点保存当前 → 重启回滚"的高频痛点 */
+        if let Some(t) = self.vib_params_dirty_since {
+            if t.elapsed().as_millis() >= 1000 {
+                let _ = self.config.save_vibration_to_file(
+                    crate::config::AppConfig::vibration_path_for("Config.toml"),
+                );
+                self.vib_params_dirty_since = None;
+            }
         }
 
         // Check for HID device activation requests
@@ -563,10 +583,20 @@ impl SorahkGui {
             self.render_dfo_ask_window(ctx);
         }
         if self.show_edition_ask {
-            self.render_edition_ask_window(ctx);
+            /* ★v19: 延迟一帧渲染 —— 防 DFO 询问的同一次点击穿透到版本按钮 */
+            if self.modal_defer > 0 {
+                self.modal_defer -= 1;
+            } else {
+                self.render_edition_ask_window(ctx);
+            }
         }
         if self.show_guide {
-            self.render_guide_window(ctx);
+            /* ★v19: 延迟一帧渲染 —— 防版本询问的同一次点击穿透到"开始使用" */
+            if self.modal_defer > 0 {
+                self.modal_defer -= 1;
+            } else {
+                self.render_guide_window(ctx);
+            }
         }
 
         /* 极简模式: 小窗 + 顶栏(返回/主题/预设) + 两个总开关 */
@@ -828,6 +858,7 @@ impl SorahkGui {
             self.dfo_ask_answered = false;
             self.show_edition_ask = false;
             self.show_guide = false;
+            self.modal_defer = 0;
         }
 
         // 主题切换 (半月图标)

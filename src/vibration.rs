@@ -165,9 +165,9 @@ const P_DEC_ATTACK: usize = 35;
 const P_DEC_SPECIAL: usize = 36;
 const P_DEC_HIT: usize = 37;
 const P_DEC_STATE: usize = 38;
-#[allow(dead_code)]
-const P_DEC_EFFECT: usize = 39;
-/* 移动积累增强窗口 (v22): 停止移动后增强有效期 ms (原 39 装备特效衰减未用) */
+/* 移动积累增强窗口 (v22): 停止移动后增强有效期 ms。
+ * ★39 号槽唯一语义 (P1 结案): 原 P_DEC_EFFECT 死常量已删除 (无任何读点,
+ * 曾与本病历任意混淆), GUI 无双绑定, 引擎只读 P_MOVE_BOOST_WIN */
 const P_MOVE_BOOST_WIN: usize = 39;
 
 /* 高级 D 时长窗口 */
@@ -305,6 +305,14 @@ struct VibEngine {
     /* ★S1 命中聚合窗 (v15.2): ch=3 专属更宽聚合窗 —— 群怪一刀的多条命中
      * 事件 (每怪一条) 窗内全部记账合并, 一刀只震一下 (更厚)。 */
     hitmerge_ms: u32,
+    /* ★S1 持续压制 (v15.3): 命中注入持续打满限速上限 (狂战士血之狂暴等
+     * 持续性双倍打击) 超过 sustain_secs 秒后, 命中震动额外 ×(1-降幅%)。
+     * 实现 = sustain_secs×1000 长窗统计真实注入次数, 达到"限速上限×秒数"
+     * 即判定持续满载。secs=0 关闭。sus_count/sus_start = 长窗计数器 */
+    sustain_secs: u32,
+    sustain_reduce: u32,
+    sus_count: u32,
+    sus_start: u32,
     /* ★S1 脉冲落地 (v15): 高负载期衰减尾巴提前归零 —— pct=0 关闭;
      * peak = 最近一次写入衰减通道的幅值 (inject 家族 + FLUSH 同步记录) */
     tail_land_pct: u32,
@@ -313,6 +321,33 @@ struct VibEngine {
     /* ★S1 怪物异常反馈 (v15): 0x04 (怪物出血/中毒跳字) 的独立强度 (0-100 量纲),
      * 从"装备特效"滑块 (p[15]) 彻底拆出 —— 该通道在 ACT 里 100% 是怪物异常跳字 */
     monster_abnormal: u32,
+    /* ★S1 命中风暴抽样 (v16): 极短窗内纯命中事件 (受伤类排除) 暴增 → 只保留
+     * storm_keep_pct% 的震动 (抽样丢弃, 不记账不补发), 停手超过 storm_pause_ms
+     * 即恢复刀刀震动。thr=0 关闭。storm_count/storm_start = 翻滚窗计数器;
+     * storm_seen = 风暴期内事件序号 (确定性抽样用); storm_last_hit = 最近一条
+     * 纯命中事件时间戳 (停顿检测) */
+    storm_thr: u32,
+    storm_keep_pct: u32,
+    storm_win_ms: u32,
+    storm_pause_ms: u32,
+    storm_count: u32,
+    storm_start: u32,
+    storm_seen: u32,
+    storm_active: bool,
+    storm_last_hit: u32,
+    /* ★v16.8: 抽样总开关 —— false 时只检测风暴 (供静音开关用), 不抽样丢弃 */
+    storm_enabled: bool,
+    /* ★S1 风暴静音怪物异常 (v16.6, 可选): 风暴期间 0x04 出血/中毒跳字零痕迹 */
+    storm_mute_abnormal: bool,
+    storm_mute_logged: bool,
+    /* ★S1 风暴静音评分点系统 (v16.7, 可选): 风暴期间评分族事件零痕迹 (移动除外) */
+    storm_mute_rank: bool,
+    storm_mute_rank_logged: bool,
+    /* ★S1 统合衰减期 (v17, 可选): 风暴期命中通道统一固定衰减 + 到点硬归零;
+     * unified_until = 当前包络的硬截止时刻 (0 = 未布防) */
+    storm_unified_enabled: bool,
+    storm_unified_ms: u32,
+    unified_until: u32,
     /* ★S1 单帧脉冲 (v15.1): 衰减 0-5ms 时注入帧全幅直出、下一帧硬归零 */
     instant_armed: bool,
     /* ★总闸 L/R (v15.1): item_lr[0]/[1] 接通为左右马达独立总闸微调 (0-1 乘数) */
@@ -422,13 +457,36 @@ impl VibEngine {
             hitcap_win_ms: 1000,
             hitcap_count: 0,
             hitcap_start: 0,
-            hitmerge_ms: 40,
+            hitmerge_ms: 60,
+            /* 持续压制默认: 打满限速 3 秒后再降 30% (run 循环同步覆盖) */
+            sustain_secs: 3,
+            sustain_reduce: 30,
+            sus_count: 0,
+            sus_start: 0,
             /* 脉冲落地: 引擎默认关闭 (config/state 默认 25), run 循环同步覆盖 */
             tail_land_pct: 0,
             tail_peak_l: 0.0,
             tail_peak_r: 0.0,
             /* 怪物异常反馈默认 1% (run 循环同步覆盖) */
             monster_abnormal: 1,
+            /* 命中风暴默认值与 config 一致 (run 循环同步覆盖) */
+            storm_thr: 10,
+            storm_keep_pct: 50,
+            storm_win_ms: 1000,
+            storm_pause_ms: 400,
+            storm_count: 0,
+            storm_start: 0,
+            storm_seen: 0,
+            storm_active: false,
+            storm_last_hit: 0,
+            storm_enabled: true,
+            storm_mute_abnormal: false,
+            storm_mute_logged: false,
+            storm_mute_rank: false,
+            storm_mute_rank_logged: false,
+            storm_unified_enabled: false,
+            storm_unified_ms: 120,
+            unified_until: 0,
             instant_armed: false,
             gate_lr_l: 1.0,
             gate_lr_r: 1.0,
@@ -540,7 +598,10 @@ impl VibEngine {
             }
             /* E 窗口爆发: 窗口内密集连击 → 重脉冲 + 静默 */
             9 | 26 | 49 => {
-                if now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32 {
+                /* ★0 哨兵 (规范 §7.9): state[0]=0 = 未初始化, 直接开窗 */
+                if self.algo_state[0] == 0.0
+                    || now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32
+                {
                     self.algo_state[1] = 0.0;
                     self.algo_state[0] = now as f32;
                 }
@@ -553,7 +614,10 @@ impl VibEngine {
             }
             /* M 连点组: 窗口密集命中 → 弹幕节奏组 */
             16 | 18 => {
-                if now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32 {
+                /* ★0 哨兵 (规范 §7.9): state[0]=0 = 未初始化, 直接开窗 */
+                if self.algo_state[0] == 0.0
+                    || now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32
+                {
                     self.algo_state[1] = 0.0;
                     self.algo_state[0] = now as f32;
                 }
@@ -591,7 +655,10 @@ impl VibEngine {
                 if self.algo_ap[0] >= 1000.0 {
                     self.algo_state[0] = (now + self.algo_ap[0] as u32) as f32;
                 } else {
-                    if now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32 {
+                    /* ★0 哨兵 (规范 §7.9): state[0]=0 = 未初始化, 直接开窗 */
+                    if self.algo_state[0] == 0.0
+                        || now.wrapping_sub(self.algo_state[0] as u32) > self.algo_ap[0] as u32
+                    {
                         self.algo_state[1] = 0.0;
                         self.algo_state[0] = now as f32;
                     }
@@ -790,6 +857,29 @@ impl VibEngine {
         let now = now_ms();
         self.last_event = now;
 
+        /* ★S1 风暴静音评分点系统 (v16.7, 可选开关): 命中风暴期间评分族事件零痕迹
+         * 静音 —— 评分等级脉冲 (VEV_RANKING) + 细分事件 (评分点/闪避/暴击/破招/
+         * 背击/最终击杀/凌空追击/第一击/增益叠加/释放技能/镜头震动/技能震动/
+         * 暴击特写) + 怪物死亡 (VEV_TARGET_DIE)。移动持续震动 (VEV_MOVE) 不属于
+         * 评分点系统, 不受影响。恢复与怪物异常静音同源: 停手超过 storm_pause_ms
+         * 的时间窗判定, 无需等下一发命中。默认关 = 旧行为。 */
+        if self.legacy
+            && self.storm_mute_rank
+            && self.storm_active
+            && now.wrapping_sub(self.storm_last_hit) <= self.storm_pause_ms.max(50)
+            && (ev.etype == VEV_TARGET_DIE
+                || ev.etype == VEV_RANKING
+                || (ev.etype >= VEV_KILLPOINT
+                    && ev.etype <= VEV_CRIT_SHAKE
+                    && ev.etype != VEV_MOVE))
+        {
+            if !self.storm_mute_rank_logged {
+                self.storm_mute_rank_logged = true;
+                vib_log("[STORM] 风暴期静音评分点系统");
+            }
+            return;
+        }
+
         /* 绝对震动频率 (v26.1, 召唤专属): 所有事件注入统一节流 (FONT/评分/死亡等)
          * 开启后一切震动算法失效, 只在 [时间-震动次数] 内注入;
          * 全局强度/强度上限仍控制输出, 移动独立 */
@@ -926,22 +1016,45 @@ impl VibEngine {
                 self.algo_on_attack(a6 & FONT_SPECIAL != 0, count, now);
             }
 
+            /* ★S1 风暴静音怪物异常 (v16.6, 可选开关): 命中风暴期间把 0x04
+             * 怪物出血/中毒跳字反馈暂时关掉 —— 零痕迹丢弃 (不打锚/不计密度/
+             * 不进记账); 风暴结束 (停手超过 storm_pause_ms, 用时间窗判定, 无需
+             * 等下一发命中) 自动恢复。仅 S1, 仅纯 0x04 (玩家 DOT 0x20/状态 0x08
+             * 不受影响)。默认关 = 旧行为。 */
+            if self.legacy
+                && self.storm_mute_abnormal
+                && self.storm_active
+                && is_effect
+                && !is_dot
+                && now.wrapping_sub(self.storm_last_hit) <= self.storm_pause_ms.max(50)
+            {
+                if !self.storm_mute_logged {
+                    self.storm_mute_logged = true;
+                    vib_log("[STORM] 风暴期静音怪物异常反馈");
+                }
+                return;
+            }
             /* ★S1 聚合记帐 (v14.1): DOT/状态/特效事件也计入密度统计 ——
              * v22.4 原版只统计攻击命中, 群怪的 DOT 洪流 (每怪每跳一条)
              * 对密度自适应完全不可见 = 压制失效盲区 */
             if self.legacy && !is_attack && (is_dot || is_state || is_effect) {
-                self.density_hits = self.density_hits.saturating_add(count);
-                if self.density_win_start == 0 {
-                    self.density_win_start = now;
-                }
-                let d_win = self.p[P_DENSITY_WIN].max(30.0) as u32;
-                if now.wrapping_sub(self.density_win_start) >= d_win {
-                    self.density_hits = 0;
-                    self.density_win_start = now;
-                }
-                let d_thr = self.p[P_DENSITY_THR].max(1.0) as u32;
-                if !abs_mode && d_thr < 100 && self.density_hits >= d_thr {
-                    self.density_active = true;
+                /* ★v16.1: 0 强度事件不参与密度统计 —— 怪物异常反馈=0 时出血洪流
+                 * 不得再触发密度压制 (调 0 = 该事件流对引擎零影响); DOT/状态
+                 * 滑块为 0 时同理。font_pick 返回的强度即注入强度 (单一事实来源) */
+                if self.font_pick(a6, item_idx).0 > 0.0 {
+                    self.density_hits = self.density_hits.saturating_add(count);
+                    if self.density_win_start == 0 {
+                        self.density_win_start = now;
+                    }
+                    let d_win = self.p[P_DENSITY_WIN].max(30.0) as u32;
+                    if now.wrapping_sub(self.density_win_start) >= d_win {
+                        self.density_hits = 0;
+                        self.density_win_start = now;
+                    }
+                    let d_thr = self.p[P_DENSITY_THR].max(1.0) as u32;
+                    if !abs_mode && d_thr < 100 && self.density_hits >= d_thr {
+                        self.density_active = true;
+                    }
                 }
             }
 
@@ -962,6 +1075,68 @@ impl VibEngine {
                     vib_log(&format!("[DROP] font_hits=off a6={:X}", a6));
                 }
                 return;
+            }
+            /* ★S1 命中风暴抽样 (v16, 玩家可调): 极短窗内纯命中事件暴增 → 只保留
+             * 一部分震动 (用户定稿算法)。要点:
+             * - 只统计/只丢弃"纯命中"事件 (0x01): 受击 0x02 (受伤类)、DOT/状态/
+             *   特效/特殊攻击全部排除在外, 完全不受风暴影响;
+             * - 风暴期确定性抽样 (每 N 条保留 1 条): 丢弃 = 整条跳过, 不打 IVL
+             *   锚点/不进聚合记账/不占限频名额 —— 与 merge/hitcap 的"记账不丢击"
+             *   互补 (风暴期宁可少震, 不要节拍堆叠);
+             * - 恢复: 距上一条纯命中事件超过 storm_pause_ms (短暂停顿) → 立即
+             *   退出风暴, 恢复刀刀震动;
+             * - thr=0 关闭; 新方案 (!legacy) 不进此分支 (红线)。 */
+            if self.legacy
+                && self.storm_thr > 0
+                && a6 & FONT_ATTACK != 0
+                && a6 & (FONT_HIT | FONT_SPECIAL | FONT_HP | FONT_STATE | FONT_EFFECT) == 0
+            {
+                let pause_gap = if self.storm_last_hit != 0 {
+                    now.wrapping_sub(self.storm_last_hit)
+                } else {
+                    0
+                };
+                self.storm_last_hit = now;
+                let win = self.storm_win_ms.max(100);
+                if self.storm_start == 0 || now.wrapping_sub(self.storm_start) >= win {
+                    self.storm_count = 0;
+                    self.storm_start = now;
+                }
+                self.storm_count = self.storm_count.saturating_add(1);
+                /* 停顿恢复: 两条命中之间隔太久 → 风暴退出, 本发必震 */
+                if self.storm_active && pause_gap > self.storm_pause_ms.max(50) {
+                    self.storm_active = false;
+                    self.storm_seen = 0;
+                    self.storm_count = 1;
+                    self.storm_start = now;
+                    self.storm_mute_logged = false;
+                    self.storm_mute_rank_logged = false;
+                    vib_log("[STORM] 停顿恢复 -> 刀刀震");
+                }
+                if self.storm_count >= self.storm_thr {
+                    if !self.storm_active {
+                        self.storm_active = true;
+                        self.storm_seen = 0;
+                        self.storm_mute_logged = false;
+                        self.storm_mute_rank_logged = false;
+                        vib_log(&format!(
+                            "[STORM] 命中风暴开启 (窗{}ms 内 {} 条)",
+                            win, self.storm_count
+                        ));
+                    }
+                    /* ★v16.8: 抽样受总开关控制; 关掉时只保留检测 (静音开关继续可用),
+                     * 事件照常走后续注入链 (不丢弃)。★v17: 统合衰减期开启时同样不抽样
+                     * (每一击都重新起振, 由统一包络保证干净) */
+                    if self.storm_enabled && !self.storm_unified_enabled {
+                        self.storm_seen = self.storm_seen.saturating_add(1);
+                        let keep = self.storm_keep_pct.clamp(1, 100) as u32;
+                        let stride = (100 / keep).max(1);
+                        /* 确定性抽样: 进入风暴后的第 1 条保留, 之后每 stride 条保留 1 条 */
+                        if stride > 1 && (self.storm_seen - 1) % stride != 0 {
+                            return;
+                        }
+                    }
+                }
             }
             /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/
              * 特效族 3=命中), 受击不再被命中/飘字流的全局窗吞掉; 新方案维持全局单窗 */
@@ -1005,7 +1180,13 @@ impl VibEngine {
             if self.legacy && font_ch == Some(3) && self.hitmerge_ms > ivl {
                 ivl = self.hitmerge_ms.min(200);
             }
-            if !abs_mode && gap_prev < ivl {
+            /* ★v17 统合衰减期: 风暴期普通命中通道走"统一包络" —— 每一击都直接
+             * 重新起振 (旧包络瞬间消亡), 绕过注入间隔门与聚合/限频记账 */
+            let unified = self.legacy
+                && self.storm_unified_enabled
+                && self.storm_active
+                && font_ch == Some(3);
+            if !abs_mode && gap_prev < ivl && !unified {
                 if self.legacy {
                     /* ★S1 群怪聚合记帐 (v14.1, 玩家可调): 窗内事件不再丢弃 ——
                      * 强度按通道记账 (能量携带), 下一发注入兑现; 记账期内无后续
@@ -1048,6 +1229,7 @@ impl VibEngine {
                 && self.hitcap_max > 0
                 && self.legacy
                 && font_ch == Some(3)
+                && !unified
             {
                 if self.hitcap_start == 0
                     || now.wrapping_sub(self.hitcap_start) >= self.hitcap_win_ms.max(50)
@@ -1074,10 +1256,11 @@ impl VibEngine {
                 }
             }
             /* ★S1 老方案 (v13.35 语义): 过了间隔门才打通道戳 —— 先打戳会让被丢
-             * 事件把窗口永远前推 = 通道饥饿 (只有第一条震); 新方案打全局戳 */
-            match font_ch {
-                Some(ch) => self.last_font_ch[ch] = now,
-                None => self.last_font = now,
+             * 事件把窗口永远前推 = 通道饥饿 (只有第一条震)。
+             * ★v16.1: legacy 分通道戳后移到 s>0 门之后 (见 font_pick 处), 0 强度
+             * 事件不再刷新注入窗; 新方案维持在此打全局戳 (红线, 逐字节不动)。 */
+            if font_ch.is_none() {
+                self.last_font = now;
             }
 
             /* 震动节流 (v24): 时间窗口内只允许 N 次注入, 超出直接跳过
@@ -1118,6 +1301,13 @@ impl VibEngine {
                     vib_log(&format!("[DROP] s=0 a6={:X}", a6));
                 }
                 return;
+            }
+            /* ★v16.1: legacy 分通道戳 (v13.35 语义, 过了间隔门+强度门才打戳) ——
+             * 0 强度事件 (如怪物异常=0 时的出血洪流) 不再刷新注入窗, 否则紧随
+             * 其后的真实 DOT/状态/特效会被挤进记账补发 (FLUSH 节拍感)。
+             * 新方案打全局戳原位不动 (见间隔门处, 红线)。 */
+            if let Some(ch) = font_ch {
+                self.last_font_ch[ch] = now;
             }
 
             let mut s_eff = s;
@@ -1172,6 +1362,24 @@ impl VibEngine {
                     vib_log(&format!("[CARRY] ch={} carry={:.2} s_out={:.3}", ch, c, s_out));
                 }
             }
+            /* ★S1 持续压制 (v15.3): 长窗统计真实命中注入次数 —— 持续打满限速
+             * 上限 (限速上限 × 窗口秒数) 超时后, 命中震动自动再降一档 (狂战士
+             * 血之狂暴等持续性双倍打击的降温; 降速/停手即自动恢复, 单挑不触发) */
+            if self.legacy && font_ch == Some(3) && self.sustain_secs > 0 {
+                let sus_win = (self.sustain_secs * 1000).max(500);
+                if self.sus_start == 0 || now.wrapping_sub(self.sus_start) >= sus_win {
+                    self.sus_count = 0;
+                    self.sus_start = now;
+                }
+                self.sus_count = self.sus_count.saturating_add(1);
+                let sus_thr = ((self.hitcap_max as f32) * sus_win as f32
+                    / (self.hitcap_win_ms.max(1) as f32))
+                    .ceil()
+                    .max(1.0);
+                if self.sus_count as f32 >= sus_thr {
+                    s_out *= 1.0 - (self.sustain_reduce.min(80) as f32 / 100.0);
+                }
+            }
             /* 职业专属算法 (v31): 攻击/受击强度修正 */
             if is_attack {
                 s_out *= self.algo_attack_mul(now);
@@ -1212,6 +1420,18 @@ impl VibEngine {
                     self.inject(s_out, lr_w, rr_w, dl, dl * 0.8);
                 }
                 _ => {
+                    /* ★v17 统合衰减期 (风暴期): 旧的包络瞬间消亡 → 以本次命中强度
+                     * 重新起振 → 统一固定衰减周期 → 到点由 tick 硬归零。
+                     * 连续命中因此变成"一击接一击"的干净持续震动, 旧尾巴不叠糊。 */
+                    if unified {
+                        let ms = self.storm_unified_ms.clamp(30, 1000) as f32;
+                        self.left = 0.0;
+                        self.right = 0.0;
+                        self.decay_l = 0.0;
+                        self.decay_r = 0.0;
+                        self.unified_until = now.wrapping_add(ms as u32);
+                        self.inject(s_out, lr_w, rr_w, ms, ms * 0.8);
+                    } else {
                     /* ★v15.1: 衰减常数放开到 0 —— 0-5ms 由 tick 的"单帧脉冲"模式
                      * 承载 (注入帧全幅直出, 下一帧硬归零), >5ms 走指数衰减 */
                     let (dl, dr) = if is_hit {
@@ -1229,6 +1449,7 @@ impl VibEngine {
                     let dl_w = dl * (1.0 + item_lr[3 * 2] as i32 as f32 / 100.0).clamp(0.0, 2.0);
                     let dr_w = dr * (1.0 + item_lr[3 * 2 + 1] as i32 as f32 / 100.0).clamp(0.0, 2.0);
                     self.inject(s_out, lr_w, rr_w, dl_w, dr_w);
+                    }
                 }
             }
 
@@ -1513,6 +1734,15 @@ impl VibEngine {
                 self.left *= dl;
                 self.right *= dr;
             }
+            /* ★v17 统合衰减期: 到点硬归零 —— 旧震动瞬间消失, 不拖尾不进下一击;
+             * 若期间有新命中, unified_until 已被重触发刷新 (哨兵 0 = 未布防) */
+            if self.unified_until != 0 && !before(now, self.unified_until) {
+                self.left = 0.0;
+                self.right = 0.0;
+                self.decay_l = 0.0;
+                self.decay_r = 0.0;
+                self.unified_until = 0;
+            }
             /* ★S1 脉冲落地 (v15): 高负载期 (密度自适应激活 / 命中限频咬合) 衰减
              * 尾巴降到本脉冲峰值的 tail_land_pct% 即归零 —— 脉冲之间出真静音
              * (借用 S4 的落地质感), 单挑/低负载期完全不变。只清衰减分量 (在
@@ -1576,7 +1806,11 @@ impl VibEngine {
         if !self.legacy && self.dot_active {
             self.left = self.left.max(0.03);
         }
-        if self.state == VibState::Burst {
+        if self.state == VibState::Burst
+            && !(self.legacy && self.storm_unified_enabled && self.storm_active)
+        {
+            /* ★v17: 统合衰减期让路 —— 否则 Burst 保底会在硬归零后立刻把右马达
+             * 抬回地板值, "旧的瞬间消失"失效 (实测 left=0 而 right=1.0) */
             let bm = self.p[P_BURST_MIN].max(0.0) / 100.0;
             /* ★S1 老方案 (v13.30): P_FONT_ATTACK 是 0-100 滑块量纲, right 是 0-1
              * —— 旧代码 bm×25=8.75 直接把 Burst 右马达顶满幅, 一并归一 */
@@ -1750,6 +1984,56 @@ fn send_vibration(left: u16, right: u16) {
     }
 }
 
+/// ★v16.8 高级算法总开关对 60 槽参数的覆盖 (纯函数, 便于测试):
+/// 关闭 = 把该算法的"关"语义写入参数 (滑块值仍保留在 AppState/config)。
+/// v16.9 扩展三组: 衰减时长/算法窗口 (回内置「默认」预设值) + 静默脉冲 (中性值)。
+pub fn apply_algo_toggle_params(
+    params: &mut [u32; 60],
+    density_enabled: bool,
+    adapt_enabled: bool,
+    move_charge_enabled: bool,
+    decay_enabled: bool,
+    algo_windows_enabled: bool,
+    pulse_enabled: bool,
+) {
+    if !density_enabled {
+        params[29] = 100; /* P_DENSITY_THR: 100 = 关闭密度自适应 */
+    }
+    if !adapt_enabled {
+        params[51] = 0; /* P_ADAPT_REDUCE: 0 = 打太快不减轻 */
+    }
+    if !move_charge_enabled {
+        params[21] = 0; /* P_MOVE_CHARGE_RATE: 0 = 不积累走位能量 */
+    }
+    /* 各类事件衰减时长 → 内置「默认」预设值 (25/55/25/60) */
+    if !decay_enabled {
+        for (i, v) in [(35usize, 25u32), (36, 55), (37, 25), (38, 60)] {
+            params[i] = v;
+        }
+    }
+    /* 算法窗口时长 → 内置「默认」预设值 (150/90/250/20/600/1500/3000) */
+    if !algo_windows_enabled {
+        for (i, v) in [
+            (40usize, 150u32),
+            (41, 90),
+            (42, 250),
+            (43, 20),
+            (44, 600),
+            (45, 1500),
+            (46, 3000),
+        ] {
+            params[i] = v;
+        }
+    }
+    /* 静默/反击/脉冲 → 中性值 (静默 0 / 反击倍数 100 / 唤醒 0 / 里程碑 0 / 收尾 0;
+     * 测试强度 59 保留不动) */
+    if !pulse_enabled {
+        for (i, v) in [(54usize, 0u32), (55, 100), (56, 0), (57, 0), (58, 0)] {
+            params[i] = v;
+        }
+    }
+}
+
 pub fn now_ms_u64() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1820,6 +2104,10 @@ pub fn run(state: Arc<AppState>) {
             let mut shm_handle: Option<HANDLE> = None;
             let mut shm_view: Option<windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS> = None;
             let mut engine = VibEngine::new();
+            /* 环状态沿记录: VIB_RING_INVALID 只在 ok→invalid 跳变时记一条
+             * (DLL 重启窗口每轮都判 invalid 时不再刷屏; crash.log 是 panic 日志,
+             * 保持信噪比) */
+            let mut ring_prev_ok = true;
             /* ★S1 老方案: 路线开关 (评分/移动合成、计数口径、注入门控按路线分叉) */
             let legacy = state.vib_legacy_client.load(Ordering::Relaxed);
             /* 输出闸门诊断: 翻转才记 [GATE] 行 (防刷屏), 见循环内注释 */
@@ -1837,6 +2125,17 @@ pub fn run(state: Arc<AppState>) {
                         params[i] = v;
                     }
                 }
+                /* ★v16.8/16.9: 高级算法总开关对参数槽的覆盖
+                 * (密度/命中自适应/走位能量 + 衰减时长/算法窗口/静默脉冲) */
+                apply_algo_toggle_params(
+                    &mut params,
+                    state.vibration_density_enabled.load(Ordering::Relaxed),
+                    state.vibration_adapt_enabled.load(Ordering::Relaxed),
+                    state.vibration_move_charge_enabled.load(Ordering::Relaxed),
+                    state.vibration_decay_enabled.load(Ordering::Relaxed),
+                    state.vibration_algo_windows_enabled.load(Ordering::Relaxed),
+                    state.vibration_pulse_enabled.load(Ordering::Relaxed),
+                );
                 let motor_l = state.vibration_motor_l_gain.load(Ordering::Relaxed) as f32 / 100.0;
                 let motor_r = state.vibration_motor_r_gain.load(Ordering::Relaxed) as f32 / 100.0;
                 /* 震动随机性: 0=关闭, N=在强度上限附近随机增减 ±N% */
@@ -1993,12 +2292,16 @@ pub fn run(state: Arc<AppState>) {
                         } else {
                             // 头尾异常(DLL 重启 head 回绕 / 软件漏读落后超界): 不能一直丢
                             // (会让震动中断), 把 tail 同步到 head 丢弃积压, 下轮立即恢复读取。
-                            crate::util::crash_log(
-                                "VIB_RING_INVALID",
-                                &format!("cap={capacity} head={head} tail={tail} (已同步 tail=head)"),
-                            );
+                            if ring_prev_ok {
+                                crate::util::crash_log(
+                                    "VIB_RING_INVALID",
+                                    &format!("cap={capacity} head={head} tail={tail} (已同步 tail=head)"),
+                                );
+                                ring_prev_ok = false;
+                            }
                             s.ring.tail.store(head, Ordering::Release);
                         }
+                        ring_prev_ok = ring_ok;
                     } else {
                         let _ = unsafe { UnmapViewOfFile(view) };
                         if let Some(h) = shm_handle.take() {
@@ -2046,17 +2349,67 @@ pub fn run(state: Arc<AppState>) {
                         engine.throttle_window = state.vibration_throttle_window.load(Ordering::Relaxed);
                         engine.throttle_max = state.vibration_throttle_max.load(Ordering::Relaxed);
                         engine.throttle_dense_ratio = state.vibration_throttle_dense_ratio.load(Ordering::Relaxed);
+                        /* ★v16.8 高级算法总开关: 关 = 该算法回到旧行为 (参数按 0/关
+                         * 语义覆盖, 滑块值保留); 默认全开 = 现行行为 */
+                        let merge_en = state.vibration_merge_enabled.load(Ordering::Relaxed);
+                        let hitcap_en = state.vibration_hitcap_enabled.load(Ordering::Relaxed);
+                        let sustain_en = state.vibration_sustain_enabled.load(Ordering::Relaxed);
+                        let tail_en = state.vibration_tail_land_enabled.load(Ordering::Relaxed);
                         /* 群怪聚合参数 (v14.1, 玩家可调): 每帧从 AppState 同步 */
-                        engine.merge_keep = state.vibration_merge_keep.load(Ordering::Relaxed);
+                        engine.merge_keep = if merge_en {
+                            state.vibration_merge_keep.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
                         engine.merge_cap = state.vibration_merge_cap.load(Ordering::Relaxed);
-                        engine.merge_hold = state.vibration_merge_hold.load(Ordering::Relaxed);
+                        engine.merge_hold = if merge_en {
+                            state.vibration_merge_hold.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
                         /* 命中限频参数 (v14.2, 玩家可调): 每帧从 AppState 同步 */
-                        engine.hitcap_max = state.vibration_hitcap_max.load(Ordering::Relaxed);
+                        engine.hitcap_max = if hitcap_en {
+                            state.vibration_hitcap_max.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
                         engine.hitcap_win_ms = state.vibration_hitcap_win.load(Ordering::Relaxed);
-                        engine.hitmerge_ms = state.vibration_hitmerge_ms.load(Ordering::Relaxed);
+                        engine.hitmerge_ms = if merge_en {
+                            state.vibration_hitmerge_ms.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
+                        /* 持续压制参数 (v15.3, 玩家可调): 每帧同步 */
+                        engine.sustain_secs = if sustain_en {
+                            state.vibration_sustain_secs.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
+                        engine.sustain_reduce = state.vibration_sustain_reduce.load(Ordering::Relaxed);
                         /* 脉冲落地 / 怪物异常反馈 (v15, 玩家可调): 每帧同步 */
-                        engine.tail_land_pct = state.vibration_tail_land_pct.load(Ordering::Relaxed);
+                        engine.tail_land_pct = if tail_en {
+                            state.vibration_tail_land_pct.load(Ordering::Relaxed)
+                        } else {
+                            0
+                        };
                         engine.monster_abnormal = state.vibration_monster_abnormal.load(Ordering::Relaxed);
+                        /* 命中风暴抽样 (v16, 玩家可调): 每帧同步。
+                         * ★v16.8: 检测阈值独立于抽样开关 —— 旧配置 storm_thr=0
+                         * (旧语义=关闭) 迁移为 抽样关 + 阈值 10, 风暴检测继续运行,
+                         * 两个"风暴期静音"开关不再被阈值 0 掐死 */
+                        let storm_thr_raw = state.vibration_storm_thr.load(Ordering::Relaxed);
+                        engine.storm_thr = if storm_thr_raw == 0 { 10 } else { storm_thr_raw };
+                        engine.storm_enabled = state.vibration_storm_enabled.load(Ordering::Relaxed)
+                            && storm_thr_raw != 0;
+                        engine.storm_keep_pct = state.vibration_storm_keep_pct.load(Ordering::Relaxed);
+                        engine.storm_win_ms = state.vibration_storm_win_ms.load(Ordering::Relaxed);
+                        engine.storm_pause_ms = state.vibration_storm_pause_ms.load(Ordering::Relaxed);
+                        engine.storm_mute_abnormal = state.vibration_storm_mute_abnormal.load(Ordering::Relaxed);
+                        engine.storm_mute_rank = state.vibration_storm_mute_rank.load(Ordering::Relaxed);
+                        /* 统合衰减期 (v17, 玩家可调): 每帧同步 */
+                        engine.storm_unified_enabled =
+                            state.vibration_storm_unified_enabled.load(Ordering::Relaxed);
+                        engine.storm_unified_ms = state.vibration_storm_unified_ms.load(Ordering::Relaxed);
                         /* 总闸 L/R (v15.1): item_lr[0]/[1] → 左右马达独立总闸微调 */
                         engine.gate_lr_l = (1.0
                             + state.vibration_item_lr[0].load(Ordering::Relaxed) as i32 as f32 / 100.0)
@@ -2417,6 +2770,26 @@ mod legacy_route_tests {
         let item_out: [AtomicU32; 26] = std::array::from_fn(|_| AtomicU32::new(0));
         e.push_event(
             &ev, true, &[0u32; 26], &item_out, &[0u32; 15], &[0i32; 30], 0, 300,
+        );
+    }
+
+    /* 非 FONT 事件 (评分族/死亡/移动) 的测试注入 */
+    fn push_etype(
+        e: &mut VibEngine,
+        etype: u32,
+        strength: u32,
+        rank_gain: &[u32; 15],
+        rank_level_gain: u32,
+    ) {
+        let ev = VibEvent {
+            etype,
+            strength,
+            tick: 0,
+            reserved: 1,
+        };
+        let item_out: [AtomicU32; 26] = std::array::from_fn(|_| AtomicU32::new(0));
+        e.push_event(
+            &ev, true, &[0u32; 26], &item_out, rank_gain, &[0i32; 30], rank_level_gain, 300,
         );
     }
 
@@ -2839,5 +3212,460 @@ mod legacy_route_tests {
             e.left,
             c.left
         );
+    }
+
+    /* ── ★S1 持续压制 (v15.3) 回归: 持续打满限速 → 命中自动再降一档 ── */
+
+    #[test]
+    fn legacy_sustained_suppression_after_full_rate() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 1;
+        e.hitcap_win_ms = 1000;
+        e.sustain_secs = 2;
+        e.sustain_reduce = 40;
+        /* inj1: sus 长窗启动, count=1 < 2 (限速1/s×2s) → 满强度 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected);
+        let peak = e.left;
+        assert_eq!(e.sus_count, 1);
+        /* inj2 (1 秒后): sus 窗内 count=2 = 限速上限×2 秒 → 降 40% */
+        e.sus_start = now_ms().wrapping_sub(1000);
+        e.hitcap_start = now_ms().wrapping_sub(1001); /* 滚动限频窗 → 放行 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(
+            e.left < peak * 0.65,
+            "持续满载后命中应降档: {} vs {}",
+            e.left,
+            peak
+        );
+        /* inj3 (2.1 秒后): sus 长窗滚动重置 → 恢复满强度 */
+        e.sus_start = now_ms().wrapping_sub(2100);
+        e.hitcap_start = now_ms().wrapping_sub(1001);
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(
+            (e.left - peak).abs() < 1e-6,
+            "降速后应恢复满强度: {}",
+            e.left
+        );
+    }
+
+    /* ── ★S1 命中风暴抽样 (v16) 回归 ── */
+
+    #[test]
+    fn legacy_storm_sampling_drops_excess_hits() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0; /* 关闭限频, 隔离风暴 */
+        e.storm_thr = 5;
+        e.storm_keep_pct = 50;
+        e.storm_win_ms = 1000;
+        e.storm_pause_ms = 400;
+        /* 8 条纯命中事件窗内到达: 1-4 条风暴未激活全注入;
+         * 第 5 条入风暴 (seen=1 保留), 第 6 条 (seen=2) 丢弃,
+         * 第 7 条 (seen=3) 保留, 第 8 条 (seen=4) 丢弃 → 共 6 次注入 */
+        let mut injected = 0;
+        for i in 0..8 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            if e.last_injected {
+                injected += 1;
+            }
+            if i == 4 {
+                /* 第 6 条被风暴丢弃: 不推进 IVL 锚点 (防通道饥饿)。
+                 * 锚点断言取"拨锚后"的值: 拨锚本身会改写字段, 断言的是
+                 * push 不得再前推它 */
+                e.last_font_ch[3] = now_ms().wrapping_sub(100);
+                let anchor = e.last_font_ch[3];
+                push_font(&mut e, 0x01);
+                assert!(!e.last_injected, "风暴期第 2 条应被抽样丢弃");
+                assert_eq!(e.last_font_ch[3], anchor, "丢弃事件不得打 IVL 锚点");
+                assert_eq!(e.font_carry_s[3], 0.0, "丢弃事件不得进聚合记账");
+                break;
+            }
+        }
+        assert_eq!(e.storm_active, true, "5 条应触发风暴");
+        assert_eq!(injected, 5, "前 5 条 (含风暴首条) 应全部注入");
+        /* 续 2 条: 保留 1 丢 1 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected, "seen=3 应保留");
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(!e.last_injected, "seen=4 应丢弃");
+    }
+
+    #[test]
+    fn legacy_storm_pause_recovers_per_hit() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 3;
+        e.storm_keep_pct = 50;
+        e.storm_pause_ms = 400;
+        /* 3 条快速命中 → 风暴激活; 第 4 条被抽样丢弃 */
+        for _ in 0..3 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+        }
+        assert!(e.storm_active);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(!e.last_injected, "风暴期应丢弃");
+        /* 停顿 500ms (> 400) → 恢复刀刀震: 本发必震且风暴退出 */
+        e.storm_last_hit = now_ms().wrapping_sub(500);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected, "停顿后第一击必震");
+        assert!(!e.storm_active, "停顿后风暴应退出");
+        /* 后续命中在阈值以下继续刀刀震 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected, "恢复后应刀刀震");
+        assert_eq!(e.storm_active, false);
+    }
+
+    #[test]
+    fn legacy_storm_off_thr0_keeps_old_behavior() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 0; /* 关闭 */
+        for _ in 0..12 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            assert!(e.last_injected, "thr=0 关闭态应逐条注入 (旧行为)");
+        }
+        assert!(!e.storm_active);
+    }
+
+    #[test]
+    fn legacy_storm_excludes_wound_classes() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 50;
+        e.p[P_FONT_HIT] = 45.0; /* 受击通道默认 0, 测试需显式给强度 */
+        /* 2 条命中触发风暴 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        let hits_before = e.storm_count;
+        /* 受击 (0x02) 与玩家 DOT (0x20): 不计入风暴、也不被风暴丢弃 */
+        e.last_font_ch[0] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x02);
+        assert!(e.last_injected, "受伤类不受风暴影响 (受击)");
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x20);
+        assert!(e.last_injected, "受伤类不受风暴影响 (DOT)");
+        assert_eq!(e.storm_count, hits_before, "受伤类不得计入风暴计数");
+    }
+
+    #[test]
+    fn new_route_storm_never_applies() {
+        /* 红线: 新方案 (!legacy) 不进风暴分支, 行为与 v15.3 逐字节一致 */
+        let mut e = carry_engine(false);
+        e.storm_thr = 2;
+        e.storm_keep_pct = 50;
+        for _ in 0..6 {
+            e.last_font = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            assert!(e.last_injected, "新方案不受风暴抽样影响");
+        }
+        assert!(!e.storm_active);
+    }
+
+    /* ── ★v16.6 风暴期静音怪物异常 (可选开关) ── */
+
+    #[test]
+    fn legacy_storm_mutes_abnormal_feedback_when_enabled() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.monster_abnormal = 5;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 100; /* 不抽样, 只验证静音门 */
+        e.storm_mute_abnormal = true;
+        /* 2 条命中触发风暴 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        /* 风暴期 0x04: 零痕迹丢弃 */
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        let anchor = e.last_font_ch[2];
+        let dens = e.density_hits;
+        push_font(&mut e, 0x04);
+        assert!(!e.last_injected, "风暴期 0x04 应被静音");
+        assert_eq!(e.last_font_ch[2], anchor, "静音事件不打注入窗戳");
+        assert_eq!(e.density_hits, dens, "静音事件不计密度");
+        /* 玩家 DOT (0x20) 不受影响 */
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x20);
+        assert!(e.last_injected, "玩家 DOT 不受风暴静音影响");
+        /* 停顿超过 pause → 自动恢复 (时间窗判定, 无需等下一发命中) */
+        e.storm_last_hit = now_ms().wrapping_sub(600);
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x04);
+        assert!(e.last_injected, "停手后 0x04 应恢复震动");
+    }
+
+    #[test]
+    fn legacy_storm_mute_off_keeps_abnormal_feedback() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.monster_abnormal = 5;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 100;
+        e.storm_mute_abnormal = false; /* 默认关 = 旧行为 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x04);
+        assert!(e.last_injected, "开关关闭时风暴期 0x04 照常震动");
+    }
+
+    /* ── ★v16.7 风暴期静音评分点系统 (可选开关) ── */
+
+    #[test]
+    fn legacy_storm_mutes_rank_when_enabled() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 100; /* 不抽样, 只验证静音门 */
+        e.storm_mute_rank = true;
+        /* 2 条命中触发风暴 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        let mut rank_gain = [0u32; 15];
+        rank_gain[0] = 50; /* 评分点 */
+        rank_gain[11] = 40; /* 移动 */
+        rank_gain[14] = 50; /* 怪物死亡 */
+        e.rank_level = 0.0;
+        e.rank_full_until = 0;
+        /* 评分等级脉冲 (VEV_RANKING) 静音 */
+        push_etype(&mut e, VEV_RANKING, 5, &rank_gain, 100);
+        assert!(!e.last_injected, "风暴期评分等级脉冲应静音");
+        assert_eq!(e.rank_level, 0.0, "静音不得写入评分脉冲");
+        /* 评分点 (细分事件) 静音 */
+        push_etype(&mut e, VEV_KILLPOINT, 100, &rank_gain, 100);
+        assert_eq!(e.rank_level, 0.0, "风暴期评分点应静音");
+        /* 怪物死亡静音 */
+        push_etype(&mut e, VEV_TARGET_DIE, 100, &rank_gain, 100);
+        assert!(!e.last_injected, "风暴期怪物死亡应静音");
+        assert_eq!(e.rank_level, 0.0);
+        /* 移动 (VEV_MOVE) 不属于评分点系统, 不受影响 */
+        e.move_level = 0.0;
+        push_etype(&mut e, VEV_MOVE, 100, &rank_gain, 100);
+        assert!(e.move_level > 0.0, "移动持续震动不受评分静音影响");
+        /* 停顿超过 pause → 恢复 */
+        e.storm_last_hit = now_ms().wrapping_sub(600);
+        push_etype(&mut e, VEV_KILLPOINT, 100, &rank_gain, 100);
+        assert!(e.rank_level > 0.0, "停手后评分事件应恢复");
+    }
+
+    #[test]
+    fn legacy_storm_mute_rank_off_keeps_rank() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 100;
+        e.storm_mute_rank = false; /* 默认关 = 旧行为 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        let mut rank_gain = [0u32; 15];
+        rank_gain[0] = 50;
+        e.rank_level = 0.0;
+        e.rank_full_until = 0;
+        push_etype(&mut e, VEV_KILLPOINT, 100, &rank_gain, 100);
+        assert!(e.rank_level > 0.0, "开关关闭时风暴期评分事件照常震动");
+    }
+
+    /* ── ★v16.8 风暴检测与抽样解耦 + 算法总开关参数覆盖 ── */
+
+    #[test]
+    fn legacy_storm_detection_survives_sampling_off() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 50;
+        e.storm_enabled = false; /* 抽样总开关关 */
+        e.storm_mute_rank = true; /* 静音开 */
+        let mut injected = 0;
+        for _ in 0..6 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            if e.last_injected {
+                injected += 1;
+            }
+        }
+        assert!(e.storm_active, "抽样关闭时风暴检测仍应工作 (静音开关依赖它)");
+        assert_eq!(injected, 6, "抽样关闭时命中不得被丢弃");
+        /* 静音开关仍然有效 (修复前会被阈值/抽样开关掐死) */
+        let mut rank_gain = [0u32; 15];
+        rank_gain[0] = 50;
+        e.rank_level = 0.0;
+        e.rank_full_until = 0;
+        push_etype(&mut e, VEV_KILLPOINT, 100, &rank_gain, 100);
+        assert_eq!(e.rank_level, 0.0, "抽样关闭时风暴期静音仍应生效");
+    }
+
+    #[test]
+    fn algo_toggle_params_override() {
+        let mut p = [7u32; 60];
+        apply_algo_toggle_params(&mut p, false, false, false, false, false, false);
+        assert_eq!(p[29], 100, "密度自适应关 → 阈值 100");
+        assert_eq!(p[51], 0, "命中自适应关 → 降幅 0");
+        assert_eq!(p[21], 0, "走位能量关 → 速率 0");
+        assert_eq!(
+            [p[35], p[36], p[37], p[38]],
+            [25, 55, 25, 60],
+            "衰减组关 → 回内置默认衰减"
+        );
+        assert_eq!(
+            [p[40], p[41], p[42], p[43], p[44], p[45], p[46]],
+            [150, 90, 250, 20, 600, 1500, 3000],
+            "窗口组关 → 回内置默认窗口"
+        );
+        assert_eq!(
+            [p[54], p[55], p[56], p[57], p[58]],
+            [0, 100, 0, 0, 0],
+            "静默脉冲关 → 中性值"
+        );
+        assert_eq!(p[59], 7, "测试强度不受任何开关影响");
+        let mut q = [7u32; 60];
+        apply_algo_toggle_params(&mut q, true, true, true, true, true, true);
+        assert_eq!([q[29], q[35], q[40], q[54]], [7, 7, 7, 7], "全开时参数不动");
+    }
+
+    /* ── ★v17 统合衰减期 (风暴期统一包络) ── */
+
+    #[test]
+    fn legacy_unified_decay_retriggers_and_hard_cuts() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 50; /* 抽样本会丢一半 */
+        e.storm_enabled = true;
+        e.storm_unified_enabled = true;
+        e.storm_unified_ms = 100;
+        /* 2 条命中触发风暴 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        e.last_font_ch[3] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert!(e.storm_active);
+        /* 统合模式: 每一击都重新起振 (抽样/限频让路) */
+        let mut injected = 0;
+        for _ in 0..6 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            if e.last_injected {
+                injected += 1;
+            }
+        }
+        assert_eq!(injected, 6, "统合衰减期下每一击都应重新起振 (不抽样)");
+        assert!(e.unified_until != 0, "统合包络应已布防");
+        assert!(e.left > 0.0, "重触发后应全幅起振");
+        /* 到点硬归零 (旧的瞬间消失) */
+        e.unified_until = now_ms().wrapping_sub(1);
+        let params = [100u32; 60];
+        e.tick(&params);
+        assert_eq!(e.left, 0.0, "统合衰减期到点应硬归零");
+        assert_eq!(e.right, 0.0);
+        assert_eq!(e.unified_until, 0, "归零后清哨兵");
+    }
+
+    #[test]
+    fn legacy_unified_decay_off_keeps_sampling() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.storm_thr = 2;
+        e.storm_keep_pct = 50;
+        e.storm_unified_enabled = false; /* 默认关 = 抽样照旧 */
+        for _ in 0..2 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+        }
+        assert!(e.storm_active);
+        let mut injected = 0;
+        for _ in 0..4 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x01);
+            if e.last_injected {
+                injected += 1;
+            }
+        }
+        assert_eq!(injected, 2, "统合关闭时应按 50% 抽样 (4 条留 2 条)");
+        assert_eq!(e.unified_until, 0, "统合关闭时不应布防");
+    }
+
+    #[test]
+    fn new_route_unified_never_applies() {
+        let mut e = carry_engine(false);
+        e.storm_unified_enabled = true;
+        e.storm_active = true; /* 人为激活, 验证 legacy 门 */
+        e.last_font = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x01);
+        assert_eq!(e.unified_until, 0, "新方案不参与统合衰减期");
+    }
+
+    /* ── ★v16.1: 0 强度事件零影响 (注入窗戳 / 密度统计) ── */
+
+    #[test]
+    fn legacy_zero_strength_events_leave_no_trace() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 0;
+        e.hitcap_max = 0;
+        e.monster_abnormal = 0; /* 怪物异常反馈关闭 */
+        /* 0x04 (怪物出血, 强度 0): 不注入、不打通道戳、不计密度 */
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        let anchor = e.last_font_ch[2];
+        push_font(&mut e, 0x04);
+        assert!(!e.last_injected, "怪物异常=0 时出血事件不注入");
+        assert_eq!(e.last_font_ch[2], anchor, "0 强度事件不得刷新注入窗");
+        assert_eq!(e.density_hits, 0, "0 强度事件不得计密度");
+        /* 出血洪流 (强度 0) 不得触发密度压制 */
+        e.p[P_DENSITY_THR] = 45.0;
+        for _ in 0..10 {
+            e.last_font_ch[2] = now_ms().wrapping_sub(100);
+            push_font(&mut e, 0x04);
+        }
+        assert!(!e.density_active, "出血洪流 (强度 0) 不得触发密度压制");
+        /* 真实 DOT 不受影响: 正常注入 */
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x20);
+        assert!(e.last_injected, "真实 DOT 不受 0 强度事件影响");
+        /* 对照组: monster_abnormal>0 时 0x04 恢复注入+计数 */
+        e.monster_abnormal = 5;
+        e.density_hits = 0;
+        e.density_active = false;
+        e.density_win_start = 0;
+        e.last_font_ch[2] = now_ms().wrapping_sub(100);
+        push_font(&mut e, 0x04);
+        assert!(e.last_injected, "怪物异常>0 时出血事件应注入");
+        assert!(e.density_hits >= 1, "非 0 强度出血应计密度");
     }
 }

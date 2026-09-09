@@ -269,7 +269,7 @@ impl SorahkGui {
             if r_resp.clicked() {
                 self.minimal_vib_preset_job = true;
                 /* 切到全职业预设: 直接启用当前选中职业 (无需再点应用) */
-                let jobs = crate::job_presets::builtin_jobs();
+                let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
                 let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                 let class_sel = self.vib_job_class.min(jobs[base_sel].classes.len().saturating_sub(1));
                 self.apply_job_vibration_preset(jobs[base_sel].base_job, &jobs[base_sel].classes[class_sel]);
@@ -281,15 +281,19 @@ impl SorahkGui {
             /* 预设选择 (来源由上面的分段开关决定) */
             if !mode_job {
                 self.ensure_act1_preset_listed();
-                let names: Vec<String> = self
-                    .config
-                    .vibration_presets
+                /* ★v19: 用真实下标, 修过滤下标错位 */
+                let entries = crate::config::visible_preset_entries(
+                    &self.config.vibration_presets,
+                    self.config.vib_legacy_client,
+                );
+                let sel_pos = entries
                     .iter()
-                    .filter(|p| self.config.vib_legacy_client || p.name != "ACT1 特供")
-                    .map(|x| x.name.clone())
-                    .collect();
-                let sel = self.vib_preset_idx.min(names.len().saturating_sub(1));
-                let selected = names.get(sel).cloned().unwrap_or_default();
+                    .position(|(real, _)| *real == self.vib_preset_idx)
+                    .unwrap_or(0);
+                if let Some((real, _)) = entries.get(sel_pos) {
+                    self.vib_preset_idx = *real;
+                }
+                let selected = entries.get(sel_pos).map(|(_, n)| n.clone()).unwrap_or_default();
                 /* ComboBox 内嵌 horizontal 不被父级居中 → 定宽子块居中法 (同连发与映射行) */
                 let combo_w = 200.0_f32;
                 ui.allocate_ui_with_layout(
@@ -300,9 +304,9 @@ impl SorahkGui {
                             .selected_text(selected)
                             .width(200.0)
                             .show_ui(ui, |ui| {
-                                for (i, n) in names.iter().enumerate() {
-                                    if ui.selectable_label(i == sel, n).clicked() {
-                                        self.vib_preset_idx = i;
+                                for (pos, (real, n)) in entries.iter().enumerate() {
+                                    if ui.selectable_label(pos == sel_pos, n).clicked() {
+                                        self.vib_preset_idx = *real;
                                         self.apply_general_vibration_preset(n);
                                     }
                                 }
@@ -311,7 +315,7 @@ impl SorahkGui {
                 );
             } else {
                 /* 全职业: 基础职业 → 转职 两级选择 (选中转职立即应用) */
-                let jobs = crate::job_presets::builtin_jobs();
+                let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
                 let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                 let classes = &jobs[base_sel].classes;
                 let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));

@@ -62,6 +62,7 @@ pub struct JobClass {
 }
 
 /// 基础职业
+#[derive(Clone)]
 pub struct JobPreset {
     pub base_job: &'static str,
     pub classes: Vec<JobClass>,
@@ -185,9 +186,11 @@ pub fn load_job_vibration() -> Option<JobVibrationConfig> {
     Some(cfg)
 }
 
-/// 按名字查找职业, 返回 (基础职业索引, 转职索引, 克隆)
+/// 按名字查找职业, 返回 (基础职业索引, 转职索引, 克隆)。
+/// ★v19: ACT 变体 (基础职业名带 "-ACT" 后缀) 一并可查, 供应用/恢复职业快照。
 pub fn find_class(base: &str, name: &str) -> Option<(usize, usize, JobClass)> {
-    let jobs = builtin_jobs();
+    let mut jobs = builtin_jobs();
+    jobs.extend(builtin_jobs_act());
     for (bi, j) in jobs.iter().enumerate() {
         if j.base_job == base {
             for (ci, c) in j.classes.iter().enumerate() {
@@ -198,6 +201,110 @@ pub fn find_class(base: &str, name: &str) -> Option<(usize, usize, JobClass)> {
         }
     }
     None
+}
+
+// ---------- ★v19 ACT 专属职业预设 (仅 S1 路线显示, 不影响 S4 原表) ----------
+
+/// ACT 职业主反馈 (按职业特性显式指定, 覆盖 ACT 阶梯的默认"命中为主体")。
+/// 技能型 → 特殊攻击最突出; 坦克/反击型 → 受击突出; DOT 型 → 持续伤害突出。
+fn act_signature(name: &str) -> crate::config::ActSignature {
+    use crate::config::ActSignature;
+    match name {
+        /* DOT 型 */
+        "鬼泣" | "死灵术士" => ActSignature::Dot,
+        /* 技能型 (特殊攻击为主体) */
+        "阿修罗" | "气功师" | "枪炮师" | "机械师" | "弹药专家" | "元素爆破师" | "冰结师"
+        | "血法师" | "次元行者" | "元素师" | "魔道学者" | "圣骑士（审判）"
+        | "驱魔师（法驱）" | "复仇者" | "忍者" => ActSignature::Special,
+        /* 坦克/反击型 (受击为主体之一) */
+        "圣骑士（辅助）" | "街霸" => ActSignature::Taken,
+        /* 其余: 命中为主体 (ACT1 口径) */
+        _ => ActSignature::Hit,
+    }
+}
+
+/// 单个转职的 ACT 重构: 按职业特性重建全部震动参数 ——
+/// · 力度档 (上限/事件阶梯/衰减) 由原职业档位重标定;
+/// · 主反馈 (命中/特殊/受击/DOT) 按职业特性显式指定, 其余事件落在其下;
+/// · 全局三闸 = 100/90 + 档位上限, 飘字间隔 ≤20ms (ACT 管线);
+/// · 评分族压低 (细分 ×0.3, 等级 ≤30, 时长 ≤250);
+/// · 职业个性 (移动/密度/连击/窗口/脉冲/马达权重/专属算法/节流/平滑) 原样保留。
+fn act_variant_class(c: &JobClass) -> JobClass {
+    let src = &c.params;
+    /* ★v19.5 用户定稿: **以 ACT1 特供为基底** (连击增强/曲线/节奏等 "ACT1 概念"
+     * 槽位全部继承), 再按职业理念覆盖 —— 力度档由原上限重标定, 主反馈显式指定,
+     * 密度/连击/移动/窗口/脉冲按职业原型重建, 马达换 ACT 语言;
+     * **专属算法保留** (algo_id/algo_params), 由引擎按 ACT1 理念约束其表现。 */
+    let tier = crate::config::act_tier_from_max(src[4]);
+    let base = crate::config::act1_base_params();
+    let params =
+        crate::config::act_build_params_from(&base, src, tier, act_signature(c.name), None);
+    JobClass {
+        name: c.name,
+        params,
+        rank_lr: crate::config::act_rank_lr(),
+        rank_type_gain: crate::config::act_variant_rank_gains(&c.rank_type_gain),
+        rank_level_gain: 30,
+        rank_duration: 250,
+        out_smooth: 35,
+        throttle_window: 0,
+        throttle_max: 0,
+        throttle_dense_ratio: 100,
+        abs_freq_enabled: false,
+        algo_id: c.algo_id,
+        algo_params: c.algo_params,
+        desc: Box::leak(format!("{} · ACT 特调", c.desc).into_boxed_str()),
+    }
+}
+
+/// 基础职业的 ACT 变体 (名称加 "-ACT" 后缀, 例如 鬼剑士（男）-ACT)
+fn act_variant_job(j: &JobPreset) -> JobPreset {
+    JobPreset {
+        base_job: Box::leak(format!("{}-ACT", j.base_job).into_boxed_str()),
+        classes: j.classes.iter().map(act_variant_class).collect(),
+    }
+}
+
+/// 全部基础职业的 ACT 变体表 —— **ACT1 时代名册**: 剔除当时尚不存在的职业。
+/// 剔除基类: 鬼剑士（女）/ 圣职者（女）/ 魔枪士（男）/ 守护者（女）/ 外传;
+/// 剔除转职: 神枪手（男）的「合金战士」(女鬼剑士「剑影」本表即无)。
+/// OnceLock 缓存, 只构造一次。
+pub fn builtin_jobs_act() -> Vec<JobPreset> {
+    /// ACT1 时代不存在的基类
+    const EXCLUDED_BASE: [&str; 5] = [
+        "鬼剑士（女）",
+        "圣职者（女）",
+        "魔枪士（男）",
+        "守护者（女）",
+        "外传",
+    ];
+    /// ACT1 时代不存在的转职
+    const EXCLUDED_SUB: [&str; 1] = ["合金战士"];
+
+    static CACHE: std::sync::OnceLock<Vec<JobPreset>> = std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            builtin_jobs()
+                .iter()
+                .filter(|j| !EXCLUDED_BASE.contains(&j.base_job))
+                .map(|j| {
+                    let mut v = act_variant_job(j);
+                    v.classes.retain(|c| !EXCLUDED_SUB.contains(&c.name));
+                    v
+                })
+                .collect()
+        })
+        .clone()
+}
+
+/// ★v19: 当前路线可用的职业预设表 —— **S1 只给 ACT 名册, S4 只给原表**
+/// (互不冲突, 切路线即换整套职业预设; 恢复快照用 find_class 两表都查)
+pub fn available_jobs(legacy_client: bool) -> Vec<JobPreset> {
+    if legacy_client {
+        builtin_jobs_act()
+    } else {
+        builtin_jobs()
+    }
 }
 
 // ---------- 配置导入 (v33.1: 与导出往返一致规范) ----------

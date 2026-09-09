@@ -107,6 +107,9 @@ pub struct SorahkGui {
     /// 首次运行 · 第 1.5 弹「客户端版本」询问窗 (仅 DFO 玩家; 选完写入
     /// config.vib_legacy_client / vib_edition_asked 并进使用说明)
     pub show_edition_ask: bool,
+    /// ★v19: 向导弹窗串接延迟帧数 —— 新弹窗晚一帧渲染, 防"同帧点击穿透"
+    /// (一次点击被刚弹出的新窗口按钮再吃一遍, 导致版本询问被瞬间跳过)
+    pub modal_defer: u8,
     /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
     new_whitelist_name: String,
     whitelist_error: Option<String>,
@@ -197,6 +200,9 @@ pub struct SorahkGui {
     pub minimal_job_block_w: f32,
     /// 极简模式震动预设来源: false=通用预设 / true=全职业预设 (互斥)
     pub minimal_vib_preset_job: bool,
+    /// ★60 槽滑块自动落盘脏标 (v16.2): 拖动即镜像进 config.vibration 并记时刻,
+    /// 主循环静默 1 秒后统一写 Vibration.toml (去抖, 防逐帧写盘)。仅非职业模式。
+    pub vib_params_dirty_since: Option<std::time::Instant>,
     /// 连发映射页预设管理卡状态
     pub page_preset_name_input: String,
     pub page_preset_rename_input: String,
@@ -259,6 +265,7 @@ impl SorahkGui {
             dfo_ask_answered: false,
             first_run_rerun: false,
             show_edition_ask: false,
+            modal_defer: 0,
             new_whitelist_name: String::new(),
             whitelist_error: None,
             quick_gamepad_pending: None,
@@ -297,6 +304,7 @@ impl SorahkGui {
             minimal_pos_latch: 0,
             minimal_vib_preset_job,
             minimal_job_block_w: 0.0,
+            vib_params_dirty_since: None,
             page_preset_name_input: String::new(),
             page_preset_rename_input: String::new(),
             page_preset_rename_show: false,

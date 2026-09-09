@@ -186,9 +186,17 @@ pub struct VibrationConfig {
     pub hitcap_win_ms: u32,
     /// 命中聚合窗 ms (v15.2, 仅 S1 命中通道): 群怪一刀产生多条命中事件
     /// (每怪一条), 窗内全部记账合并 —— **一刀只震一下 (更厚)**, 能量不丢。
-    /// 默认 40; 调大 = 一刀多怪更彻底地合并
+    /// 默认 60; 调大 = 一刀多怪更彻底地合并
     #[serde(default = "default_vib_hitmerge")]
     pub hitmerge_ms: u32,
+    /// 持续压制·触发秒数 (v15.3, 仅 S1 命中通道): 命中限频持续咬合该秒数后,
+    /// 命中震动自动再降一档 (狂战士血之狂暴等持续性双倍打击的自动降温)。
+    /// **0 = 关闭持续压制**
+    #[serde(default = "default_vib_sustain_secs")]
+    pub sustain_secs: u32,
+    /// 持续压制·降幅 % (咬合超时后命中震动额外降低的比例)
+    #[serde(default = "default_vib_sustain_reduce")]
+    pub sustain_reduce: u32,
     /// 脉冲落地·阈值 % (v15, S1 高级算法): 高负载期 (密度自适应激活/命中限频
     /// 咬合) 衰减尾巴降到本脉冲峰值的此比例即归零, 脉冲间出真静音。
     /// **0 = 关闭落地** (维持自然衰减尾巴)
@@ -199,6 +207,81 @@ pub struct VibrationConfig {
     /// 注意 S1 有重映射 20% 抬底: 1 实感约 20% 满幅, **0 = 完全关闭**
     #[serde(default = "default_vib_monster_abnormal")]
     pub monster_abnormal_gain: u32,
+    /// 命中风暴·阈值 (v16, 仅 S1 命中通道): 风暴统计窗内纯命中事件 (受伤类
+    /// 受击/出血/DOT 全部排除) 超过此数 → 进入风暴, 只保留 storm_keep_pct%
+    /// 的命中震动 (抽样丢弃, 不记账不补发), 停手超过 storm_pause_ms 即恢复
+    /// 刀刀震动。默认 10 条 (用户明确要求开启, 规范 §9.3 例外)。
+    /// **0 = 关闭风暴抽样 (回到旧行为)**
+    #[serde(default = "default_vib_storm_thr")]
+    pub storm_thr: u32,
+    /// 命中风暴·保留比例 % (风暴期每 N 条命中保留 1 条, N = 100÷此值; 50=两条震一条)
+    #[serde(default = "default_vib_storm_keep")]
+    pub storm_keep_pct: u32,
+    /// 命中风暴·统计窗口 ms (窗内纯命中事件计数, 达阈值即入风暴)
+    #[serde(default = "default_vib_storm_win")]
+    pub storm_win_ms: u32,
+    /// 命中风暴·恢复暂停 ms (距上一条纯命中事件超过此时长 → 立即恢复刀刀震动)
+    #[serde(default = "default_vib_storm_pause")]
+    pub storm_pause_ms: u32,
+    /// 命中风暴·风暴期间暂时静音怪物异常反馈 (v16.6, 仅 S1): 勾选后风暴期间
+    /// 0x04 怪物出血/中毒跳字不再震动 (零痕迹: 不打锚/不计密度/不进记账),
+    /// 风暴结束或停手超过 storm_pause_ms 自动恢复。**默认 false = 旧行为**
+    #[serde(default)]
+    pub storm_mute_abnormal: bool,
+    /// 命中风暴·风暴期间暂时静音评分点系统 (v16.7, 仅 S1): 勾选后风暴期间
+    /// 评分族事件 (评分等级脉冲/评分点/闪避/暴击/破招/背击/最终击杀/凌空追击/
+    /// 第一击/增益叠加/释放技能/镜头震动/技能震动/暴击特写/怪物死亡) 零痕迹
+    /// 静音; 移动持续震动不属于评分点系统, 不受影响。恢复同上。
+    /// **默认 false = 旧行为**
+    #[serde(default)]
+    pub storm_mute_rank: bool,
+    /* ── ★高级算法总开关 (v16.8, 用户定稿: 每个高级算法大选项一个开关) ──
+     * 语义: false = 该算法回到旧行为 (等效于把其参数按 0/关 语义覆盖),
+     * 滑块值保留不动 (重新勾选即恢复)。全部默认 true = 现行行为。
+     * 风暴检测 (storm_active) 与抽样开关解耦: 抽样关掉时仍持续检测,
+     * 供两个"风暴期静音"开关使用 (修 v16.6/16.7 静音被阈值 0 掐死的 BUG)。 */
+    /// 一刀多怪合并 (命中聚合窗 + 聚合记账) 总开关
+    #[serde(default = "default_vib_true")]
+    pub merge_enabled: bool,
+    /// 命中限频 总开关
+    #[serde(default = "default_vib_true")]
+    pub hitcap_enabled: bool,
+    /// 命中风暴抽样 总开关 (关 = 不抽样, 但风暴检测继续为静音开关服务)
+    #[serde(default = "default_vib_true")]
+    pub storm_enabled: bool,
+    /// 持续降温 总开关
+    #[serde(default = "default_vib_true")]
+    pub sustain_enabled: bool,
+    /// 脉冲落地 总开关
+    #[serde(default = "default_vib_true")]
+    pub tail_land_enabled: bool,
+    /// 连击密度自适应 总开关
+    #[serde(default = "default_vib_true")]
+    pub density_enabled: bool,
+    /// 命中自适应 (打太快自动减轻) 总开关
+    #[serde(default = "default_vib_true")]
+    pub adapt_enabled: bool,
+    /// 走位能量积累 (移动积累增强) 总开关
+    #[serde(default = "default_vib_true")]
+    pub move_charge_enabled: bool,
+    /// 各类事件衰减时长 自定义开关 (false = 用内置默认衰减时长, 滑块不生效)
+    #[serde(default = "default_vib_true")]
+    pub decay_enabled: bool,
+    /// 算法窗口时长 (持续/节奏/爆发/连击统计) 自定义开关 (false = 用内置默认窗口)
+    #[serde(default = "default_vib_true")]
+    pub algo_windows_enabled: bool,
+    /// 静默/反击/脉冲 开关 (false = 不再静默/不再反击加成/不再发脉冲; 测试强度保留)
+    #[serde(default = "default_vib_true")]
+    pub pulse_enabled: bool,
+    /// ★统合衰减期 (v17, 仅 S1 风暴期, 默认关): 风暴期普通命中通道改用一条"统合
+    /// 包络" —— 每次命中把旧包络瞬间清零后重新起振, 衰减时间统一固定, 到点硬归零。
+    /// 连续命中 = 一击接一击的干净持续震动 (旧尾巴不再叠糊)。开启时风暴抽样与
+    /// 命中限频/聚合记账对该通道让路 (每一击都重新起振)。
+    #[serde(default)]
+    pub storm_unified_enabled: bool,
+    /// 统合衰减期时长 ms (固定衰减周期, 40-400)
+    #[serde(default = "default_vib_storm_unified_ms")]
+    pub storm_unified_ms: u32,
     /// Attack frequency gain -196
     #[serde(default = "default_vib_40")]
     pub attack_gain: u32,
@@ -374,8 +457,29 @@ impl Default for VibrationConfig {
             hitcap_max: default_vib_hitcap_max(),
             hitcap_win_ms: default_vib_hitcap_win(),
             hitmerge_ms: default_vib_hitmerge(),
+            sustain_secs: default_vib_sustain_secs(),
+            sustain_reduce: default_vib_sustain_reduce(),
             tail_land_pct: default_vib_tail_land(),
             monster_abnormal_gain: default_vib_monster_abnormal(),
+            storm_thr: default_vib_storm_thr(),
+            storm_keep_pct: default_vib_storm_keep(),
+            storm_win_ms: default_vib_storm_win(),
+            storm_pause_ms: default_vib_storm_pause(),
+            storm_mute_abnormal: false,
+            storm_mute_rank: false,
+            merge_enabled: true,
+            hitcap_enabled: true,
+            storm_enabled: true,
+            sustain_enabled: true,
+            tail_land_enabled: true,
+            density_enabled: true,
+            adapt_enabled: true,
+            move_charge_enabled: true,
+            decay_enabled: true,
+            algo_windows_enabled: true,
+            pulse_enabled: true,
+            storm_unified_enabled: false,
+            storm_unified_ms: default_vib_storm_unified_ms(),
             item_lr: default_vib_item_lr(),
             rank_lr: default_vib_rank_lr(),
             rank_type_gain: default_vib_rank_gain(),
@@ -423,14 +527,39 @@ fn default_vib_merge_hold() -> u32 { 80 }
  * 超额命中全额记账进聚合能量, 每一击都不丢。 */
 fn default_vib_hitcap_max() -> u32 { 6 }
 fn default_vib_hitcap_win() -> u32 { 1000 }
-/* 命中聚合窗 (v15.2) 默认 40ms: 群怪一刀的多条命中事件窗内合并, 一刀一震 */
-fn default_vib_hitmerge() -> u32 { 40 }
+/* 命中聚合窗 (v15.2) 默认 60ms: 群怪一刀的多条命中事件窗内合并, 一刀一震 */
+fn default_vib_hitmerge() -> u32 { 60 }
+
+/* 持续压制 (v15.3) 默认: 命中限频持续咬合 3 秒后, 命中震动再降 30%
+ * (狂战士血之狂暴等持续性双倍打击的自动降温; 0 秒 = 关闭) */
+fn default_vib_sustain_secs() -> u32 { 3 }
+fn default_vib_sustain_reduce() -> u32 { 30 }
 
 /* 脉冲落地 (v15) 默认 25%: 高负载期尾巴降到峰值 25% 即归零 (0=关闭) */
 fn default_vib_tail_land() -> u32 { 25 }
 /* 怪物异常反馈 (v15) 默认 1%: 出血/中毒跳字压到最低档 (0=完全关闭;
  * 注意 S1 重映射 20% 抬底, 1 实感约 20% 满幅) */
 fn default_vib_monster_abnormal() -> u32 { 1 }
+
+/* 命中风暴抽样 (v16) 默认: 1 秒窗内纯命中事件 ≥10 条 → 只保留一半震动
+ * (每两条震一条), 停手 400ms 即恢复刀刀震 (0 = 关闭)。
+ * 狂战士血之狂暴双倍打击+群怪场景命中事件暴增专用; 用户明确要求默认开启
+ * (规范 §9.3 例外), 单挑慢速攻击 (1 秒 10 条以下) 永不触发。 */
+fn default_vib_storm_thr() -> u32 { 10 }
+fn default_vib_storm_keep() -> u32 { 50 }
+fn default_vib_storm_win() -> u32 { 1000 }
+fn default_vib_storm_pause() -> u32 { 400 }
+/* 统合衰减期 (v17) 默认 120ms: 风暴期固定衰减周期 (开关默认关) */
+fn default_vib_storm_unified_ms() -> u32 { 120 }
+
+/* ★ACT1 特供预设附加默认 (v16.8, 用户定稿): 应用「ACT1 特供」时同时开启
+ * 高级调校, 并默认勾选两个风暴期静音 (怪物异常反馈 / 评分点系统)。
+ * 纯函数 (便于测试); GUI 应用预设时调用并同步原子量。 */
+pub fn act1_preset_extras(vib: &mut VibrationConfig) {
+    vib.advanced_enabled = true;
+    vib.storm_mute_abnormal = true;
+    vib.storm_mute_rank = true;
+}
 
 fn default_vib_55() -> u32 {
     55
@@ -546,6 +675,10 @@ pub struct VibrationPreset {
     /// 输出平滑 % (v22.3: 一阶低通抑制低频嗡嗡声, 0=无, 高=柔)
     #[serde(default = "default_vib_55")]
     pub out_smooth: u32,
+    /// ★v18: 用户是否主动覆盖过该预设 (保存为同名)。false = 内置管理条目:
+    /// 应用时用内置值, 且列表条目自愈回内置值 (调乱可一键回归); true = 用户版本优先
+    #[serde(default)]
+    pub user_modified: bool,
 }
 
 /// 将带符号权重 (-100..+100) 转为 u32 存储 (负数用补码)
@@ -568,27 +701,32 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 300,
             out_smooth: 55,
+            user_modified: false,
         },
         /* ── ACT1 特供: 老方案管线 (IVL 20ms/曲线 100 线性) + 弱机搭配,
          * 按 XBOX360 65535 量纲分配 (docs/震动系统开发规范_v20):
-         *   命中 0x01=70 强主体; 技能/暴击 0x10=60 分层 (略低于命中, 且特殊
-         *   攻击自带 200ms 静默窗防叠加爆震); 出血 0x04=12 极低; 评分族压低;
-         *   怪物死亡中等。全局限幅: master 90 × 上限 75 (弱机保护)。
+         *   命中 0x01=65 强主体; 技能/暴击 0x10=55 分层 (略低于命中, 且特殊
+         *   攻击自带 200ms 静默窗防叠加爆震); 受击 0x02=40; 出血 0x04=12 极低;
+         *   评分族压低; 怪物死亡中等。全局限幅: master 90 × 上限 75 (弱机保护)。
          *   密度自适应启用 (thr 45/降 40) + 连击 cap 150/slope 60 =
          *   后期连击暴增自动压制 (借鉴职业算法的密度/倍率封顶机制);
          *   槽 1/2/3/7/8 为引擎无引用死槽, 恒 0; p[39]=移动积累窗口。
          *   ★v15.2 马达 L/R 调校: 命中偏右清脆 / 受击偏左低吼 / 特殊偏右,
          *   出血走独立"怪物异常反馈"通道 (此表中性);
-         *   评分族: 移动偏左 (走路低频感)。仅 S1 路线在预设列表中显示 ── */
+         *   评分族: 移动偏左 (走路低频感)。仅 S1 路线在预设列表中显示。
+         *   ★v16.4 参数收敛 (狂战士实机日志剂量归因: 命中/特殊/受击为三个最响
+         *   通道, 用户自调配置亦偏收敛): 命中 70→65 / 特殊 60→55 / 受击 45→40,
+         *   降幅 7-11%, 单挑手感基本不变, 高攻职业连打更耐听 ── */
         VibrationPreset {
             name: "ACT1 特供".to_string(),
-            params: [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 60, 25, 10, 70, 45, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
+            params: [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 55, 25, 10, 65, 40, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
             item_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-5), lr(-5), 0, 0, 0, 0, 0, 15, lr(-10), 10, lr(15), lr(-10)],
             rank_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-15), 10, 0, 0, 0, 0, 0, 0],
             rank_type_gain: [20, 20, 30, 30, 30, 20, 20, 20, 20, 20, 20, 40, 20, 20, 45],
             rank_level_gain: 30,
             rank_duration: 250,
             out_smooth: 35,
+            user_modified: false,
         },
         /* ── 低频攻击职业: 泛用低频震动 (重击向, 默认下方第 2 位) ──
          * 设计: 低频攻击间隔大, 每次震动可重可持久 (无叠加问题),
@@ -604,6 +742,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 400,
             out_smooth: 40,
+            user_modified: false,
         },
         /* ── 高频攻击职业: 泛用高频震动 (轻快防震手, 默认下方第 3 位) ──
          * 设计: 高频连击密集防叠加震手, 上限 45/衰减 35ms 快收,
@@ -620,6 +759,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 250,
             out_smooth: 70,
+            user_modified: false,
         },
         /* ── 高振幅: 重型打击感 (重击向) ──
          * 设计: 衰减 75ms 长余韵(沉重), 命中 85/特殊 100 拉满,
@@ -634,6 +774,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 450,
             out_smooth: 35,
+            user_modified: false,
         },
         /* ── 节奏律动: 技能节奏感 (极脆律动向) ──
          * 设计: 衰减 25ms 极致短脆(每段技能清脆一跳), 命中 70 中高但极短,
@@ -648,6 +789,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 200,
             out_smooth: 55,
+            user_modified: false,
         },
         /* ── 极简轻巧: 长时间刷图 (超轻省电向) ──
          * 设计: 命中 35/特殊 50 压到最轻, 衰减 30ms 瞬收,
@@ -661,6 +803,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 60,
             rank_duration: 180,
             out_smooth: 70,
+            user_modified: false,
         },
         /* ── 实战竞技: 高难本警示 (预警极端化) ──
          * 设计: 受击 90/状态 70/DOT 60 拉满生存预警(左重),
@@ -675,6 +818,7 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 100,
             rank_duration: 380,
             out_smooth: 50,
+            user_modified: false,
         },
         /* 测试版: 全部为 0, 玩家自行设计 */
         VibrationPreset {
@@ -686,14 +830,17 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             rank_level_gain: 0,
             rank_duration: 0,
             out_smooth: 0,
+            user_modified: false,
         },
     ]
 }
 
-/// 「ACT1 特供」预设列表位置规整 (纯函数, GUI 三处预设列表共用):
+/// 「ACT1 特供」预设管理 (纯函数, GUI 三处预设列表共用):
 /// S1 路线 (legacy_client=true) 时保证其位于「默认」之下一位:
 /// 缺失 → 从内置表拷贝插入; 已存在但错位 (旧版 push 到末尾的持久化残留)
-/// → 搬移到「默认」之下。返回是否发生变动, 供调用方按需落盘自愈。
+/// → 搬移到「默认」之下; **内置管理条目 (user_modified=false) 的值自愈回内置表**
+/// (版本升级换参数 / 用户调乱后, 应用即回到内置值)。
+/// 返回是否发生变动, 供调用方按需落盘自愈。
 /// 非 S1 路线不增不删 (由列表过滤器隐藏)。
 pub fn ensure_act1_preset_position(
     presets: &mut Vec<VibrationPreset>,
@@ -722,9 +869,37 @@ pub fn ensure_act1_preset_position(
             }
         }
         Some(idx) => {
+            let mut changed = false;
+            /* ★v18: 内置管理条目 (未被用户"保存为同名"覆盖) 自愈回内置值 ——
+             * 版本升级换了参数、或用户调乱后, 点应用即回到内置"保存的时候";
+             * 用户主动覆盖过的条目 (user_modified=true) 保持不动 */
+            if !presets[idx].user_modified {
+                if let Some(b) = default_vibration_presets()
+                    .into_iter()
+                    .find(|p| p.name == "ACT1 特供")
+                {
+                    if presets[idx].params != b.params
+                        || presets[idx].item_lr != b.item_lr
+                        || presets[idx].rank_lr != b.rank_lr
+                        || presets[idx].rank_type_gain != b.rank_type_gain
+                        || presets[idx].rank_level_gain != b.rank_level_gain
+                        || presets[idx].rank_duration != b.rank_duration
+                        || presets[idx].out_smooth != b.out_smooth
+                    {
+                        presets[idx].params = b.params;
+                        presets[idx].item_lr = b.item_lr;
+                        presets[idx].rank_lr = b.rank_lr;
+                        presets[idx].rank_type_gain = b.rank_type_gain;
+                        presets[idx].rank_level_gain = b.rank_level_gain;
+                        presets[idx].rank_duration = b.rank_duration;
+                        presets[idx].out_smooth = b.out_smooth;
+                        changed = true;
+                    }
+                }
+            }
             let want = target(presets);
             if idx == want {
-                return false;
+                return changed;
             }
             /* 先删后重算目标位 (remove 会使「默认」在其后的情形索引偏移) */
             let pr = presets.remove(idx);
@@ -734,10 +909,424 @@ pub fn ensure_act1_preset_position(
     }
 }
 
+/// ★v19: ACT 专属预设命名判定 (仅 S1 路线显示): 「ACT1 特供」与所有「*-ACT」变体。
+pub fn is_act_variant_name(name: &str) -> bool {
+    name == "ACT1 特供" || name.ends_with("-ACT")
+}
+
+/// ★v19: 该名字是否有对应的内置 ACT 变体 (即 S1 下应被 "-ACT" 版替代的内置原版)。
+/// 「ACT1 特供」「测试版(全0)」无变体, 不在此列。
+pub fn is_act_base_name(name: &str) -> bool {
+    name != "ACT1 特供"
+        && name != "测试版(全0)"
+        && default_vibration_presets().iter().any(|p| p.name == name)
+}
+
+/// ★v19: 预设下拉的可见条目 (真实下标, 名称)。
+/// S1 路线: 隐藏有 ACT 变体的内置原版 (改用 "-ACT" 版), 保留 ACT1 特供/测试版/
+/// 自建预设; S4 路线: 隐藏 ACT 专属 (ACT1 特供 + "*-ACT")。
+/// 用真实下标回索引, 修"过滤后下标错位导致选错预设"的 BUG。
+pub fn visible_preset_entries(
+    presets: &[VibrationPreset],
+    legacy: bool,
+) -> Vec<(usize, String)> {
+    presets
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            if legacy {
+                !is_act_base_name(&p.name)
+            } else {
+                !is_act_variant_name(&p.name)
+            }
+        })
+        .map(|(i, p)| (i, p.name.clone()))
+        .collect()
+}
+
+/// ★v19 ACT 力度档 (五档): 由职业/预设的重量定位决定上限与事件阶梯。
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActTier {
+    Light,
+    Medium,
+    Heavy,
+    Extreme,
+    Max,
+}
+
+/// ★v19 ACT 主反馈: 该职业/预设的主体事件 (其余事件落在其下)。
+#[derive(Clone, Copy, PartialEq)]
+pub enum ActSignature {
+    Hit,
+    Special,
+    Taken,
+    Dot,
+}
+
+/// 职业原上限 (v21 五档 30/33/37/41/46) → ACT 力度档
+pub fn act_tier_from_max(orig_max: u32) -> ActTier {
+    match orig_max {
+        0..=30 => ActTier::Light,
+        31..=33 => ActTier::Medium,
+        34..=37 => ActTier::Heavy,
+        38..=41 => ActTier::Extreme,
+        _ => ActTier::Max,
+    }
+}
+
+/// (上限, 命中, 特殊, 受击, DOT, 状态, 特效) —— ACT 事件力度阶梯。
+/// ★v19.5: 以 ACT1 特供为锚 (Extreme 档 = ACT1 特供: 75/65/55/40/20/25/10)。
+pub fn act_ladder(t: ActTier) -> (u32, u32, u32, u32, u32, u32, u32) {
+    match t {
+        ActTier::Light => (58, 50, 42, 30, 15, 20, 8),
+        ActTier::Medium => (63, 56, 47, 34, 17, 22, 9),
+        ActTier::Heavy => (68, 61, 51, 37, 19, 24, 10),
+        ActTier::Extreme => (75, 65, 55, 40, 20, 25, 10),
+        ActTier::Max => (75, 68, 58, 43, 22, 27, 11),
+    }
+}
+
+/// 四类衰减 (命中/特殊/受击/状态) —— 轻快档更脆, 重击档更沉
+/// ★v19.5: Extreme = ACT1 特供 (25/60/45/60)
+pub fn act_decay(t: ActTier) -> (u32, u32, u32, u32) {
+    match t {
+        ActTier::Light => (20, 45, 35, 45),
+        ActTier::Medium => (22, 50, 40, 50),
+        ActTier::Heavy => (25, 55, 45, 55),
+        ActTier::Extreme => (25, 60, 45, 60),
+        ActTier::Max => (28, 65, 50, 65),
+    }
+}
+
+/// ★v19.5: ACT1 特供的 60 槽参数 (职业 ACT 变体的基底 —— 用户定稿: "基于 ACT1
+/// 特供预设, 再根据职业理念修改")。
+pub fn act1_base_params() -> [u32; 60] {
+    default_vibration_presets()
+        .into_iter()
+        .find(|p| p.name == "ACT1 特供")
+        .map(|p| p.params)
+        .unwrap_or([0; 60])
+}
+
+/// ★v19.4 ACT 高级算法组重建 (职业与通用预设共用): 按源参数的"职业原型标记"
+/// 重写密度自适应/连击倍率/命中自适应/移动/窗口/脉冲 —— 原型 = 高连击 / 重击 /
+/// 通用 (由源阈值推断) × 走位 / 站桩 / 中性。曲线 (19/20) 保留源值 (饱和个性)。
+pub fn act_rebuild_advanced(p: &mut [u32; 60], src: &[u32; 60]) {
+    /* 原型标记一律取自 src (职业/预设的原始画像), 值写入 p */
+    let combo_heavy = src[29] <= 35 || src[47] <= 145;
+    let heavy = src[29] >= 60 || src[47] >= 160;
+    let mobile = src[21] >= 10;
+    let static_ = src[21] <= 3;
+    let src_reduce = src[31];
+    let src_dot = src[40];
+    let src_period = src[41];
+    let src_burst = src[42];
+    let src_burst_min = src[43];
+    let src_counter = src[44];
+    let src_silence = src[54];
+    let src_counter_mul = src[55];
+    let src_wake = src[56];
+    let src_milestone = src[57];
+    let src_intr_pulse = src[58];
+
+    /* 移动质感统一 (v22.1 全职业一致) + 走位能量积累按原型 */
+    p[23] = 380;
+    p[24] = 40;
+    p[25] = 8;
+    p[26] = 45;
+    p[27] = 30;
+    p[28] = 4;
+    if mobile {
+        p[21] = 12;
+        p[22] = 40;
+        p[39] = 1800;
+    } else if static_ {
+        p[21] = 2;
+        p[22] = 10;
+        p[39] = 1000;
+    } else {
+        p[21] = 6;
+        p[22] = 25;
+        p[39] = 1500;
+    }
+
+    /* 连击密度自适应 (v21 二·五·1 职业配置) */
+    if combo_heavy {
+        p[29] = 35;
+        p[30] = 500;
+        p[31] = 40;
+        p[32] = 800;
+        p[33] = 60;
+        p[34] = 300;
+    } else if heavy {
+        p[29] = 65;
+        p[30] = 500;
+        p[31] = 20;
+        p[32] = 1000;
+        p[33] = 75;
+        p[34] = 300;
+    } else {
+        p[29] = 45;
+        p[30] = 500;
+        p[31] = 32;
+        p[32] = 1000;
+        p[33] = 55;
+        p[34] = 250;
+    }
+
+    /* 连击倍率/窗口/中断门槛 */
+    if combo_heavy {
+        p[45] = 2200;
+        p[47] = 140;
+        p[48] = 33;
+        p[49] = 30;
+    } else if heavy {
+        p[45] = 1100;
+        p[47] = 170;
+        p[48] = 43;
+        p[49] = 50;
+    } else {
+        p[45] = 1500;
+        p[47] = 155;
+        p[48] = 38;
+        p[49] = 40;
+    }
+
+    /* 命中自适应 (连击密 → 大幅降强度防震手; 重击型弱自适应) */
+    if src_reduce >= 40 {
+        p[50] = 55;
+        p[51] = 35;
+        p[52] = 200;
+        p[53] = 40;
+    } else {
+        p[50] = 65;
+        p[51] = 20;
+        p[52] = 250;
+        p[53] = 50;
+    }
+
+    /* 窗口 (DOT/特效/爆发/反击/空闲; 连击窗已按原型) */
+    p[40] = if src_dot >= 200 { 200 } else { 150 };
+    p[41] = if src_period <= 80 { 80 } else { 90 };
+    p[42] = if src_burst <= 300 { 250 } else { 600 };
+    p[43] = if src_burst_min >= 40 { 40 } else { 30 };
+    p[44] = if src_counter >= 800 { 1000 } else { 800 };
+    p[46] = 3000;
+
+    /* 静默/反击/脉冲 */
+    p[54] = if src_silence >= 200 { 250 } else { 200 };
+    p[55] = if src_counter_mul >= 150 { 150 } else { 130 };
+    p[56] = if src_wake >= 70 { 80 } else { 40 };
+    p[57] = if src_milestone >= 70 { 80 } else { 40 };
+    p[58] = if src_intr_pulse >= 40 { 40 } else { 30 };
+}
+
+/// ★v19.4 ACT 马达语言 (item_lr[26]): 命中偏右清脆 / 受击偏左低吼 / 特殊偏右 /
+/// DOT 微轻; 幅度随档位递增 (重档更明显)。
+pub fn act_motor_item_lr(tier: ActTier) -> [u32; 26] {
+    let i = match tier {
+        ActTier::Light => 0,
+        ActTier::Medium => 1,
+        ActTier::Heavy => 2,
+        ActTier::Extreme => 3,
+        ActTier::Max => 4,
+    };
+    let hit_r = [8u32, 10, 10, 12, 12][i];
+    let taken_l = [8u32, 12, 15, 18, 20][i];
+    let taken_r = [-6i32, -8, -10, -12, -14][i];
+    let special_r = [8u32, 10, 15, 15, 18][i];
+    let mut w = [0u32; 26];
+    w[7 * 2] = lr(-5); /* DOT 微轻 */
+    w[7 * 2 + 1] = lr(-5);
+    w[10 * 2 + 1] = special_r; /* 特殊偏右 */
+    w[11 * 2] = lr(-10); /* 命中偏右清脆 */
+    w[11 * 2 + 1] = hit_r;
+    w[12 * 2] = lr(taken_l as i32); /* 受击偏左低吼 */
+    w[12 * 2 + 1] = lr(taken_r);
+    w
+}
+
+/// ★v19.4 ACT 评分马达语言 (rank_lr[30]): 中性, 仅移动偏左低频感。
+pub fn act_rank_lr() -> [i32; 30] {
+    let mut r = [0i32; 30];
+    r[22] = -15;
+    r[23] = 10;
+    r
+}
+
+/// ★v19 ACT 参数构造 (职业与通用预设共用): 按档位重建事件阶梯/衰减/三闸,
+/// 主反馈显式指定, 飘字间隔 ≤20ms; 高级算法组按原型重写; 其余槽位保留源参数。
+/// `max_override` 用于进一步压低个别预设的响度 (如极简轻巧)。
+pub fn act_build_params(
+    base: &[u32; 60],
+    tier: ActTier,
+    sig: ActSignature,
+    max_override: Option<u32>,
+) -> [u32; 60] {
+    act_build_params_from(base, base, tier, sig, max_override)
+}
+
+/// ★v19.5 ACT 参数构造 (基底与画像分离): `base` = 参数基底 (职业用 ACT1 特供,
+/// 通用预设用其自身), `src` = 原型画像来源 (档位/密度/连击/走位标记)。这样
+/// "ACT1 特供概念最优先" 的槽位 (连击增强/曲线/节奏等) 全部取自基底, 而职业
+/// 个性只影响原型相关组。
+pub fn act_build_params_from(
+    base: &[u32; 60],
+    src: &[u32; 60],
+    tier: ActTier,
+    sig: ActSignature,
+    max_override: Option<u32>,
+) -> [u32; 60] {
+    let (mut max, hit, special, taken, dot, state, effect) = act_ladder(tier);
+    if let Some(m) = max_override {
+        max = m;
+    }
+    let (dec_a, dec_s, dec_h, dec_st) = act_decay(tier);
+    let (hit_v, sp_v, tk_v, dt_v) = match sig {
+        ActSignature::Hit => (hit, special, taken, dot),
+        ActSignature::Special => (hit.saturating_sub(4), special.max(hit), taken, dot),
+        ActSignature::Taken => (hit.saturating_sub(4), special, taken.max(hit), dot),
+        ActSignature::Dot => (hit.saturating_sub(4), special, taken, dot.max(hit)),
+    };
+    let mut p = *base;
+    p[0] = 100;
+    p[4] = max;
+    p[9] = 90;
+    p[11] = base[11].min(20);
+    p[12] = dt_v;
+    p[13] = sp_v;
+    p[14] = state;
+    p[15] = effect;
+    p[16] = hit_v;
+    p[17] = tk_v;
+    p[35] = dec_a;
+    p[36] = dec_s;
+    p[37] = dec_h;
+    p[38] = dec_st;
+    /* ★v19.4/19.5 高级算法组重建: 标记取自 src, 值写入 p */
+    act_rebuild_advanced(&mut p, src);
+    p
+}
+
+/// ★v19 ACT 变体的评分族压低 (ACT1 特供口径: 细分强度 ×0.3, 等级 ≤30, 时长 ≤250)
+pub fn act_variant_rank_gains(base: &[u32; 15]) -> [u32; 15] {
+    let mut g = [0u32; 15];
+    for i in 0..15 {
+        g[i] = ((base[i] as f32) * 0.3).round().min(100.0) as u32;
+    }
+    g
+}
+
+/// ★v19 通用预设的 ACT 设计表 (按各自设计理念落到 ACT 框架内, 不求与 ACT1 相同):
+/// 默认=中性基准 / 低频攻击=极重+特殊主体 / 高频攻击=轻盈 / 高振幅=最重 /
+/// 节奏律动=轻脆+特殊主体 / 极简轻巧=最轻 (上限再压到 50) / 实战竞技=厚重+受击主体。
+fn act_general_design(name: &str) -> (ActTier, ActSignature, Option<u32>) {
+    use ActSignature::{Hit, Special, Taken};
+    use ActTier::{Extreme, Heavy, Light, Max, Medium};
+    match name {
+        "默认" => (Medium, Hit, None),
+        "低频攻击职业" => (Extreme, Special, None),
+        "高频攻击职业" => (Light, Hit, None),
+        "高振幅" => (Max, Hit, None),
+        "节奏律动" => (Light, Special, None),
+        "极简轻巧" => (Light, Hit, Some(50)),
+        "实战竞技" => (Heavy, Taken, None),
+        _ => (Medium, Hit, None),
+    }
+}
+
+/// ★v19: 通用预设的 ACT 变体表 (仅 S1 路线显示): 每个内置通用预设生成 "X-ACT"
+/// (ACT1 特供本身 / 测试版(全0) 除外)。事件强度/衰减/三闸按各预设的设计理念
+/// 落到 ACT 档位; 预设个性 (曲线/移动/密度/连击/窗口/马达权重/平滑) 原样保留。
+pub fn act_general_presets() -> Vec<VibrationPreset> {
+    default_vibration_presets()
+        .into_iter()
+        .filter(|p| p.name != "ACT1 特供" && p.name != "测试版(全0)")
+        .map(|p| {
+            let (tier, sig, max_override) = act_general_design(&p.name);
+            VibrationPreset {
+                name: format!("{}-ACT", p.name),
+                params: act_build_params(&p.params, tier, sig, max_override),
+                /* ★v19.4 马达 L/R 也换成 ACT 语言 */
+                item_lr: act_motor_item_lr(tier),
+                rank_lr: act_rank_lr().map(|v| v as u32),
+                rank_type_gain: act_variant_rank_gains(&p.rank_type_gain),
+                rank_level_gain: p.rank_level_gain.min(30),
+                rank_duration: p.rank_duration.min(250),
+                out_smooth: p.out_smooth,
+                user_modified: false,
+            }
+        })
+        .collect()
+}
+
+/// ★v19: 保证通用预设的 ACT 变体在列表中 (仅 S1)。缺失 → 插在其基准预设之后
+/// (基准缺失则追加); 内置管理条目 (user_modified=false) 的值自愈回 ACT 变体表。
+/// 返回是否发生变动 (调用方按需落盘)。
+pub fn ensure_act_general_variants(
+    presets: &mut Vec<VibrationPreset>,
+    legacy_client: bool,
+) -> bool {
+    if !legacy_client {
+        return false;
+    }
+    let mut changed = false;
+    for want in act_general_presets() {
+        match presets.iter().position(|x| x.name == want.name) {
+            None => {
+                let base = want.name.trim_end_matches("-ACT").to_string();
+                let pos = presets
+                    .iter()
+                    .position(|x| x.name == base)
+                    .map(|i| i + 1)
+                    .unwrap_or(presets.len());
+                presets.insert(pos, want);
+                changed = true;
+            }
+            Some(idx) => {
+                if !presets[idx].user_modified {
+                    let same = presets[idx].params == want.params
+                        && presets[idx].rank_type_gain == want.rank_type_gain
+                        && presets[idx].rank_level_gain == want.rank_level_gain
+                        && presets[idx].rank_duration == want.rank_duration
+                        && presets[idx].item_lr == want.item_lr
+                        && presets[idx].rank_lr == want.rank_lr
+                        && presets[idx].out_smooth == want.out_smooth;
+                    if !same {
+                        presets[idx] = want;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// ★v18 应用预设时的取值规则 (纯函数, 震动页「应用」与快捷卡/极简两条路径共用):
+/// - 用户主动覆盖过的同名条目 (`user_modified=true`) 优先 —— 用户版本说了算;
+/// - 否则内置同名预设优先 (内置 = "默认值": 版本升级换过参数、或用户调乱后,
+///   点应用即回到内置"保存的时候", 不会被列表里的旧快照顶住);
+/// - 用户列表有而内置没有 (自建预设) → 用用户条目;
+/// - 两边都没有 → None (调用方忽略)。
+pub fn pick_preset_for_apply(
+    user_entry: Option<&VibrationPreset>,
+    name: &str,
+) -> Option<VibrationPreset> {
+    let builtin = default_vibration_presets()
+        .into_iter()
+        .find(|p| p.name == name);
+    match (user_entry, builtin) {
+        (Some(u), _) if u.user_modified => Some(u.clone()),
+        (_, Some(b)) => Some(b),
+        (Some(u), None) => Some(u.clone()),
+        (None, None) => None,
+    }
+}
+
 /// Main application configuration structure.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
-pub struct AppConfig {
-    /// Display tray icon
+pub struct AppConfig {    /// Display tray icon
     pub show_tray_icon: bool,
     /// Show notification messages
     pub show_notifications: bool,
@@ -1994,6 +2583,7 @@ mod tests {
             rank_level_gain: 0,
             rank_duration: 0,
             out_smooth: 0,
+            user_modified: false,
         }
     }
 
@@ -2057,5 +2647,56 @@ mod tests {
         let mut presets = vec![preset_named("用户A")];
         assert!(ensure_act1_preset_position(&mut presets, true));
         assert_eq!(presets[0].name, "ACT1 特供", "无「默认」时置顶");
+    }
+
+    #[test]
+    fn act1_stale_builtin_entry_values_are_healed() {
+        /* 位置正确但值陈旧 (旧版持久化的快照 / 用户调乱): 自愈回内置值 */
+        let mut stale = preset_named("ACT1 特供");
+        stale.params[16] = 70;
+        let mut presets = vec![preset_named("默认"), stale, preset_named("用户A")];
+        assert!(
+            ensure_act1_preset_position(&mut presets, true),
+            "陈旧值应触发自愈"
+        );
+        assert_eq!(
+            presets[1].params,
+            act1_builtin().params,
+            "值应回到内置 (点应用即回归)"
+        );
+    }
+
+    #[test]
+    fn act1_user_modified_entry_is_not_healed() {
+        let mut mine = act1_builtin();
+        mine.user_modified = true;
+        mine.params[16] = 42;
+        let mut presets = vec![preset_named("默认"), mine, preset_named("用户A")];
+        assert!(!ensure_act1_preset_position(&mut presets, true));
+        assert_eq!(presets[1].params[16], 42, "用户覆盖过的条目不得被自愈");
+    }
+
+    #[test]
+    fn pick_preset_prefers_builtin_unless_user_modified() {
+        let mut stale = act1_builtin();
+        stale.user_modified = false;
+        stale.params[16] = 1;
+        let picked = pick_preset_for_apply(Some(&stale), "ACT1 特供").unwrap();
+        assert_eq!(
+            picked.params,
+            act1_builtin().params,
+            "未主动覆盖 → 用内置值 (回归默认)"
+        );
+
+        let mut mine = act1_builtin();
+        mine.user_modified = true;
+        mine.params[16] = 42;
+        let picked = pick_preset_for_apply(Some(&mine), "ACT1 特供").unwrap();
+        assert_eq!(picked.params[16], 42, "已主动覆盖 → 用户版本优先");
+
+        let custom = preset_named("我的预设");
+        let picked = pick_preset_for_apply(Some(&custom), "我的预设").unwrap();
+        assert_eq!(picked.name, "我的预设", "自建预设照常使用");
+        assert!(pick_preset_for_apply(None, "不存在的预设").is_none());
     }
 }

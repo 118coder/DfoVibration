@@ -103,6 +103,35 @@ fn full_vibration() -> VibrationConfig {
         throttle_window_ms: 67,
         throttle_max_hits: 68,
         throttle_dense_ratio: 99,
+        merge_keep: 91,
+        merge_cap: 92,
+        merge_hold: 93,
+        hitcap_max: 94,
+        hitcap_win_ms: 995,
+        hitmerge_ms: 996,
+        sustain_secs: 9,
+        sustain_reduce: 45,
+        tail_land_pct: 96,
+        monster_abnormal_gain: 97,
+        storm_thr: 11,
+        storm_keep_pct: 46,
+        storm_win_ms: 997,
+        storm_pause_ms: 998,
+        storm_mute_abnormal: true,
+        storm_mute_rank: true,
+        merge_enabled: false,
+        hitcap_enabled: false,
+        storm_enabled: false,
+        sustain_enabled: false,
+        tail_land_enabled: false,
+        density_enabled: false,
+        adapt_enabled: false,
+        move_charge_enabled: false,
+        decay_enabled: false,
+        algo_windows_enabled: false,
+        pulse_enabled: false,
+        storm_unified_enabled: true,
+        storm_unified_ms: 137,
         attack_gain: 82,
         damage_gain: 83,
         shake_gain: 84,
@@ -136,6 +165,7 @@ fn full_vib_preset() -> VibrationPreset {
         rank_level_gain: 77,
         rank_duration: 321,
         out_smooth: 44,
+        user_modified: true,
     }
 }
 
@@ -320,4 +350,17 @@ fn preset_double_tap_survives_save() {
         "预设快照丢失 double_tap_gap_ms (保存后静默归默认 50)"
     );
     cleanup(&p);
+}
+
+/// ★v16.8: ACT1 特供预设的附加默认 (高级调校开 + 两个风暴静音默认勾选)
+#[test]
+fn act1_preset_extras_defaults() {
+    let mut vib = VibrationConfig::default();
+    vib.advanced_enabled = false;
+    vib.storm_mute_abnormal = false;
+    vib.storm_mute_rank = false;
+    sorahk::config::act1_preset_extras(&mut vib);
+    assert!(vib.advanced_enabled, "ACT1 特供应默认开启高级调校");
+    assert!(vib.storm_mute_abnormal, "ACT1 特供应默认勾选怪物异常静音");
+    assert!(vib.storm_mute_rank, "ACT1 特供应默认勾选评分点系统静音");
 }

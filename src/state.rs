@@ -634,6 +634,22 @@ pub struct AppState {
     pub vibration_throttle_max: std::sync::atomic::AtomicU32,
     /// 密度激活时节流次数比例 % (100=不收紧)
     pub vibration_throttle_dense_ratio: std::sync::atomic::AtomicU32,
+    /// 群怪聚合·合并保留 % (v14.1, S1 高级算法; 0=关闭聚合)
+    pub vibration_merge_keep: std::sync::atomic::AtomicU32,
+    /// 群怪聚合·合并封顶 % (记账+本击强度上限, 100=满幅)
+    pub vibration_merge_cap: std::sync::atomic::AtomicU32,
+    /// 群怪聚合·补发窗口 ms (0=不补发)
+    pub vibration_merge_hold: std::sync::atomic::AtomicU32,
+    /// 命中限频·窗口内最多生效次数 (v14.2, 仅普通命中通道, 0=关闭)
+    pub vibration_hitcap_max: std::sync::atomic::AtomicU32,
+    /// 命中限频·窗口 ms
+    pub vibration_hitcap_win: std::sync::atomic::AtomicU32,
+    /// 命中聚合窗 ms (v15.2, 群怪一刀多条命中事件合并, 一刀一震)
+    pub vibration_hitmerge_ms: std::sync::atomic::AtomicU32,
+    /// 脉冲落地·阈值 % (v15, 高负载期尾巴归零判据, 0=关闭)
+    pub vibration_tail_land_pct: std::sync::atomic::AtomicU32,
+    /// 怪物异常反馈·强度 % (v15, 仅 S1; 0x04 出血/中毒跳字独立通道)
+    pub vibration_monster_abnormal: std::sync::atomic::AtomicU32,
     /// 独立测试模式 (v24.2: 评分/移动通道独立于全局总调整)
     pub vibration_independent_test: std::sync::atomic::AtomicBool,
     /// 移动持续震动独立于全局强度 (v24.5: 默认开)
@@ -783,7 +799,8 @@ impl AppState {
                         config.vibration.throttle_window_ms = cls.throttle_window;
                         config.vibration.throttle_max_hits = cls.throttle_max;
                         config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                        config.vibration.abs_freq_enabled = cls.abs_freq_enabled;
+                        /* ★保险A: 启动兜底同样强制关绝对频率 (堵重启复活路径) */
+                        config.vibration.abs_freq_enabled = false;
                         job_algo_id = cls.algo_id as u32;
                         job_algo_ap = cls.algo_params;
                     }
@@ -964,6 +981,30 @@ impl AppState {
             ),
             vibration_throttle_dense_ratio: std::sync::atomic::AtomicU32::new(
                 config.vibration.throttle_dense_ratio,
+            ),
+            vibration_merge_keep: std::sync::atomic::AtomicU32::new(
+                config.vibration.merge_keep,
+            ),
+            vibration_merge_cap: std::sync::atomic::AtomicU32::new(
+                config.vibration.merge_cap,
+            ),
+            vibration_merge_hold: std::sync::atomic::AtomicU32::new(
+                config.vibration.merge_hold,
+            ),
+            vibration_hitcap_max: std::sync::atomic::AtomicU32::new(
+                config.vibration.hitcap_max,
+            ),
+            vibration_hitcap_win: std::sync::atomic::AtomicU32::new(
+                config.vibration.hitcap_win_ms,
+            ),
+            vibration_hitmerge_ms: std::sync::atomic::AtomicU32::new(
+                config.vibration.hitmerge_ms,
+            ),
+            vibration_tail_land_pct: std::sync::atomic::AtomicU32::new(
+                config.vibration.tail_land_pct,
+            ),
+            vibration_monster_abnormal: std::sync::atomic::AtomicU32::new(
+                config.vibration.monster_abnormal_gain,
             ),
             vibration_independent_test: std::sync::atomic::AtomicBool::new(
                 config.vibration.independent_test,

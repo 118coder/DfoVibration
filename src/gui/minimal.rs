@@ -260,6 +260,10 @@ impl SorahkGui {
             );
             if l_resp.clicked() {
                 self.minimal_vib_preset_job = false;
+                /* ★保险B: 切回通用预设段 = 自动停用全职业预设 (与快捷卡一致) */
+                if self.vib_job_enabled {
+                    self.disable_job_vibration_preset();
+                }
                 let _ = self.config.save_to_file("Config.toml");
             }
             if r_resp.clicked() {

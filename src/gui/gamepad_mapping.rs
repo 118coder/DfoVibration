@@ -650,6 +650,12 @@ impl SorahkGui {
                 );
                 if l_resp.clicked() {
                     self.minimal_vib_preset_job = false;
+                    /* ★保险B (2026-09-09, 用户定稿): 切回通用预设段 = 放弃全职业
+                     * 预设 —— 自动停用 (关开关+回滚参数+JobVibration.toml applied=false),
+                     * 防止职业参数在通用模式下继续静默生效 */
+                    if self.vib_job_enabled {
+                        self.disable_job_vibration_preset();
+                    }
                     let _ = self.config.save_to_file("Config.toml");
                 }
                 if r_resp.clicked() {

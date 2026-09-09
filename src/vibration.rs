@@ -197,6 +197,15 @@ const P_TEST: usize = 59;
 /* 里程碑固定档位 */
 const MILESTONES: [(u32, u32); 4] = [(50, 0x1), (100, 0x2), (200, 0x4), (400, 0x8)];
 
+/* ★S1 群怪聚合记帐 (v14.1, 修"群怪持续爆震"): 注入窗 (<30ms) 内的多次命中,
+ * 手感上是一次更重的冲击 —— 窗内事件不再丢弃, 强度按通道记账, 下一发注入
+ * 兑现 (能量携带): 群怪洪流因此"单击变厚"而非"变密变吵", 每一击都不丢能量。
+ * ★玩家可调 (规范纪律: 高级算法必须进 GUI 可调区): merge_keep/merge_cap/
+ * merge_hold 三个参数由震动页「群怪聚合」滑块组控制 (config.vibration →
+ * AppState 原子 → run 循环同步), keep=0 即完全关闭回到丢弃语义。
+ * 下面仅剩引擎内部常量 (不暴露): */
+const FONT_CARRY_FLUSH_MIN: f32 = 0.06; /* 补发门槛 (再低会被重映射抬底放大成噪音尾巴) */
+
 #[derive(PartialEq, Clone, Copy)]
 enum VibState {
     Idle = 0,
@@ -222,6 +231,13 @@ struct VibEngine {
     last_font: u32,
     /* ★S1 老方案 (补丁A): 每类飘字独立注入窗 (0=受击 1=特殊 2=DOT/状态/特效族 3=命中) */
     last_font_ch: [u32; 4],
+    /* ★S1 聚合记帐 (v14.1): 注入窗内被合并事件按通道记账的能量状态
+     * (s=记账强度 0-1 量纲 / lr=兑现用的 L/R 权重 / mode=末笔传送模式
+     *  用于补发时选衰减常数 / until=记账到期戳) */
+    font_carry_s: [f32; 4],
+    font_carry_lr: [[f32; 2]; 4],
+    font_carry_mode: [u8; 4],
+    font_carry_until: [u32; 4],
     /* ★S1 老方案计数口径: 最近一次 push_event 是否真实注入了震动
      * (老宿主 push_event 返回 bool 的等价实现; run 循环据此只计真实震动) */
     last_injected: bool,
@@ -274,6 +290,34 @@ struct VibEngine {
     throttle_dense_ratio: u32,
     throttle_count: u32,
     throttle_start: u32,
+    /* ★S1 群怪聚合记帐 (v14.1): 玩家可调参数 (震动页滑块组, run 循环每轮同步)
+     * keep = 每记一笔保留强度 % (0=关闭聚合, 回到丢弃语义); cap = 记账+本击
+     * 强度和的封顶 % (100=老滑块满幅); hold = 记账到期补发窗口 ms (0=不补发) */
+    merge_keep: u32,
+    merge_cap: u32,
+    merge_hold: u32,
+    /* ★S1 命中限频 (v14.2): 仅普通命中通道 (ch=3) 的翻滚窗限频 —— 超额命中
+     * 全额记账进聚合能量 (不丢弃), 频率上限转化为厚度。max=0 关闭。 */
+    hitcap_max: u32,
+    hitcap_win_ms: u32,
+    hitcap_count: u32,
+    hitcap_start: u32,
+    /* ★S1 命中聚合窗 (v15.2): ch=3 专属更宽聚合窗 —— 群怪一刀的多条命中
+     * 事件 (每怪一条) 窗内全部记账合并, 一刀只震一下 (更厚)。 */
+    hitmerge_ms: u32,
+    /* ★S1 脉冲落地 (v15): 高负载期衰减尾巴提前归零 —— pct=0 关闭;
+     * peak = 最近一次写入衰减通道的幅值 (inject 家族 + FLUSH 同步记录) */
+    tail_land_pct: u32,
+    tail_peak_l: f32,
+    tail_peak_r: f32,
+    /* ★S1 怪物异常反馈 (v15): 0x04 (怪物出血/中毒跳字) 的独立强度 (0-100 量纲),
+     * 从"装备特效"滑块 (p[15]) 彻底拆出 —— 该通道在 ACT 里 100% 是怪物异常跳字 */
+    monster_abnormal: u32,
+    /* ★S1 单帧脉冲 (v15.1): 衰减 0-5ms 时注入帧全幅直出、下一帧硬归零 */
+    instant_armed: bool,
+    /* ★总闸 L/R (v15.1): item_lr[0]/[1] 接通为左右马达独立总闸微调 (0-1 乘数) */
+    gate_lr_l: f32,
+    gate_lr_r: f32,
     /* 绝对震动频率 (v26, 召唤专属): 一切算法失效, 只在 时间-次数 内注入 */
     abs_freq_enabled: bool,
     abs_freq_window: u32,
@@ -325,6 +369,11 @@ impl VibEngine {
             rhythm_r: 0.0,
             last_font: 0,
             last_font_ch: [0; 4],
+            /* ★S1 聚合记帐 (v14.1): 注入窗内被合并事件按通道记账的能量状态 */
+            font_carry_s: [0.0; 4],
+            font_carry_lr: [[0.0; 2]; 4],
+            font_carry_mode: [0u8; 4],
+            font_carry_until: [0; 4],
             last_injected: false,
             legacy: false,
             combo_hits: 0,
@@ -363,6 +412,26 @@ impl VibEngine {
             throttle_window: 0,
             throttle_max: 0,
             throttle_dense_ratio: 100,
+            /* 群怪聚合默认参数 (与 config.vibration serde 默认一致; run 循环每轮
+             * 从 AppState 原子同步覆盖) */
+            merge_keep: 80,
+            merge_cap: 100,
+            merge_hold: 80,
+            /* 命中限频默认: 1 秒最多 6 次 (run 循环每轮同步覆盖) */
+            hitcap_max: 6,
+            hitcap_win_ms: 1000,
+            hitcap_count: 0,
+            hitcap_start: 0,
+            hitmerge_ms: 40,
+            /* 脉冲落地: 引擎默认关闭 (config/state 默认 25), run 循环同步覆盖 */
+            tail_land_pct: 0,
+            tail_peak_l: 0.0,
+            tail_peak_r: 0.0,
+            /* 怪物异常反馈默认 1% (run 循环同步覆盖) */
+            monster_abnormal: 1,
+            instant_armed: false,
+            gate_lr_l: 1.0,
+            gate_lr_r: 1.0,
             throttle_count: 0,
             throttle_start: 0,
             abs_freq_enabled: false,
@@ -405,8 +474,13 @@ impl VibEngine {
     fn inject(&mut self, s: f32, lr: f32, rr: f32, dl: f32, dr: f32) {
         self.left = s * lr;
         self.right = s * rr;
+        /* ★脉冲落地 (v15): 记录本次注入峰值, 供高负载期尾巴归零判据 */
+        self.tail_peak_l = self.left;
+        self.tail_peak_r = self.right;
         self.decay_l = dl;
         self.decay_r = dr;
+        /* ★单帧脉冲 (v15.1): 衰减 ≤5ms 时布防, tick 保持本帧全幅、下一帧归零 */
+        self.instant_armed = dl <= 5.0;
         /* ★S1 老方案 (v13.34 合成式): 不清除 hold/rhythm —— 三通道共存互不覆盖;
          * 新方案维持现行抢占语义 */
         if !self.legacy {
@@ -420,6 +494,9 @@ impl VibEngine {
         self.hold_r = s * rr;
         self.left = self.hold_l;
         self.right = self.hold_r;
+        /* ★脉冲落地: hold 注入也写衰减通道, 残尾按自身峰值落地 */
+        self.tail_peak_l = self.left;
+        self.tail_peak_r = self.right;
         self.hold_until = now_ms().wrapping_add(dur);
         /* ★S1 老方案: 不清除 rhythm_until (合成式共存) */
         if !self.legacy {
@@ -646,11 +723,54 @@ impl VibEngine {
         self.rhythm_r = s * rr;
         self.left = self.rhythm_l;
         self.right = self.rhythm_r;
+        /* ★脉冲落地: rhythm 注入也写衰减通道, 残尾按自身峰值落地 */
+        self.tail_peak_l = self.left;
+        self.tail_peak_r = self.right;
         self.rhythm_until = now_ms().wrapping_add(dur);
         self.rhythm_period = period.max(30);
         /* ★S1 老方案: 不清除 hold_until (合成式共存) */
         if !self.legacy {
             self.hold_until = 0;
+        }
+    }
+
+    /* ★S1 聚合记帐 (v14.1): FONT 强度/权重/模式选择 —— 注入主路优先级链的
+     * 纯查询版 (原链内联在 push_event, 现两处共用此单一事实来源):
+     * 主路注入用返回值注入; 窗内记账用 s 估计能量、mode 供补发选衰减。 */
+    fn font_pick(&self, a6: u32, item_idx: usize) -> (f32, f32, f32, u8) {
+        let is_hit = a6 & FONT_HIT != 0;
+        let is_dot = a6 & FONT_HP != 0;
+        let is_state = a6 & FONT_STATE != 0;
+        let is_effect = a6 & FONT_EFFECT != 0;
+        let (base_l, base_r) = base_lr_for(item_idx);
+        /* ★S1 老方案 (v13.34/35 通道语义拆分, 修"通道冲突互相覆盖"):
+         * 0x60 (0x20|0x40 保持式标记, 老 DLL stub10 的 CC tick) → mode1 hold;
+         * 纯 0x20 (玩家 DOT 红字跳字, 每红字一条) → mode3 衰减脉冲;
+         * 0x04 (怪物出血/中毒跳字) → mode4 衰减脉冲 (节拍式被 <120ms 群怪
+         * 出血连续刷新 = 永久节拍震)。新方案维持现行优先级链不动。 */
+        if self.legacy && is_dot && a6 & FONT_OTHER != 0 {
+            (self.p[P_FONT_HP], base_l, base_r, 1)
+        } else if self.legacy && is_dot {
+            (self.p[P_FONT_HP], base_l, base_r, 3)
+        } else if self.legacy && is_effect {
+            /* ★怪物异常反馈 (v15): 0x04 在 ACT 里 100% 是怪物出血/中毒跳字
+             * (DLL 取证: hooks_old.c 怪物侧 DOT 唯一出口; 装备特效从不产生伤害
+             * 数字), 用独立强度滑块, 彻底与"装备特效" (p[15], S4 专用) 拆分 */
+            (self.monster_abnormal as f32, base_l, base_r, 4)
+        } else if is_dot {
+            (self.p[P_FONT_HP], base_l, base_r, 1)
+        } else if a6 & FONT_SPECIAL != 0 {
+            (self.p[P_FONT_SPECIAL], base_l, base_r, 0)
+        } else if is_state {
+            (self.p[P_FONT_STATE], base_l, base_r, 0)
+        } else if is_effect {
+            (self.p[P_FONT_EFFECT], base_l, base_r, 2)
+        } else if a6 & FONT_ATTACK != 0 {
+            (self.p[P_FONT_ATTACK], base_l, base_r, 0)
+        } else if is_hit {
+            (self.p[P_FONT_HIT], base_l, base_r, 0)
+        } else {
+            (self.p[P_FONT_STR], 0.7, 0.5, 0)
         }
     }
 
@@ -786,8 +906,15 @@ impl VibEngine {
                     self.burst_until = now.wrapping_add(800);
                 }
 
-                /* 特殊攻击静默: 静默期内普通事件不注入(突显特殊攻击) */
-                if !abs_mode && before(now, self.silence_until) && (a6 & FONT_SPECIAL) == 0 {
+                /* 特殊攻击静默: 静默期内普通事件不注入(突显特殊攻击)
+                 * ★0 哨兵守卫 (v14.1): silence_until=0 = 从未静默; 裸 before(now,0)
+                 * 在 GetTickCount 跨 2^31 (开机 24.8 天) 后回绕成"未来 21 亿 ms",
+                 * 普通攻击会被静默门全部吞掉 (只有技能震) —— 本机 25 天uptime 实测复现 */
+                if !abs_mode
+                    && self.silence_until != 0
+                    && before(now, self.silence_until)
+                    && (a6 & FONT_SPECIAL) == 0
+                {
                     return;
                 }
                 /* 评分动态衰减 (v29): 攻击命中提升评级 (上限 8 = 满评分) */
@@ -797,6 +924,25 @@ impl VibEngine {
                 }
                 /* 职业专属算法 (v31): 攻击钩子 */
                 self.algo_on_attack(a6 & FONT_SPECIAL != 0, count, now);
+            }
+
+            /* ★S1 聚合记帐 (v14.1): DOT/状态/特效事件也计入密度统计 ——
+             * v22.4 原版只统计攻击命中, 群怪的 DOT 洪流 (每怪每跳一条)
+             * 对密度自适应完全不可见 = 压制失效盲区 */
+            if self.legacy && !is_attack && (is_dot || is_state || is_effect) {
+                self.density_hits = self.density_hits.saturating_add(count);
+                if self.density_win_start == 0 {
+                    self.density_win_start = now;
+                }
+                let d_win = self.p[P_DENSITY_WIN].max(30.0) as u32;
+                if now.wrapping_sub(self.density_win_start) >= d_win {
+                    self.density_hits = 0;
+                    self.density_win_start = now;
+                }
+                let d_thr = self.p[P_DENSITY_THR].max(1.0) as u32;
+                if !abs_mode && d_thr < 100 && self.density_hits >= d_thr {
+                    self.density_active = true;
+                }
             }
 
             if is_hit {
@@ -853,17 +999,79 @@ impl VibEngine {
             if self.density_active {
                 ivl = ivl.saturating_mul(2);
             }
+            /* ★S1 命中聚合窗 (v15.2, 玩家可调): 普通命中通道 (ch=3) 专属更宽
+             * 聚合窗 —— 群怪一刀的多条命中事件 (每怪一条, 错峰到达) 窗内全部
+             * 记账合并, 一刀只震一下 (更厚), 能量不丢; 单挑慢速攻击不受影响。 */
+            if self.legacy && font_ch == Some(3) && self.hitmerge_ms > ivl {
+                ivl = self.hitmerge_ms.min(200);
+            }
             if !abs_mode && gap_prev < ivl {
                 if self.legacy {
-                    vib_log(&format!(
-                        "[DROP] ivl ch={} gap={} ivl={} a6={:X}",
-                        font_ch.map_or(0, |c| c),
-                        gap_prev,
-                        ivl,
-                        a6
-                    ));
+                    /* ★S1 群怪聚合记帐 (v14.1, 玩家可调): 窗内事件不再丢弃 ——
+                     * 强度按通道记账 (能量携带), 下一发注入兑现; 记账期内无后续
+                     * 注入由 tick 到期补发收尾脉冲。感知依据: <30ms 的两次冲击
+                     * 手感为一次更重的冲击, 群怪洪流因此"单击变厚"而非"变密变吵"。
+                     * merge_keep=0 = 关闭聚合 → 回到丢弃语义 (旧行为)。 */
+                    if self.merge_keep > 0 {
+                        if let Some(ch) = font_ch {
+                            let (s_e, lr_e, rr_e, mode_e) = self.font_pick(a6, item_idx);
+                            if s_e > 0.0 {
+                                let c = self.font_carry_s[ch];
+                                let cap = (self.merge_cap.max(10) as f32 / 100.0).min(1.5);
+                                self.font_carry_s[ch] =
+                                    (c + s_e / 100.0 * self.merge_keep.min(100) as f32 / 100.0)
+                                        .min(cap);
+                                self.font_carry_lr[ch] = [lr_e * il, rr_e * ir];
+                                self.font_carry_mode[ch] = mode_e;
+                                self.font_carry_until[ch] =
+                                    now.wrapping_add(self.merge_hold.min(500).max(1));
+                            }
+                        }
+                    } else {
+                        vib_log(&format!(
+                            "[DROP] ivl ch={} gap={} ivl={} a6={:X}",
+                            font_ch.map_or(0, |c| c),
+                            gap_prev,
+                            ivl,
+                            a6
+                        ));
+                    }
                 }
                 return;
+            }
+            /* ★S1 命中限频 (v14.2, 玩家可调): 仅普通命中通道 (ch=3) —— 窗口秒内
+             * 命中脉冲超过 hitcap_max 后, 超额命中不再单独注入而是**全额记账**进
+             * 聚合能量 (下一发兑现变厚 / 到期补发收尾), 每一击都不丢; 其他通道
+             * (受击/特殊/DOT/状态/特效) 完全不受影响。max=0 关闭。
+             * 位置在打戳之前: 超额命中不推进 IVL 锚点, 防止"通道饥饿"。 */
+            if !abs_mode
+                && self.hitcap_max > 0
+                && self.legacy
+                && font_ch == Some(3)
+            {
+                if self.hitcap_start == 0
+                    || now.wrapping_sub(self.hitcap_start) >= self.hitcap_win_ms.max(50)
+                {
+                    self.hitcap_count = 0;
+                    self.hitcap_start = now;
+                }
+                if self.hitcap_count >= self.hitcap_max {
+                    let (s_e, lr_e, rr_e, mode_e) = self.font_pick(a6, item_idx);
+                    if s_e > 0.0 {
+                        let cap = (self.merge_cap.max(10) as f32 / 100.0).min(1.5);
+                        let c = self.font_carry_s[3];
+                        self.font_carry_s[3] = (c + s_e / 100.0).min(cap);
+                        self.font_carry_lr[3] = [lr_e * il, rr_e * ir];
+                        self.font_carry_mode[3] = mode_e;
+                        self.font_carry_until[3] =
+                            now.wrapping_add(self.merge_hold.min(500).max(1));
+                        vib_log(&format!(
+                            "[HITCAP] 超额记账 carry={:.2} a6={:X}",
+                            self.font_carry_s[3], a6
+                        ));
+                    }
+                    return;
+                }
             }
             /* ★S1 老方案 (v13.35 语义): 过了间隔门才打通道戳 —— 先打戳会让被丢
              * 事件把窗口永远前推 = 通道饥饿 (只有第一条震); 新方案打全局戳 */
@@ -876,8 +1084,10 @@ impl VibEngine {
              * (召唤师等瞬间百连击职业防狂震: 窗口滚动)
              * v24.1 自适应: 密度激活(狂震期)时次数上限按比例收紧 (如 20% → 1次/s),
              * 平时不限制太死 (正常反馈)
-             * v26: 绝对频率模式下失效 (由 abs 节流替代) */
-            if !abs_mode && self.throttle_window > 0 && self.throttle_max > 0 {
+             * v26: 绝对频率模式下失效 (由 abs 节流替代)
+             * ★S1 聚合记帐 (v14.1): 老方案绕过硬限流 —— 限流=丢事件产生空震
+             * (用户明确不要), 聚合记帐已在不丢能量的前提下压住注入密度 */
+            if !abs_mode && !self.legacy && self.throttle_window > 0 && self.throttle_max > 0 {
                 if self.throttle_start == 0 || now.wrapping_sub(self.throttle_start) >= self.throttle_window {
                     self.throttle_count = 0;
                     self.throttle_start = now;
@@ -894,38 +1104,15 @@ impl VibEngine {
             }
 
             let mut mul = 1.0;
-            if is_attack && before(now, self.counter_until) {
+            /* ★0 哨兵守卫 (v14.1): counter_until=0 = 无受击缓冲; 跨 2^31 后
+             * 裸 before(now,0) 恒真 → 每次攻击都误入 Counter 态吃计数乘数 */
+            if is_attack && self.counter_until != 0 && before(now, self.counter_until) {
                 self.state = VibState::Counter;
                 mul = self.p[P_COUNTER_MUL].max(100.0) / 100.0;
             }
 
-            let (base_l, base_r) = base_lr_for(item_idx);
-            /* ★S1 老方案 (v13.34/35 通道语义拆分, 修"通道冲突互相覆盖"):
-             * 0x60 (0x20|0x40 保持式标记, 老 DLL stub10 的 CC tick) → mode1 hold;
-             * 纯 0x20 (玩家 DOT 红字跳字, 每红字一条) → mode3 衰减脉冲;
-             * 0x04 (怪物出血/中毒跳字) → mode4 衰减脉冲 (节拍式被 <120ms 群怪
-             * 出血连续刷新 = 永久节拍震)。新方案维持现行优先级链不动。 */
-            let (s, lr, rr, mode): (f32, f32, f32, u8) = if self.legacy && is_dot && a6 & FONT_OTHER != 0 {
-                (self.p[P_FONT_HP], base_l, base_r, 1)
-            } else if self.legacy && is_dot {
-                (self.p[P_FONT_HP], base_l, base_r, 3)
-            } else if self.legacy && is_effect {
-                (self.p[P_FONT_EFFECT], base_l, base_r, 4)
-            } else if is_dot {
-                (self.p[P_FONT_HP], base_l, base_r, 1)
-            } else if a6 & FONT_SPECIAL != 0 {
-                (self.p[P_FONT_SPECIAL], base_l, base_r, 0)
-            } else if is_state {
-                (self.p[P_FONT_STATE], base_l, base_r, 0)
-            } else if is_effect {
-                (self.p[P_FONT_EFFECT], base_l, base_r, 2)
-            } else if a6 & FONT_ATTACK != 0 {
-                (self.p[P_FONT_ATTACK], base_l, base_r, 0)
-            } else if is_hit {
-                (self.p[P_FONT_HIT], base_l, base_r, 0)
-            } else {
-                (self.p[P_FONT_STR], 0.7, 0.5, 0)
-            };
+            /* 强度/权重/模式选择 (优先级链已提取为 font_pick, 与窗内记账共用) */
+            let (s, lr, rr, mode): (f32, f32, f32, u8) = self.font_pick(a6, item_idx);
             if s <= 0.0 {
                 if self.legacy {
                     vib_log(&format!("[DROP] s=0 a6={:X}", a6));
@@ -971,6 +1158,20 @@ impl VibEngine {
             if self.legacy {
                 s_out /= 100.0;
             }
+            /* ★S1 群怪聚合记帐 (v14.1, 玩家可调): 兑现通道记账能量 —— 群怪窗内
+             * 合并的命中让这一发更厚; 封顶 (merge_cap 滑块) 随密度疲劳下调
+             * (高密度期脉冲变厚受限于 density_scale, 与 ivl 翻倍共同把洪流压成
+             * "变厚变疏"而非爆震)。新方案 font_ch 恒为 None, 此块天然不参与 (红线)。 */
+            if let Some(ch) = font_ch {
+                let c = self.font_carry_s[ch];
+                if c > 0.0 {
+                    let cap = (self.merge_cap.max(10) as f32 / 100.0).min(1.5);
+                    s_out = (s_out + c).min(cap * self.density_scale);
+                    self.font_carry_s[ch] = 0.0;
+                    self.font_carry_until[ch] = 0;
+                    vib_log(&format!("[CARRY] ch={} carry={:.2} s_out={:.3}", ch, c, s_out));
+                }
+            }
             /* 职业专属算法 (v31): 攻击/受击强度修正 */
             if is_attack {
                 s_out *= self.algo_attack_mul(now);
@@ -1011,16 +1212,18 @@ impl VibEngine {
                     self.inject(s_out, lr_w, rr_w, dl, dl * 0.8);
                 }
                 _ => {
+                    /* ★v15.1: 衰减常数放开到 0 —— 0-5ms 由 tick 的"单帧脉冲"模式
+                     * 承载 (注入帧全幅直出, 下一帧硬归零), >5ms 走指数衰减 */
                     let (dl, dr) = if is_hit {
-                        (self.p[P_DEC_HIT].max(10.0), self.p[P_DEC_HIT].max(10.0) * 0.8)
+                        (self.p[P_DEC_HIT].max(0.0), self.p[P_DEC_HIT].max(0.0) * 0.8)
                     } else if a6 & FONT_SPECIAL != 0 {
-                        (self.p[P_DEC_SPECIAL].max(30.0), self.p[P_DEC_SPECIAL].max(30.0) * 0.7)
+                        (self.p[P_DEC_SPECIAL].max(0.0), self.p[P_DEC_SPECIAL].max(0.0) * 0.7)
                     } else if is_state {
-                        (self.p[P_DEC_STATE].max(30.0), self.p[P_DEC_STATE].max(30.0) * 0.8)
+                        (self.p[P_DEC_STATE].max(0.0), self.p[P_DEC_STATE].max(0.0) * 0.8)
                     } else {
                         /* 职业专属算法 (v31): 元素叠层加长命中衰减 */
                         let extra = self.algo_dec_attack_extra();
-                        (self.p[P_DEC_ATTACK].max(30.0) + extra, self.p[P_DEC_ATTACK].max(30.0) * 0.8 + extra)
+                        (self.p[P_DEC_ATTACK].max(0.0) + extra, self.p[P_DEC_ATTACK].max(0.0) * 0.8 + extra)
                     };
                     /* 衰减时长也应用该项 L/R 权重 (正=更持久, 负=更短) */
                     let dl_w = dl * (1.0 + item_lr[3 * 2] as i32 as f32 / 100.0).clamp(0.0, 2.0);
@@ -1030,6 +1233,11 @@ impl VibEngine {
             }
 
             self.last_injected = true; /* FONT 注入完成 → 确实震了 */
+            /* ★命中限频计数: 仅 legacy 命中通道真实注入 +1 (s=0 空枪不占名额;
+             * 超额记账的事件在上方已 return, 不会到达这里); max=0 完全休眠 */
+            if self.legacy && self.hitcap_max > 0 && font_ch == Some(3) {
+                self.hitcap_count = self.hitcap_count.saturating_add(1);
+            }
             if self.legacy {
                 vib_log(&format!(
                     "[INJ] a6={:X} mode={} s_out={:.3} lr_w={:.3} rr_w={:.3}",
@@ -1221,6 +1429,45 @@ impl VibEngine {
 
         /* 效果模式 */
         if self.legacy {
+            /* ★S1 群怪聚合记帐 (v14.1, 玩家可调): 记账到期仍无后续注入 → 补发
+             * 收尾脉冲 (防能量蒸发; 用 max 合成, 绝不压低已有输出)。
+             * merge_hold=0 = 不补发 (记账等下一发兑现, 到期作废)。 */
+            for ch in 0..4 {
+                if self.merge_hold > 0
+                    && self.font_carry_s[ch] >= FONT_CARRY_FLUSH_MIN
+                    && self.font_carry_until[ch] != 0
+                    && !before(now, self.font_carry_until[ch])
+                {
+                    let cap = (self.merge_cap.max(10) as f32 / 100.0).min(1.5);
+                    let s_c = self.font_carry_s[ch].min(cap * self.density_scale);
+                    let (lr_c, rr_c) = (self.font_carry_lr[ch][0], self.font_carry_lr[ch][1]);
+                    let (dl, dr) = match self.font_carry_mode[ch] {
+                        /* mode1/3: CC 保持/玩家 DOT → P_DOT_HOLD; mode4: 怪物 DOT → P_EFFECT_PERIOD;
+                         * 其余 (命中/特殊/状态) → P_DEC_ATTACK, 与注入主路的衰减常数一致 */
+                        1 | 3 => (self.p[P_DOT_HOLD].max(30.0), self.p[P_DOT_HOLD].max(30.0) * 0.8),
+                        4 => (
+                            self.p[P_EFFECT_PERIOD].max(60.0),
+                            self.p[P_EFFECT_PERIOD].max(60.0) * 0.8,
+                        ),
+                        _ => (
+                            self.p[P_DEC_ATTACK].max(0.0),
+                            self.p[P_DEC_ATTACK].max(0.0) * 0.8,
+                        ),
+                    };
+                    self.font_carry_s[ch] = 0.0;
+                    self.font_carry_until[ch] = 0;
+                    self.left = self.left.max(s_c * lr_c);
+                    self.right = self.right.max(s_c * rr_c);
+                    /* ★脉冲落地: 补发脉冲必须刷新峰值 —— 否则陈旧大 peak 会把
+                     * 小收尾脉冲在落地门当帧误杀 (防能量蒸发失效) */
+                    self.tail_peak_l = self.left;
+                    self.tail_peak_r = self.right;
+                    self.decay_l = dl;
+                    self.decay_r = dr;
+                    self.instant_armed = dl <= 5.0;
+                    vib_log(&format!("[FLUSH] ch={} s={:.3}", ch, s_c));
+                }
+            }
             /* ★S1 老方案 (v13.34 合成式, 修"通道冲突互相覆盖"核心):
              * 旧逻辑三套状态机(hold/rhythm/decay)抢占同一个 left/right:
              *   hold 激活期每帧强制覆盖 → 命中注入一帧内被抹掉;
@@ -1230,15 +1477,18 @@ impl VibEngine {
              * 共存, 互不覆盖; 各状态自然过期, 结束帧不再清零。 */
             let mut l_acc: f32 = 0.0;
             let mut r_acc: f32 = 0.0;
-            /* 1) 保持分量 (CC 保持震: 每帧 tick 经注入窗续期) */
-            if before(now, self.hold_until) {
+            /* 1) 保持分量 (CC 保持震: 每帧 tick 经注入窗续期)
+             * ★0 哨兵守卫 (v15): hold_until=0=未激活; 裸 before(now,0) 在
+             * GetTickCount 跨 2^31 后恒真 → S4 分支会用 hold_l=0 覆盖输出
+             * (长开机机器上 S4 FONT 全静默), legacy 也会空走 hold 分支 */
+            if self.hold_until != 0 && before(now, self.hold_until) {
                 l_acc = l_acc.max(self.hold_l);
                 r_acc = r_acc.max(self.hold_r);
             } else {
                 self.hold_until = 0;
             }
-            /* 2) 节拍分量 (怪物 DOT 跳字: 0x04 → 120ms on/off 节拍) */
-            if before(now, self.rhythm_until) {
+            /* 2) 节拍分量 (怪物 DOT 跳字: 0x04 → 120ms on/off 节拍; 同上 0 哨兵守卫) */
+            if self.rhythm_until != 0 && before(now, self.rhythm_until) {
                 let on = ((now / self.rhythm_period) & 1) == 0;
                 let rl = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
                 let rr2 = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
@@ -1247,17 +1497,47 @@ impl VibEngine {
             } else {
                 self.rhythm_until = 0;
             }
-            /* 3) 衰减分量 (命中/暴击/受击/DOT 脉冲: 指数衰减始终推进) */
-            let dl = (-(dt) / self.decay_l.max(10.0)).exp();
-            let dr = (-(dt) / self.decay_r.max(10.0)).exp();
-            self.left *= dl;
-            self.right *= dr;
+            /* 3) 衰减分量 (命中/暴击/受击/DOT 脉冲: 指数衰减始终推进)
+             * ★单帧脉冲模式 (v15.1, 衰减 0-5ms): 注入/补发帧全幅直出 (armed),
+             * 下一帧硬归零 —— "命中之后立刻衰减"的最极端形态, 一顿一顿。 */
+            if self.decay_l <= 5.0 {
+                if self.instant_armed {
+                    self.instant_armed = false; /* 注入/补发帧: 保持全幅直出 */
+                } else {
+                    self.left = 0.0;
+                    self.right = 0.0;
+                }
+            } else {
+                let dl = (-(dt) / self.decay_l.max(10.0)).exp();
+                let dr = (-(dt) / self.decay_r.max(10.0)).exp();
+                self.left *= dl;
+                self.right *= dr;
+            }
+            /* ★S1 脉冲落地 (v15): 高负载期 (密度自适应激活 / 命中限频咬合) 衰减
+             * 尾巴降到本脉冲峰值的 tail_land_pct% 即归零 —— 脉冲之间出真静音
+             * (借用 S4 的落地质感), 单挑/低负载期完全不变。只清衰减分量 (在
+             * max 合成之前), hold/rhythm 分量不受影响。pct=0 关闭。 */
+            if self.tail_land_pct > 0
+                && (self.density_active
+                    || (self.hitcap_max > 0 && self.hitcap_count >= self.hitcap_max))
+            {
+                let k = self.tail_land_pct.min(100) as f32 / 100.0;
+                if self.tail_peak_l > 0.0 && self.left < self.tail_peak_l * k {
+                    self.left = 0.0;
+                }
+                if self.tail_peak_r > 0.0 && self.right < self.tail_peak_r * k {
+                    self.right = 0.0;
+                }
+            }
             l_acc = l_acc.max(self.left);
             r_acc = r_acc.max(self.right);
             self.left = l_acc;
             self.right = r_acc;
         } else {
-            if before(now, self.hold_until) {
+            /* ★0 哨兵守卫 (v15): 同 legacy —— hold_until/rhythm_until=0 在跨 2^31
+             * 的机器上被裸 before(now,0) 误判为激活, hold_l=0 每帧覆盖输出 =
+             * S4 FONT 全静默 (本机 25 天 uptime 实测复现) */
+            if self.hold_until != 0 && before(now, self.hold_until) {
                 self.left = self.hold_l;
                 self.right = self.hold_r;
             } else {
@@ -1272,7 +1552,7 @@ impl VibEngine {
                     self.right *= dr;
                 }
             }
-            if before(now, self.rhythm_until) {
+            if self.rhythm_until != 0 && before(now, self.rhythm_until) {
                 let on = ((now / self.rhythm_period) & 1) == 0;
                 self.left = if on { self.rhythm_l } else { self.rhythm_l * 0.15 };
                 self.right = if on { self.rhythm_r } else { self.rhythm_r * 0.15 };
@@ -1301,7 +1581,12 @@ impl VibEngine {
             /* ★S1 老方案 (v13.30): P_FONT_ATTACK 是 0-100 滑块量纲, right 是 0-1
              * —— 旧代码 bm×25=8.75 直接把 Burst 右马达顶满幅, 一并归一 */
             if self.legacy {
-                self.right = self.right.max(bm * self.p[P_FONT_ATTACK] / 100.0);
+                /* ★S1 聚合记帐 (v14.1): Burst 保底乘密度疲劳 —— 群怪期连击
+                 * 永续 Burst 造成"无法通过强度参数关闭的持续右马达地板",
+                 * 随密度降温, 独立刷怪/单挑期保底满额不变 */
+                self.right = self
+                    .right
+                    .max(bm * self.p[P_FONT_ATTACK] / 100.0 * self.density_scale);
             } else {
                 self.right = self.right.max(bm * self.p[P_FONT_ATTACK]);
             }
@@ -1381,19 +1666,26 @@ impl VibEngine {
         let rhythm = (params[P_RHYTHM] as f32 / 50.0).clamp(0.0, 2.0);
         let curvel = (params[P_CURVE_L] as f32).max(30.0) / 100.0;
         let curver = (params[P_CURVE_R] as f32).max(30.0) / 100.0;
-        let l_raw = self.left * base;
-        let r_raw = self.right * base * rhythm;
+        /* ★总闸 L/R (v15.1): item_lr[0]/[1] 接通为左右马达独立总闸微调
+         * (±100% → ×0..×2), 与全局总调整 (master) 叠乘 */
+        let l_raw = self.left * base * self.gate_lr_l;
+        let r_raw = self.right * base * rhythm * self.gate_lr_r;
         let mut l_out = if l_raw > 0.0 { (l_raw.powf(curvel)).min(1.0) * 65535.0 } else { 0.0 };
         let mut r_out = if r_raw > 0.0 { (r_raw.powf(curver)).min(1.0) * 65535.0 } else { 0.0 };
         /* 输出动态范围重映射 + 低强度死区: 两条路线顺序与阈值不同 ——
          * ★S1 老方案 (v13.36 调校): remap_min=20 强制启用 + 重映射前置,
          * 死区 15 只杀真零、迟滞退出线=阈值 (无困死轻反馈的迟滞门槛);
          * 马达低强度电流声由重映射的下限保证占空比, 不再依赖死区。
+         * ★审计修复 (P0, v15): 抬底下限跟随"全局总调整"(master) 缩放 ——
+         * 固定 20% 曾把 master/attack/max 三闸可动范围压到 10-13 个百分点
+         * (master 90→100 马达仅 +1.5 点 = "调了没调一样")。master=90 → 18%
+         * 与原手感几乎一致; master 调低时地板同步下沉, 全局闸恢复线性。
          * 新方案 (v29.3/v30): 迟滞死区在前 (1.8× 恢复线防阈值附近反复启停),
          * 重映射在后。 */
         if self.legacy {
-            let mn = 0.20 * 65535.0;
-            let scale = 0.80;
+            let f = 0.20 * (master / 100.0).clamp(0.0, 1.0);
+            let mn = f * 65535.0;
+            let scale = 1.0 - f;
             if l_out > 0.0 {
                 l_out = mn + l_out * scale;
             }
@@ -1530,6 +1822,8 @@ pub fn run(state: Arc<AppState>) {
             let mut engine = VibEngine::new();
             /* ★S1 老方案: 路线开关 (评分/移动合成、计数口径、注入门控按路线分叉) */
             let legacy = state.vib_legacy_client.load(Ordering::Relaxed);
+            /* 输出闸门诊断: 翻转才记 [GATE] 行 (防刷屏), 见循环内注释 */
+            let mut last_gate_state: Option<(bool, bool, bool)> = None;
 
             loop {
                 if state.should_exit.load(Ordering::Relaxed) {
@@ -1556,6 +1850,22 @@ pub fn run(state: Arc<AppState>) {
                 };
                 let enabled = state.vibration_enabled.load(Ordering::Relaxed)
                     && !state.is_paused();
+                /* ★输出闸门诊断 (v14.1.1): 事件消费在总开关判断之前, 总开关关闭/
+                 * 暂停时 [INJ] 照打但每轮强制 send(0,0) —— 曾因此"日志有注入命中、
+                 * 马达纹丝不动"无从排查。有效输出状态一旦翻转, 记一行 [GATE]。 */
+                let gate_paused = state.is_paused();
+                let gate_abs = state.vibration_abs_freq_enabled.load(Ordering::Relaxed);
+                let gate_state = (enabled, gate_paused, gate_abs);
+                if last_gate_state != Some(gate_state) {
+                    vib_log(&format!(
+                        "[GATE] 输出{} (总开关={}, 暂停={}, 绝对频率={})",
+                        if enabled { "开" } else { "关" },
+                        state.vibration_enabled.load(Ordering::Relaxed),
+                        gate_paused,
+                        gate_abs
+                    ));
+                    last_gate_state = Some(gate_state);
+                }
 
                 if shm_view.is_none() {
                     if let Ok(h) = unsafe {
@@ -1736,6 +2046,24 @@ pub fn run(state: Arc<AppState>) {
                         engine.throttle_window = state.vibration_throttle_window.load(Ordering::Relaxed);
                         engine.throttle_max = state.vibration_throttle_max.load(Ordering::Relaxed);
                         engine.throttle_dense_ratio = state.vibration_throttle_dense_ratio.load(Ordering::Relaxed);
+                        /* 群怪聚合参数 (v14.1, 玩家可调): 每帧从 AppState 同步 */
+                        engine.merge_keep = state.vibration_merge_keep.load(Ordering::Relaxed);
+                        engine.merge_cap = state.vibration_merge_cap.load(Ordering::Relaxed);
+                        engine.merge_hold = state.vibration_merge_hold.load(Ordering::Relaxed);
+                        /* 命中限频参数 (v14.2, 玩家可调): 每帧从 AppState 同步 */
+                        engine.hitcap_max = state.vibration_hitcap_max.load(Ordering::Relaxed);
+                        engine.hitcap_win_ms = state.vibration_hitcap_win.load(Ordering::Relaxed);
+                        engine.hitmerge_ms = state.vibration_hitmerge_ms.load(Ordering::Relaxed);
+                        /* 脉冲落地 / 怪物异常反馈 (v15, 玩家可调): 每帧同步 */
+                        engine.tail_land_pct = state.vibration_tail_land_pct.load(Ordering::Relaxed);
+                        engine.monster_abnormal = state.vibration_monster_abnormal.load(Ordering::Relaxed);
+                        /* 总闸 L/R (v15.1): item_lr[0]/[1] → 左右马达独立总闸微调 */
+                        engine.gate_lr_l = (1.0
+                            + state.vibration_item_lr[0].load(Ordering::Relaxed) as i32 as f32 / 100.0)
+                            .clamp(0.0, 2.0);
+                        engine.gate_lr_r = (1.0
+                            + state.vibration_item_lr[1].load(Ordering::Relaxed) as i32 as f32 / 100.0)
+                            .clamp(0.0, 2.0);
                         engine.abs_freq_enabled = state.vibration_abs_freq_enabled.load(Ordering::Relaxed);
                         engine.abs_freq_window = state.vibration_abs_freq_window.load(Ordering::Relaxed);
                         engine.abs_freq_max = state.vibration_abs_freq_max.load(Ordering::Relaxed);
@@ -1776,8 +2104,16 @@ pub fn run(state: Arc<AppState>) {
                             /* 评分动态衰减 (v29): 评级倍率也作用于评分通道 */
                             let vl = (vl as f32 * engine.ghost_mul).min(65535.0) as u16;
                             let vr = (vr as f32 * engine.ghost_mul).min(65535.0) as u16;
-                            /* 低强度死区 (v29.3): 评分通道低强度段归 0 (消除嗡声) */
-                            let thr3 = (engine.out_threshold.min(50.0) / 100.0) * 65535.0;
+                            /* 低强度死区 (v29.3): 评分通道低强度段归 0 (消除嗡声)
+                             * ★审计修复 (P0): out_threshold 是 S4 的死区参数, 经 thr3
+                             * 泄漏进 S1 评分通道会把低增益评分全部杀光 (实锤: 用户
+                             * out_threshold=60 + rank_gain=30 → 评分全灭)。S1 评分与
+                             * FONT 同用 15% 只杀真零语义。 */
+                            let thr3 = if legacy {
+                                (15.0f32 / 100.0) * 65535.0
+                            } else {
+                                (engine.out_threshold.min(50.0) / 100.0) * 65535.0
+                            };
                             let vl = if (vl as f32) < thr3 { 0 } else { vl };
                             let vr = if (vr as f32) < thr3 { 0 } else { vr };
                             /* ★S1 老方案 (v13.37 合成式): 评分脉冲不再独占马达 ——
@@ -2047,6 +2383,461 @@ mod legacy_route_tests {
             (pct - 60.0).abs() < 1.0,
             "老方案: remap_min=20/死区=15 内置管线, 实际 {:.1}%",
             pct
+        );
+    }
+
+    /* ── ★S1 群怪聚合记帐 (v14.1, 玩家可调) 回归: 窗内事件记账不丢弃,
+     * 能量携带兑现; keep=0 完全关闭 = 旧行为 ── */
+
+    /* 公共态: 密度/自适应关闭, IVL 20, 命中 70, 玩家 DOT 20, 已过唤醒;
+     * 聚合默认参数 80/100/80 (与 config.vibration serde 默认一致) */
+    fn carry_engine(legacy: bool) -> VibEngine {
+        let mut e = engine_with(legacy);
+        e.p[P_FONT_IVL] = 20.0;
+        e.p[P_FONT_ATTACK] = 70.0;
+        e.p[P_FONT_HP] = 20.0;
+        e.p[P_DENSITY_THR] = 100.0; /* 密度自适应关闭 */
+        e.p[P_ADAPT_REDUCE] = 0.0; /* 自适应早触发关闭 */
+        e.p[P_COUNTER_MUL] = 100.0;
+        e.p[P_DEC_ATTACK] = 60.0;
+        e.p[P_DOT_HOLD] = 150.0;
+        e.p[P_EFFECT_PERIOD] = 90.0;
+        e.state = VibState::Combat;
+        e.wake_done = true;
+        e
+    }
+
+    fn push_font(e: &mut VibEngine, a6: u32) {
+        let ev = VibEvent {
+            etype: VEV_FONT,
+            strength: a6,
+            tick: 0,
+            reserved: 1,
+        };
+        let item_out: [AtomicU32; 26] = std::array::from_fn(|_| AtomicU32::new(0));
+        e.push_event(
+            &ev, true, &[0u32; 26], &item_out, &[0u32; 15], &[0i32; 30], 0, 300,
+        );
+    }
+
+    #[test]
+    fn legacy_merge_carries_energy_into_next_hit() {
+        let mut e = carry_engine(true);
+        /* 群怪第 2 击落在 20ms 注入窗内 → 记账, 不注入不丢失 */
+        e.last_font_ch[3] = now_ms();
+        push_font(&mut e, 0x01);
+        assert!(
+            e.font_carry_s[3] > 0.0,
+            "窗内命中应按通道记账 (能量携带)"
+        );
+        assert!(!e.last_injected, "记账本身不产生注入");
+        /* 下一发命中 (通道戳拨旧 1000ms 过间隔门) → 兑现记账, 单击变厚 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected, "兑现发是真实注入");
+        assert_eq!(e.font_carry_s[3], 0.0, "兑现后记账清零");
+        /* 对照组: 同参数单发命中 (无记账) */
+        let mut c = carry_engine(true);
+        c.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut c, 0x01);
+        assert!(
+            e.left > c.left * 1.2,
+            "群怪后的命中应明显更厚: 兑现 {:.3} vs 单发 {:.3}",
+            e.left,
+            c.left
+        );
+    }
+
+    #[test]
+    fn legacy_merge_caps_carry_energy() {
+        let mut e = carry_engine(true);
+        e.merge_cap = 100; /* 封顶滑块 100% = 1.0 (0-1 量纲) */
+        for _ in 0..3 {
+            e.last_font_ch[3] = now_ms();
+            push_font(&mut e, 0x01);
+        }
+        let cap = e.merge_cap as f32 / 100.0;
+        assert!(
+            (e.font_carry_s[3] - cap).abs() < 1e-6,
+            "记账封顶 {} 防叠加爆震, 实际 {}",
+            cap,
+            e.font_carry_s[3]
+        );
+    }
+
+    #[test]
+    fn legacy_merge_keep_zero_disables_merge() {
+        /* 关闭开关回归: merge_keep=0 → 完全回到丢弃语义 (旧行为), 无记账 */
+        let mut e = carry_engine(true);
+        e.merge_keep = 0;
+        e.last_font_ch[3] = now_ms();
+        push_font(&mut e, 0x01);
+        assert_eq!(e.font_carry_s[3], 0.0, "keep=0 不得记账");
+        assert!(!e.last_injected, "keep=0 窗内事件仍丢弃 (旧行为)");
+        /* 补发开关回归: merge_hold=0 → 到期不补发 (记账等到期作废) */
+        let mut h = carry_engine(true);
+        h.last_font_ch[3] = now_ms();
+        push_font(&mut h, 0x01);
+        assert!(h.font_carry_s[3] > 0.0);
+        h.merge_hold = 0;
+        h.font_carry_until[3] = now_ms().wrapping_sub(1);
+        h.tick(&[100u32; 60]);
+        assert!(h.left == 0.0 && h.right == 0.0, "hold=0 不得补发");
+    }
+
+    #[test]
+    fn legacy_merge_flushes_expired_carry_in_tick() {
+        let mut e = carry_engine(true);
+        e.last_font_ch[3] = now_ms();
+        push_font(&mut e, 0x01);
+        assert!(e.font_carry_s[3] >= FONT_CARRY_FLUSH_MIN);
+        e.font_carry_until[3] = now_ms().wrapping_sub(1); /* 拨到已到期 */
+        let params = [100u32; 60];
+        e.tick(&params);
+        assert_eq!(e.font_carry_s[3], 0.0, "到期记账应清零");
+        assert!(
+            e.left > 0.0 || e.right > 0.0,
+            "到期记账应补发收尾脉冲 (防能量蒸发)"
+        );
+    }
+
+    #[test]
+    fn legacy_dot_events_feed_density_counter() {
+        let mut e = carry_engine(true);
+        e.p[P_DENSITY_THR] = 2.0;
+        e.p[P_DENSITY_WIN] = 500.0;
+        push_font(&mut e, 0x20); /* 玩家 DOT 红字 */
+        assert!(!e.density_active);
+        push_font(&mut e, 0x20);
+        assert!(
+            e.density_active,
+            "群怪 DOT 洪流应喂入密度计数 (v22.4 盲区修复)"
+        );
+        /* 新方案: DOT 不计密度 (现行行为不变, 红线) */
+        let mut n = carry_engine(false);
+        n.p[P_DENSITY_THR] = 2.0;
+        n.p[P_DENSITY_WIN] = 500.0;
+        push_font(&mut n, 0x20);
+        push_font(&mut n, 0x20);
+        assert!(!n.density_active, "新方案: DOT 不计密度 (现行行为不变)");
+    }
+
+    #[test]
+    fn legacy_burst_floor_scales_with_density_fatigue() {
+        let now0 = now_ms();
+        let mut params = [100u32; 60];
+        params[P_BURST_MIN] = 30;
+        params[P_FONT_ATTACK] = 70;
+        params[P_DENSITY_REDUCE] = 45;
+        params[P_DENSITY_FLOOR] = 55;
+        params[P_DENSITY_SMOOTH] = 0;
+        params[P_DENSITY_RECOVER] = 100;
+        /* 密度疲劳激活期 (density_scale → 0.55): Burst 右马达保底同步降温 */
+        let mut e = carry_engine(true);
+        e.state = VibState::Burst;
+        e.burst_until = now0.wrapping_add(800);
+        e.last_combo = now0.wrapping_sub(50);
+        e.last_event = now0; /* 防 Idle 检查把 state 复位 (last_event=0 哨兵) */
+        e.density_active = true;
+        e.tick(&params);
+        let expect = 0.30 * 0.70 * 0.55;
+        assert!(
+            (e.right - expect).abs() < 1e-3,
+            "Burst 保底应乘密度疲劳: 期望 {:.4}, 实际 {:.4}",
+            expect,
+            e.right
+        );
+        /* 无密度疲劳: 保底满额 0.30×0.70 (老方案手感不变) */
+        let mut e2 = carry_engine(true);
+        e2.state = VibState::Burst;
+        e2.burst_until = now0.wrapping_add(800);
+        e2.last_event = now0;
+        e2.tick(&params);
+        assert!(
+            (e2.right - 0.21).abs() < 1e-3,
+            "无密度疲劳时 Burst 保底满额 0.21, 实际 {:.4}",
+            e2.right
+        );
+    }
+
+    #[test]
+    fn new_route_gate_unchanged_no_carry() {
+        /* 红线: 新方案 (S4+) 注入窗内仍丢弃, 无任何记账状态 */
+        let mut n = carry_engine(false);
+        n.last_font = now_ms(); /* 新方案全局单窗 */
+        push_font(&mut n, 0x01);
+        assert!(!n.last_injected, "新方案: 窗内仍丢弃 (现行行为不变)");
+        assert!(
+            n.font_carry_s.iter().all(|&c| c == 0.0),
+            "新方案不得产生记账状态"
+        );
+    }
+
+    /* ── ★S1 命中限频 (v14.2) 回归: 超额命中全额记账不丢弃, 关闭态零影响 ── */
+
+    #[test]
+    fn legacy_hitcap_limits_and_carries_energy() {
+        let mut e = carry_engine(true);
+        e.hitcap_max = 1;
+        e.hitcap_win_ms = 1000;
+        /* 第 1 发: 窗口滚动放行 → 正常注入, count=1 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected);
+        assert_eq!(e.hitcap_count, 1);
+        assert_eq!(e.font_carry_s[3], 0.0);
+        /* 第 2 发: <20ms → 走 merge 记账, 不占限频名额 */
+        e.last_font_ch[3] = now_ms();
+        push_font(&mut e, 0x01);
+        assert!(!e.last_injected);
+        assert!(e.font_carry_s[3] > 0.0);
+        assert_eq!(e.hitcap_count, 1);
+        /* 第 3 发: 过 IVL 门但限频已满 → 全额记账, 不打戳不注入 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(500);
+        let anchor_before = e.last_font_ch[3];
+        push_font(&mut e, 0x01);
+        assert!(!e.last_injected, "超限命中不得注入");
+        assert!(e.font_carry_s[3] > 0.0, "超限命中应全额记账 (不丢能量)");
+        assert_eq!(
+            e.last_font_ch[3], anchor_before,
+            "超限命中不得推进 IVL 锚点 (防通道饥饿)"
+        );
+        /* 第 4 发: 滚窗放行 → 兑现记账能量, 比对照组单发明显更厚 */
+        e.hitcap_start = now_ms().wrapping_sub(1001);
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(e.last_injected, "滚窗后恢复注入");
+        assert_eq!(e.font_carry_s[3], 0.0, "兑现后记账清零");
+        assert_eq!(e.hitcap_count, 1, "新窗口重新计数");
+        let mut c = carry_engine(true);
+        c.hitcap_max = 0;
+        c.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut c, 0x01);
+        assert!(
+            e.left > c.left * 1.2,
+            "被限命中的能量应让下一发更厚: {:.3} vs {:.3}",
+            e.left,
+            c.left
+        );
+    }
+
+    #[test]
+    fn legacy_hitcap_off_passes_through() {
+        /* 关闭态 (max=0): 命中全部照常注入, 完全休眠零影响 */
+        let mut e = carry_engine(true);
+        e.hitcap_max = 0;
+        for _ in 0..8 {
+            e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+            push_font(&mut e, 0x01);
+            assert!(e.last_injected, "hitcap=0 不得拦截任何命中");
+        }
+        assert_eq!(e.hitcap_count, 0, "关闭时完全不计数");
+        assert_eq!(e.font_carry_s[3], 0.0);
+    }
+
+    #[test]
+    fn new_route_ignores_hitcap() {
+        /* 红线: 新方案不受命中限频影响 */
+        let mut n = carry_engine(false);
+        n.hitcap_max = 6;
+        n.last_font = now_ms();
+        push_font(&mut n, 0x01);
+        assert!(!n.last_injected, "新方案: 窗内仍丢弃 (现行行为不变)");
+        assert_eq!(n.hitcap_count, 0, "新方案不计数");
+        assert!(
+            n.font_carry_s.iter().all(|&c| c == 0.0),
+            "新方案无记账状态"
+        );
+    }
+
+    /* ── ★S1 脉冲落地 (v15) 回归: 高负载期尾巴归零, 关闭态/S4/补发零影响 ── */
+
+    /* 公共 tick 参数: 衰减 60ms + 密度恢复窗拉满 (防 tick 复位 density_active) */
+    fn landing_params() -> [u32; 60] {
+        let mut p = [100u32; 60];
+        p[P_DEC_ATTACK] = 60;
+        p[P_DENSITY_RECOVER] = 60000;
+        p
+    }
+
+    #[test]
+    fn legacy_pulse_landing_density_active() {
+        let mut e = carry_engine(true);
+        e.tail_land_pct = 25;
+        e.density_active = true;
+        e.last_combo = now_ms(); /* 防 tick 复位 density_active */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01); /* peak_left = 0.70×0.35 = 0.245 */
+        assert!(e.tail_peak_l > 0.2, "注入应记录峰值: {}", e.tail_peak_l);
+        let params = landing_params();
+        /* 2×60ms: 0.245 → 0.090 (37% > 25% 存活) → 0.033 (13.5% < 25% 落地) */
+        for _ in 0..2 {
+            e.last_output = now_ms().wrapping_sub(60); /* 强制 dt=60ms */
+            e.tick(&params);
+        }
+        assert_eq!(
+            e.left, 0.0,
+            "高负载期衰减尾巴应在峰值 25% 处落地归零"
+        );
+    }
+
+    #[test]
+    fn legacy_pulse_landing_off_keeps_natural_tail() {
+        /* 关闭对照 (pct=0): 同场景尾巴自然衰减, 不被强制归零 */
+        let mut e = carry_engine(true);
+        e.tail_land_pct = 0;
+        e.density_active = true;
+        e.last_combo = now_ms();
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        let params = landing_params();
+        for _ in 0..2 {
+            e.last_output = now_ms().wrapping_sub(60);
+            e.tick(&params);
+        }
+        assert!(
+            e.left > 0.02,
+            "落地关闭时尾巴应自然衰减存在 (高于 0.02 硬地板): {}",
+            e.left
+        );
+    }
+
+    #[test]
+    fn legacy_flush_pulse_not_killed_by_stale_peak() {
+        /* 防回归: 补发 (FLUSH) 必须刷新峰值 —— 否则陈旧大 peak 把小收尾脉冲
+         * 在落地门当帧误杀 (防能量蒸发失效) */
+        let mut e = carry_engine(true);
+        e.tail_land_pct = 25;
+        e.density_active = true;
+        e.last_combo = now_ms();
+        /* 制造陈旧大 peak (0.9) */
+        e.inject(0.9, 1.0, 1.0, 60.0, 48.0);
+        assert!(e.tail_peak_l > 0.8);
+        /* 清空当前输出, 挂一笔到期的小记账 */
+        e.left = 0.0;
+        e.right = 0.0;
+        e.font_carry_s[3] = 0.10;
+        e.font_carry_mode[3] = 0;
+        e.font_carry_lr[3] = [1.0, 1.0];
+        e.font_carry_until[3] = now_ms().wrapping_sub(1);
+        e.last_output = now_ms().wrapping_sub(60);
+        e.tick(&landing_params());
+        assert!(
+            e.left > 0.03,
+            "补发脉冲应存活 (陈旧 peak 不得误杀): {}",
+            e.left
+        );
+        assert_eq!(e.font_carry_s[3], 0.0);
+    }
+
+    #[test]
+    fn s4_route_ignores_tail_landing() {
+        /* 红线: 新方案无落地机制, 输出走自然衰减 */
+        let mut n = carry_engine(false);
+        n.tail_land_pct = 25;
+        n.density_active = true;
+        n.last_combo = now_ms();
+        n.inject(0.9, 1.0, 1.0, 60.0, 48.0);
+        let params = landing_params();
+        for _ in 0..2 {
+            n.last_output = now_ms().wrapping_sub(60);
+            n.tick(&params);
+        }
+        assert!(
+            n.left > 0.02,
+            "新方案: 输出应按自然衰减推进, 不被强制清零: {}",
+            n.left
+        );
+    }
+
+    #[test]
+    fn legacy_monster_abnormal_split_from_effect() {
+        /* 0x04 拆分: legacy 用独立 monster_abnormal 强度, S4 维持 p[15] */
+        let mut e = carry_engine(true);
+        e.monster_abnormal = 3;
+        e.p[P_FONT_EFFECT] = 40.0;
+        let (s, _, _, mode) = e.font_pick(FONT_EFFECT, 8);
+        assert_eq!(s, 3.0, "legacy 0x04 应取怪物异常反馈强度");
+        assert_eq!(mode, 4);
+        let mut n = carry_engine(false);
+        n.p[P_FONT_EFFECT] = 40.0;
+        let (s2, _, _, mode2) = n.font_pick(FONT_EFFECT, 8);
+        assert_eq!(s2, 40.0, "新方案 0x04 维持 p[15] (现行行为不变)");
+        assert_eq!(mode2, 2);
+    }
+
+    /* ── ★S1 单帧脉冲 (v15.1, 衰减 0-5ms) + 总闸 L/R 回归 ── */
+
+    #[test]
+    fn legacy_instant_decay_single_frame_pulse() {
+        let mut e = carry_engine(true);
+        e.p[P_DEC_ATTACK] = 0.0; /* 0ms = 单帧脉冲 */
+        e.tail_land_pct = 0; /* 与落地机制解耦, 单测单帧语义 */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01);
+        assert!(e.instant_armed, "0ms 衰减应布防单帧脉冲");
+        assert!(e.left > 0.2, "注入帧: left={}", e.left);
+        /* 第 1 帧 tick: 布防保持全幅直出 (一记全力的"顿") */
+        e.tick(&landing_params());
+        assert!(e.left > 0.2, "注入帧 tick 应全幅直出: {}", e.left);
+        /* 第 2 帧 tick: 硬归零 (立即静音) */
+        e.last_output = now_ms().wrapping_sub(60);
+        e.tick(&landing_params());
+        assert_eq!(e.left, 0.0, "单帧脉冲下一帧应硬归零");
+    }
+
+    #[test]
+    fn gate_lr_scales_motors_independently() {
+        /* 总闸 L/R (item_lr[0]/[1]): 左右马达独立微调 */
+        let mut e = carry_engine(true);
+        e.gate_lr_l = 0.5;
+        e.gate_lr_r = 1.5;
+        e.left = 0.245;
+        e.right = 0.49;
+        let params = [100u32; 60];
+        let (l, r) = e.finalize(&params);
+        let mut c = carry_engine(true);
+        c.left = 0.245;
+        c.right = 0.49;
+        let (cl, cr) = c.finalize(&params);
+        assert!(l < cl, "左闸 0.5 应压低左马达: {} vs {}", l, cl);
+        assert!(r > cr, "右闸 1.5 应抬高右马达: {} vs {}", r, cr);
+    }
+
+    /* ── ★S1 命中聚合窗 (v15.2) 回归: 群怪一刀的多条命中事件只震一下 ── */
+
+    #[test]
+    fn legacy_hitmerge_aggregates_swing_burst() {
+        let mut e = carry_engine(true);
+        e.hitmerge_ms = 40;
+        e.hitcap_max = 0; /* 与限频解耦, 单测聚合窗语义 */
+        e.tail_land_pct = 0;
+        /* 一刀砍中 3 怪: 事件错峰到达 (0 / +30 / +60ms, >20ms 旧窗拦不住) */
+        e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut e, 0x01); /* 距锚 1000 ≥ 40 → 注入 */
+        assert!(e.last_injected, "首怪正常注入");
+        e.last_font_ch[3] = now_ms().wrapping_sub(30);
+        push_font(&mut e, 0x01); /* 距锚 30 < 40 → 记账合并 */
+        assert!(!e.last_injected, "聚合窗内第 2 怪不单独注入");
+        assert!(e.font_carry_s[3] > 0.0, "能量记账不丢失");
+        e.last_font_ch[3] = now_ms().wrapping_sub(60);
+        push_font(&mut e, 0x01); /* 距锚 60 ≥ 40 → 兑现注入 (更厚) */
+        assert!(e.last_injected, "窗满后兑现注入");
+        assert_eq!(e.font_carry_s[3], 0.0, "兑现后记账清零");
+        /* 对照: 聚合窗关闭 (10ms = 回到 20ms 行为) 同样节奏 → 每条都注入 */
+        let mut c = carry_engine(true);
+        c.hitmerge_ms = 10;
+        c.hitcap_max = 0;
+        c.last_font_ch[3] = now_ms().wrapping_sub(1000);
+        push_font(&mut c, 0x01);
+        c.last_font_ch[3] = now_ms().wrapping_sub(60);
+        push_font(&mut c, 0x01); /* 距锚 60 ≥ 20 (旧窗) → 直接注入, 无合并 */
+        assert!(c.last_injected, "聚合窗关闭: 旧行为 (每条注入)");
+        assert!(
+            e.left > c.left * 1.2,
+            "聚合后的单发应比散开发更厚: {:.3} vs {:.3}",
+            e.left,
+            c.left
         );
     }
 }

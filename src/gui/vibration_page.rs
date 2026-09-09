@@ -438,7 +438,8 @@ impl SorahkGui {
                             self.app_state.vibration_throttle_window.store(cls.throttle_window, Ordering::Relaxed);
                             self.app_state.vibration_throttle_max.store(cls.throttle_max, Ordering::Relaxed);
                             self.app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, Ordering::Relaxed);
-                            self.app_state.vibration_abs_freq_enabled.store(cls.abs_freq_enabled, Ordering::Relaxed);
+                            /* ★保险A: 职业预设恢复也强制关绝对频率 (堵重启复活路径) */
+                            self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
                             self.app_state.vibration_algo_id.store(cls.algo_id as u32, Ordering::Relaxed);
                             for (i, v) in cls.algo_params.iter().enumerate() {
                                 self.app_state.vibration_algo_ap[i].store(*v, Ordering::Relaxed);
@@ -446,7 +447,7 @@ impl SorahkGui {
                             self.config.vibration.throttle_window_ms = cls.throttle_window;
                             self.config.vibration.throttle_max_hits = cls.throttle_max;
                             self.config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                            self.config.vibration.abs_freq_enabled = cls.abs_freq_enabled;
+                            self.config.vibration.abs_freq_enabled = false;
                             self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
                             self.vib_job_loaded = Some((bi, ci));
                         }
@@ -747,12 +748,28 @@ impl SorahkGui {
                         .clicked()
                     {
                         if let Some(pr0) = self.config.vibration_presets.get(sel) {
+                            /* 先克隆解除 config 借用 (保险B的 disable 需要 &mut config) */
+                            let pr_name = pr0.name.clone();
+                            let user_pr = pr0.clone();
+                            /* ★保险B: 震动页应用通用预设同样自动停用全职业预设
+                             * (此路径手工拷参数、不走 apply_general_preset_in 的
+                             * 自动 disable 链, 是职业参数的隐藏复活口 —— 封堵)。
+                             * 先停用 (参数回滚内置默认), 随后本按钮拷入所选预设。 */
+                            if self.vib_job_enabled {
+                                Self::disable_job_vibration_preset_in(
+                                    &self.app_state,
+                                    &mut self.config,
+                                    &mut self.vib_job_enabled,
+                                    &mut self.vib_job_active,
+                                    &mut self.vib_job_loaded,
+                                );
+                            }
                             /* 内置同名预设优先: 兼容旧 Config.toml (旧预设无评分参数字段,
                              * serde 默认 [100;15]/100/300, 应用时用内置新设计值覆盖) */
                             let pr = crate::config::default_vibration_presets()
                                 .into_iter()
-                                .find(|p| p.name == pr0.name)
-                                .unwrap_or_else(|| pr0.clone());
+                                .find(|p| p.name == pr_name)
+                                .unwrap_or_else(|| user_pr);
                             for (i, v) in pr.params.iter().enumerate() {
                                 p[i].store(*v, Ordering::Relaxed);
                             }
@@ -1188,7 +1205,7 @@ impl SorahkGui {
                         ("全局总调整 %", 9, 100.0, "", "总开关: 0 = 全部关闭; 调低 = 整体减弱所有震动", 0usize),
                         ("攻击频率 (总闸1)", 0, 100.0, "", "攻击/技能命中反馈总闸: 0 = 命中不震", 1),
                         ("强度上限 (总闸2)", 4, 100.0, "%", "输出强度上限: 调低 = 所有震动更弱 (保护手柄)", 2),
-                        ("衰减时间", 5, 500.0, "ms", "震动衰减速度: 越小越脆快, 越大越绵长 (基线)", 3),
+                        ("衰减时间", 5, 500.0, "ms", "(预留槽位, 当前版本未接入引擎) 实际衰减请在高级调校 B 区按通道调整", 3),
                         ("连击增强 (渐进至上限)", 6, 100.0, "", "连击数越高震动越强, 渐进到强度上限", 4),
                         ("节奏感 (右马达比例)", 18, 100.0, "", "右马达强度占比: 50 = 均衡, 高 = 右重左轻", 5),
                     ];
@@ -1357,15 +1374,37 @@ impl SorahkGui {
                             .size(12.0)
                             .color(th.accent_text),
                     );
-                    let rows = [
-                        ("持续伤害 DOT 反馈 (0x20)", 12, 7usize, "中毒/灼烧/出血等持续掉血反馈, 每次掉血持续震动"),
-                        ("装备特效反馈 (0x04)", 15, 8, "装备触发效果(特效等), 例如天域之类的"),
-                        ("玩家状态变化反馈 (0x08)", 14, 9, "自身状态变化(增益/减益/回复)"),
-                        ("特殊攻击反馈 (0x10) 暴击/破招/背击", 13, 10, "暴击/破招/背击瞬间的重击强调"),
-                        ("玩家命中反馈 (0x01)", 16, 11, "普通攻击与技能每次命中的基础反馈 (核心)"),
-                        ("玩家受击反馈 (0x02)", 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉"),
+                    /* 每项独立块: 名称+滑块+说明+L/R, 宽屏双列排布。
+                     * ★S1 限定: "装备特效反馈"之下插入"怪物异常反馈"独立行 (v15 拆分,
+                     * 0x04 在 ACT 里 100% 是怪物异常跳字); 装备特效行保留不删 —— S4 语义不变 */
+                    let mut rows: Vec<(String, usize, usize, String)> = vec![
+                        ("持续伤害 DOT 反馈 (0x20)".to_string(), 12, 7usize, "中毒/灼烧/出血等持续掉血反馈, 每次掉血持续震动".to_string()),
+                        (
+                            "装备特效反馈 (0x04)".to_string(),
+                            15,
+                            8,
+                            if self.config.vib_legacy_client {
+                                "装备触发效果 (ACT 版本: 此通道事件已由下方怪物异常反馈承载, 此滑块暂不影响震动)".to_string()
+                            } else {
+                                "装备触发效果(特效等), 例如天域之类的".to_string()
+                            },
+                        ),
+                        ("玩家状态变化反馈 (0x08)".to_string(), 14, 9, "自身状态变化(增益/减益/回复)".to_string()),
+                        ("特殊攻击反馈 (0x10) 暴击/破招/背击".to_string(), 13, 10, "暴击/破招/背击瞬间的重击强调".to_string()),
+                        ("玩家命中反馈 (0x01)".to_string(), 16, 11, "普通攻击与技能每次命中的基础反馈 (核心)".to_string()),
+                        ("玩家受击反馈 (0x02)".to_string(), 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉".to_string()),
                     ];
-                    /* 每项独立块: 名称+滑块+说明+L/R, 宽屏双列排布 */
+                    if self.config.vib_legacy_client {
+                        rows.insert(
+                            2,
+                            (
+                                "怪物异常反馈 (0x04) 出血/中毒/感电跳字".to_string(),
+                                usize::MAX,
+                                8,
+                                "怪物身上的异常状态 (出血/中毒等) 每次跳字的反馈, 独立通道 (仅 ACT 版本)。\n默认 1 = 最低档; ACT 重映射 20% 抬底, 1 实感约 20% 满幅; 0 = 完全关闭".to_string(),
+                            ),
+                        );
+                    }
                     let col_w = (ui.available_width() - theme::SP_L) / 2.0;
                     ui.horizontal(|ui| {
                         let half = rows.len().div_ceil(2);
@@ -1373,21 +1412,47 @@ impl SorahkGui {
                             ui.vertical(|ui| {
                                 ui.set_min_width(col_w);
                                 ui.set_max_width(col_w);
-                                for (name, pidx, item, hint) in chunk.iter().copied() {
+                                for (name, pidx, item, hint) in chunk.iter() {
+                                    if *pidx == usize::MAX {
+                                        /* ★怪物异常反馈: 独立 config 字段 (不占 60 槽) */
+                                        ui.label(
+                                            egui::RichText::new(name.as_str())
+                                                .size(13.0)
+                                                .color(th.text),
+                                        );
+                                        let mut ma = self
+                                            .app_state
+                                            .vibration_monster_abnormal
+                                            .load(Ordering::Relaxed) as f32;
+                                        if ui
+                                            .add(egui::Slider::new(&mut ma, 0.0..=100.0))
+                                            .changed()
+                                        {
+                                            self.app_state
+                                                .vibration_monster_abnormal
+                                                .store(ma as u32, Ordering::Relaxed);
+                                            self.config.vibration.monster_abnormal_gain = ma as u32;
+                                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                                        }
+                                        ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
+                                        Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, *item);
+                                        ui.add_space(6.0);
+                                        continue;
+                                    }
                                     ui.label(
-                                        egui::RichText::new(name)
+                                        egui::RichText::new(name.as_str())
                                             .size(13.0)
                                             .color(th.text),
                                     );
-                                    let mut v = p[pidx].load(Ordering::Relaxed) as f32;
+                                    let mut v = p[*pidx].load(Ordering::Relaxed) as f32;
                                     if ui
                                         .add(egui::Slider::new(&mut v, 0.0..=100.0))
                                         .changed()
                                     {
-                                        p[pidx].store(v as u32, Ordering::Relaxed);
+                                        p[*pidx].store(v as u32, Ordering::Relaxed);
                                     }
-                                    ui.label(egui::RichText::new(hint).size(11.0).weak());
-                                    Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, item);
+                                    ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
+                                    Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, *item);
                                     ui.add_space(6.0);
                                 }
                             });
@@ -1567,11 +1632,13 @@ impl SorahkGui {
                         .app_state
                         .vibration_rank_decay_speed
                         .load(Ordering::Relaxed) as f32;
+                    /* ★审计修复: 载体是 u32, 浮点滑块的小数档位 (如 4.5) 会被截成 4
+                     * —— 改为整数步进, 滑块档位与实际生效值一致 */
                     if ui
                         .add_enabled(
                             rd_on,
-                            egui::Slider::new(&mut rds, 1.0..=5.0)
-                                .text("衰减速度 级/秒"),
+                            egui::Slider::new(&mut rds, 1.0..=5.0).integer()
+                                .text("衰减速度 级/秒 (整数)"),
                         )
                         .changed()
                     {
@@ -1727,17 +1794,20 @@ impl SorahkGui {
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
                     }
-                    /* 输出低强度死区 (v29.4: ERM 转子马达启动区高死区, 低于归 0 消除转子嗡声) */
+                    /* 输出低强度死区 (v29.4: ERM 转子马达启动区高死区, 低于归 0 消除转子嗡声)
+                     * ★审计修复: 仅 S4 生效 (S1 FONT 用内置死区 15; 评分通道已解耦),
+                     * S1 下禁用防"调了没用" */
                     {
+                        let s1_route = self.config.vib_legacy_client;
                         let mut v = self
                             .app_state
                             .vibration_out_threshold
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                adv_on,
+                                adv_on && !s1_route,
                                 egui::Slider::new(&mut v, 0.0..=60.0)
-                                    .text("输出低强度抑制 % (转子马达建议 25-35)"),
+                                    .text("输出低强度抑制 % (仅 S4, 转子马达建议 25-35)"),
                             )
                             .changed()
                         {
@@ -1748,18 +1818,25 @@ impl SorahkGui {
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
                     }
-                    /* 输出动态范围重映射 (v30, ERM/Xbox360: 非零必转, 轻反馈不被死区吞掉) */
+                    /* 输出动态范围重映射 (v30, ERM/Xbox360: 非零必转, 轻反馈不被死区吞掉)
+                     * ★审计修复: S1 使用内置管线 (下限 20% 跟随全局总调整缩放),
+                     * 这两个控件仅 S4 生效, S1 下禁用 */
                     {
+                        let s1_route = self.config.vib_legacy_client;
                         let mut rm = self
                             .app_state
                             .vibration_remap_enabled
                             .load(Ordering::Relaxed);
                         if ui
-                            .checkbox(&mut rm, "输出动态范围重映射 (Xbox360/ERM)")
+                            .add_enabled(
+                                !s1_route,
+                                egui::Checkbox::new(&mut rm, "输出动态范围重映射 (Xbox360/ERM, 仅 S4)"),
+                            )
                             .on_hover_text(
                                 "把非零输出映射到 [最小输出, 100%] 区间:\n\
                                  任何非零反馈至少以最小输出驱动马达 (转子一定转起来),\n\
-                                 相对强弱保留, 轻反馈不再被死区吞掉。",
+                                 相对强弱保留, 轻反馈不再被死区吞掉。\n\
+                                 (ACT 版本使用内置重映射管线, 下限跟随全局总调整)",
                             )
                             .changed()
                         {
@@ -1775,9 +1852,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                adv_on && rm,
+                                adv_on && rm && !s1_route,
                                 egui::Slider::new(&mut rmn, 10.0..=60.0)
-                                    .text("重映射最小输出 % (与死区一致)"),
+                                    .text("重映射最小输出 % (与死区一致, 仅 S4)"),
                             )
                             .changed()
                         {
@@ -1827,9 +1904,20 @@ impl SorahkGui {
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
                     }
-                    /* 震动节流 (v24: 限定时间窗口内最大注入次数, 防狂震) */
+                    /* 震动节流 (v24: 限定时间窗口内最大注入次数, 防狂震)
+                     * ★审计修复: 节流仅在 S4 新方案生效 (S1 引擎绕过, 由命中限频/
+                     * 群怪聚合接管) —— S1 下禁用三滑块并注明, 消除"调了没用" */
                     {
-                        if job_mode
+                        let s1_route = self.config.vib_legacy_client;
+                        if s1_route {
+                            ui.label(
+                                egui::RichText::new(
+                                    "节流仅 S4 新方案生效 (ACT 版本由「命中限频/群怪聚合」接管)",
+                                )
+                                .size(11.0)
+                                .weak(),
+                            );
+                        } else if job_mode
                             && self.app_state.vibration_throttle_window.load(Ordering::Relaxed) > 0
                         {
                             ui.label(
@@ -1845,9 +1933,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                adv_on,
+                                adv_on && !s1_route,
                                 egui::Slider::new(&mut tw, 0.0..=10000.0)
-                                    .text("震动节流窗口 ms (0=禁用)"),
+                                    .text("震动节流窗口 ms (0=禁用, 仅 S4)"),
                             )
                             .changed()
                         {
@@ -1863,9 +1951,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                adv_on,
+                                adv_on && !s1_route,
                                 egui::Slider::new(&mut tm, 1.0..=30.0)
-                                    .text("窗口内最大震动次数"),
+                                    .text("窗口内最大震动次数 (仅 S4)"),
                             )
                             .changed()
                         {
@@ -1881,9 +1969,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                adv_on,
+                                adv_on && !s1_route,
                                 egui::Slider::new(&mut tr, 1.0..=100.0)
-                                    .text("狂震期次数比例 % (自适应收紧, 100=不收紧)"),
+                                    .text("狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)"),
                             )
                             .changed()
                         {
@@ -1891,6 +1979,160 @@ impl SorahkGui {
                                 .vibration_throttle_dense_ratio
                                 .store(tr as u32, Ordering::Relaxed);
                             self.config.vibration.throttle_dense_ratio = tr as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                    }
+                    /* ★S1 群怪聚合 (v14.1 高级算法, 玩家可调): 群怪洪流"单击变厚"
+                     * 而非"变密变吵" —— 注入窗内事件按通道记账不丢弃, 下一发兑现。
+                     * 仅 S1 老方案显示; keep=0 = 完全关闭 (回到丢弃语义) */
+                    if self.config.vib_legacy_client {
+                        ui.add_space(4.0);
+                        ui.separator();
+                        ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new("群怪聚合 (S1 高级算法): 群怪时每击必震但不持续爆震")
+                                .size(12.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new("把 20ms 注入窗内的多余命中记到下一发上 —— 单挑手感和关闭时完全一致, 打群怪单击变厚变疏。\n合并保留调 0 = 关闭本算法。")
+                                .size(11.0)
+                                .weak(),
+                        );
+                        let mut mk = self
+                            .app_state
+                            .vibration_merge_keep
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut mk, 0.0..=100.0)
+                                    .text("合并保留 % (每记一笔保留强度, 0=关闭聚合)"),
+                            )
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_merge_keep
+                                .store(mk as u32, Ordering::Relaxed);
+                            self.config.vibration.merge_keep = mk as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        let mut mc = self
+                            .app_state
+                            .vibration_merge_cap
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut mc, 20.0..=150.0)
+                                    .text("合并封顶 % (记账+本击强度上限, 100=满幅)"),
+                            )
+                            .on_hover_text("群怪时合并后的单发最大强度。调低 = 群怪更轻; 调高 = 群怪更重 (超过 100 需配合强度上限)")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_merge_cap
+                                .store(mc as u32, Ordering::Relaxed);
+                            self.config.vibration.merge_cap = mc as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        let mut mh = self
+                            .app_state
+                            .vibration_merge_hold
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut mh, 0.0..=300.0)
+                                    .text("补发窗口 ms (记账到期补发收尾, 0=不补发)"),
+                            )
+                            .on_hover_text("记账没等到下一发时, 到期补一记收尾脉冲防能量蒸发。0 = 不补发 (记账等下一发, 到期作废)")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_merge_hold
+                                .store(mh as u32, Ordering::Relaxed);
+                            self.config.vibration.merge_hold = mh as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        /* ★命中限频 (v14.2): 仅普通命中通道的秒级限频, 超额命中
+                         * 全额记账进聚合能量 —— 频率上限转化为厚度, 每击必震 */
+                        let mut hm = self
+                            .app_state
+                            .vibration_hitcap_max
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut hm, 0.0..=30.0)
+                                    .text("命中限频·每秒最多生效次 (0=关闭)"),
+                            )
+                            .on_hover_text("窗口秒内普通命中脉冲超过此数后, 超额命中不再单独震而是全额并入下一发 (单击变厚/到期补发) —— 每一击都不丢。\n默认 6: 单挑 2-4 次/秒永不触发, 打群怪封顶每秒 6 次脉冲。")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_hitcap_max
+                                .store(hm as u32, Ordering::Relaxed);
+                            self.config.vibration.hitcap_max = hm as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        let mut hw = self
+                            .app_state
+                            .vibration_hitcap_win
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut hw, 200.0..=5000.0)
+                                    .text("命中限频·窗口 ms"),
+                            )
+                            .on_hover_text("限频统计窗口时长。窗口×次数 = 群怪期命中脉冲的总量上限")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_hitcap_win
+                                .store(hw as u32, Ordering::Relaxed);
+                            self.config.vibration.hitcap_win_ms = hw as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        /* ★命中聚合窗 (v15.2): 群怪一刀多条命中事件合并, 一刀一震 */
+                        let mut hmz = self
+                            .app_state
+                            .vibration_hitmerge_ms
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut hmz, 10.0..=200.0)
+                                    .text("命中聚合窗 ms (群怪一刀只震一下)"),
+                            )
+                            .on_hover_text("群怪时一刀会同时产生多条命中事件 (每怪一条)。此窗口内的事件全部合并成一下更厚的震动 (能量不丢)。\n默认 40: 一刀砍中几个怪都只震一下; 单挑慢速攻击不受影响。调大合并更彻底。")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_hitmerge_ms
+                                .store(hmz as u32, Ordering::Relaxed);
+                            self.config.vibration.hitmerge_ms = hmz as u32;
+                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        }
+                        /* ★脉冲落地 (v15): 高负载期衰减尾巴提前归零, 脉冲间真静音 */
+                        let mut tl_pct = self
+                            .app_state
+                            .vibration_tail_land_pct
+                            .load(Ordering::Relaxed) as f32;
+                        if ui
+                            .add_enabled(
+                                adv_on,
+                                egui::Slider::new(&mut tl_pct, 0.0..=60.0)
+                                    .text("脉冲落地阈值 % (高负载期尾巴提前归零, 0=关闭)"),
+                            )
+                            .on_hover_text("群怪高负载期 (密度自适应激活/命中限频咬合) 衰减尾巴降到本脉冲峰值的此比例后立即归零, 脉冲之间出现真静音 (向 S4 的干脆质感靠拢)。\n默认 25; 调高越接近硬切; 0 = 关闭 (维持自然衰减尾巴)")
+                            .changed()
+                        {
+                            self.app_state
+                                .vibration_tail_land_pct
+                                .store(tl_pct as u32, Ordering::Relaxed);
+                            self.config.vibration.tail_land_pct = tl_pct as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
                     }
@@ -2019,11 +2261,13 @@ impl SorahkGui {
                             .strong(),
                     );
                     let c_rows = [
-                        ("普通命中衰减 ms", 35, 15.0, 150.0),
-                        ("特殊攻击衰减 ms", 36, 15.0, 150.0),
-                        ("受击衰减 ms", 37, 10.0, 150.0),
-                        ("状态变化衰减 ms", 38, 15.0, 150.0),
-                        ("装备特效衰减 ms", 39, 15.0, 200.0),
+                        ("普通命中衰减 ms", 35, 0.0, 150.0),
+                        ("特殊攻击衰减 ms", 36, 0.0, 150.0),
+                        ("受击衰减 ms", 37, 0.0, 150.0),
+                        ("状态变化衰减 ms", 38, 0.0, 150.0),
+                        /* ★审计修复: 移除"装备特效衰减 ms"(p[39]) —— p[39] 真实语义是
+                         * 移动积累增强窗口 (A3 区已有滑块), 此处是历史错标双绑定,
+                         * 拖动会误改移动窗口 (已知 params[39] 槽位冲突遗留) */
                     ];
                     for (name, idx, lo, hi) in c_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
@@ -2034,6 +2278,14 @@ impl SorahkGui {
                             p[idx].store(v as u32, Ordering::Relaxed);
                         }
                     }
+                    ui.label(
+                        egui::RichText::new(
+                            "衰减 0-5ms = 单帧脉冲 (命中帧全幅直出、下一帧硬归零, 最脆的\"一顿一顿\"); \
+                             6ms 起为指数衰减尾巴",
+                        )
+                        .size(11.0)
+                        .weak(),
+                    );
                     ui.add_space(4.0);
                     ui.separator();
                     ui.add_space(4.0);
@@ -2317,7 +2569,10 @@ impl SorahkGui {
         app_state.vibration_throttle_window.store(cls.throttle_window, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_throttle_max.store(cls.throttle_max, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, std::sync::atomic::Ordering::Relaxed);
-        app_state.vibration_abs_freq_enabled.store(cls.abs_freq_enabled, std::sync::atomic::Ordering::Relaxed);
+        /* ★保险A (2026-09-09, 用户定稿): 切换职业预设一律强制关闭绝对震动频率 ——
+         * 该模式 3s/6 次的节流曾因遗留开启导致"完全不震" (用户实测确认根因)。
+         * 转职视为意图变更, 召唤师也不自动恢复; 需要时改 Vibration.toml 手动开。 */
+        app_state.vibration_abs_freq_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_algo_id.store(cls.algo_id as u32, std::sync::atomic::Ordering::Relaxed);
         for (i, v) in cls.algo_params.iter().enumerate() {
             app_state.vibration_algo_ap[i].store(*v, std::sync::atomic::Ordering::Relaxed);
@@ -2325,7 +2580,9 @@ impl SorahkGui {
         config.vibration.throttle_window_ms = cls.throttle_window;
         config.vibration.throttle_max_hits = cls.throttle_max;
         config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-        config.vibration.abs_freq_enabled = cls.abs_freq_enabled;
+        config.vibration.abs_freq_enabled = false;
+        /* 保险A立即落盘 (震动页三个调用点没有后续 save_to_file) */
+        let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
         *job_snapshot = cls.params.to_vec();
         Self::save_job_vibration_state(app_state, base_job, cls.name);
         *job_enabled = true;
@@ -2334,30 +2591,18 @@ impl SorahkGui {
 
 
     /// 便捷包装 (极简模式等无借用冲突的调用点)。
-    /// ★ACT1 特供预设: S1 路线时确保出现在预设列表 (持久注册一次);
-    /// S4/非 DFO 由各列表处的过滤隐藏
+    /// ★ACT1 特供预设: S1 路线时确保出现在预设列表「默认」之下 (缺失插入 /
+    /// 错位搬移, 见 config::ensure_act1_preset_position); S4/非 DFO 由各列表处
+    /// 的过滤器隐藏。搬移/插入发生变更时立即落盘 —— 自愈旧版 push 到末尾
+    /// 且已持久化进 Vibration.toml 的错位残留 (bug: ACT1 特供在列表末尾)。
     pub(super) fn ensure_act1_preset_listed(&mut self) {
-        if self.config.vib_legacy_client
-            && !self
+        let legacy = self.config.vib_legacy_client;
+        if crate::config::ensure_act1_preset_position(&mut self.config.vibration_presets, legacy) {
+            let _ = self
                 .config
-                .vibration_presets
-                .iter()
-                .any(|x| x.name == "ACT1 特供")
-        {
-            if let Some(pr) = crate::config::default_vibration_presets()
-                .into_iter()
-                .find(|p| p.name == "ACT1 特供")
-            {
-                /* 插在「默认」之后 (用户要求: 默认下面), 无默认则置顶 */
-                let pos = self
-                    .config
-                    .vibration_presets
-                    .iter()
-                    .position(|x| x.name == "默认")
-                    .map(|i| i + 1)
-                    .unwrap_or(0);
-                self.config.vibration_presets.insert(pos, pr);
-            }
+                .save_vibration_to_file(crate::config::AppConfig::vibration_path_for(
+                    "Config.toml",
+                ));
         }
     }
 

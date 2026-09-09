@@ -164,6 +164,41 @@ pub struct VibrationConfig {
     /// 密度激活时次数比例 % (v24.1: 狂震期收紧, 100=不收紧; 召唤师 20 → 1次/s)
     #[serde(default = "default_vib_100")]
     pub throttle_dense_ratio: u32,
+    /// 群怪聚合·合并保留 % (v14.1, S1 老方案高级算法): 注入窗内事件按通道记账
+    /// 不丢弃, 下一发兑现 (能量携带) —— 群怪洪流"单击变厚"而非"变密变吵"。
+    /// 每记一笔保留强度 % (边际递减), **0 = 关闭聚合 (回到丢弃语义)**
+    #[serde(default = "default_vib_merge_keep")]
+    pub merge_keep: u32,
+    /// 群怪聚合·合并封顶 % (记账+本击强度之和的上限, 100 = 老滑块满幅)
+    #[serde(default = "default_vib_merge_cap")]
+    pub merge_cap: u32,
+    /// 群怪聚合·补发窗口 ms (记账到期无后续注入 → tick 补发收尾脉冲, 0=不补发)
+    #[serde(default = "default_vib_merge_hold")]
+    pub merge_hold: u32,
+    /// 命中限频·窗口内最多生效次数 (v14.2, S1 高级算法, 仅普通命中通道):
+    /// 窗口秒内命中脉冲超过此数后, 超额命中不再单独注入而是**全额记账**进
+    /// 聚合能量 (下一发兑现变厚/到期补发收尾) —— 频率上限转化为厚度,
+    /// 每一击都不丢。**0 = 关闭限频**
+    #[serde(default = "default_vib_hitcap_max")]
+    pub hitcap_max: u32,
+    /// 命中限频·窗口 ms (配合 hitcap_max 的翻滚窗口)
+    #[serde(default = "default_vib_hitcap_win")]
+    pub hitcap_win_ms: u32,
+    /// 命中聚合窗 ms (v15.2, 仅 S1 命中通道): 群怪一刀产生多条命中事件
+    /// (每怪一条), 窗内全部记账合并 —— **一刀只震一下 (更厚)**, 能量不丢。
+    /// 默认 40; 调大 = 一刀多怪更彻底地合并
+    #[serde(default = "default_vib_hitmerge")]
+    pub hitmerge_ms: u32,
+    /// 脉冲落地·阈值 % (v15, S1 高级算法): 高负载期 (密度自适应激活/命中限频
+    /// 咬合) 衰减尾巴降到本脉冲峰值的此比例即归零, 脉冲间出真静音。
+    /// **0 = 关闭落地** (维持自然衰减尾巴)
+    #[serde(default = "default_vib_tail_land")]
+    pub tail_land_pct: u32,
+    /// 怪物异常反馈·强度 % (v15, 仅 S1/ACT 路线): 怪物身上出血/中毒等异常
+    /// 状态跳字的独立强度 (0x04 通道, 从"装备特效"彻底拆出, S4 不走此通道)。
+    /// 注意 S1 有重映射 20% 抬底: 1 实感约 20% 满幅, **0 = 完全关闭**
+    #[serde(default = "default_vib_monster_abnormal")]
+    pub monster_abnormal_gain: u32,
     /// Attack frequency gain -196
     #[serde(default = "default_vib_40")]
     pub attack_gain: u32,
@@ -333,6 +368,14 @@ impl Default for VibrationConfig {
             throttle_window_ms: 0,
             throttle_max_hits: 0,
             throttle_dense_ratio: 100,
+            merge_keep: default_vib_merge_keep(),
+            merge_cap: default_vib_merge_cap(),
+            merge_hold: default_vib_merge_hold(),
+            hitcap_max: default_vib_hitcap_max(),
+            hitcap_win_ms: default_vib_hitcap_win(),
+            hitmerge_ms: default_vib_hitmerge(),
+            tail_land_pct: default_vib_tail_land(),
+            monster_abnormal_gain: default_vib_monster_abnormal(),
             item_lr: default_vib_item_lr(),
             rank_lr: default_vib_rank_lr(),
             rank_type_gain: default_vib_rank_gain(),
@@ -368,6 +411,26 @@ fn default_vib_60() -> u32 { 60 }
 fn default_vib_80() -> u32 { 80 }
 fn default_vib_20() -> u32 { 20 }
 fn default_vib_100() -> u32 { 100 }
+
+/* 群怪聚合 (v14.1) 默认参数: 开启 (keep 80 / cap 100 / 补发 80ms)。
+ * keep=0 即关闭 —— 玩家可在震动页「群怪聚合」滑块组自由调控 */
+fn default_vib_merge_keep() -> u32 { 80 }
+fn default_vib_merge_cap() -> u32 { 100 }
+fn default_vib_merge_hold() -> u32 { 80 }
+
+/* 命中限频 (v14.2) 默认参数: 1 秒内命中脉冲最多 6 次 (0=关闭)。
+ * 单挑普攻 2-4 次/秒永不触发, 群怪洪流封顶 6 脉冲/秒;
+ * 超额命中全额记账进聚合能量, 每一击都不丢。 */
+fn default_vib_hitcap_max() -> u32 { 6 }
+fn default_vib_hitcap_win() -> u32 { 1000 }
+/* 命中聚合窗 (v15.2) 默认 40ms: 群怪一刀的多条命中事件窗内合并, 一刀一震 */
+fn default_vib_hitmerge() -> u32 { 40 }
+
+/* 脉冲落地 (v15) 默认 25%: 高负载期尾巴降到峰值 25% 即归零 (0=关闭) */
+fn default_vib_tail_land() -> u32 { 25 }
+/* 怪物异常反馈 (v15) 默认 1%: 出血/中毒跳字压到最低档 (0=完全关闭;
+ * 注意 S1 重映射 20% 抬底, 1 实感约 20% 满幅) */
+fn default_vib_monster_abnormal() -> u32 { 1 }
 
 fn default_vib_55() -> u32 {
     55
@@ -514,12 +577,14 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
          *   密度自适应启用 (thr 45/降 40) + 连击 cap 150/slope 60 =
          *   后期连击暴增自动压制 (借鉴职业算法的密度/倍率封顶机制);
          *   槽 1/2/3/7/8 为引擎无引用死槽, 恒 0; p[39]=移动积累窗口。
-         * 仅 S1 路线在预设列表中显示 (各选择处按 vib_legacy_client 门控) ── */
+         *   ★v15.2 马达 L/R 调校: 命中偏右清脆 / 受击偏左低吼 / 特殊偏右,
+         *   出血走独立"怪物异常反馈"通道 (此表中性);
+         *   评分族: 移动偏左 (走路低频感)。仅 S1 路线在预设列表中显示 ── */
         VibrationPreset {
             name: "ACT1 特供".to_string(),
-            params: [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 60, 25, 10, 70, 45, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 60, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
-            item_lr: [0; 26],
-            rank_lr: [0; 30],
+            params: [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 60, 25, 10, 70, 45, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
+            item_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-5), lr(-5), 0, 0, 0, 0, 0, 15, lr(-10), 10, lr(15), lr(-10)],
+            rank_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-15), 10, 0, 0, 0, 0, 0, 0],
             rank_type_gain: [20, 20, 30, 30, 30, 20, 20, 20, 20, 20, 20, 40, 20, 20, 45],
             rank_level_gain: 30,
             rank_duration: 250,
@@ -623,6 +688,50 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
             out_smooth: 0,
         },
     ]
+}
+
+/// 「ACT1 特供」预设列表位置规整 (纯函数, GUI 三处预设列表共用):
+/// S1 路线 (legacy_client=true) 时保证其位于「默认」之下一位:
+/// 缺失 → 从内置表拷贝插入; 已存在但错位 (旧版 push 到末尾的持久化残留)
+/// → 搬移到「默认」之下。返回是否发生变动, 供调用方按需落盘自愈。
+/// 非 S1 路线不增不删 (由列表过滤器隐藏)。
+pub fn ensure_act1_preset_position(
+    presets: &mut Vec<VibrationPreset>,
+    legacy_client: bool,
+) -> bool {
+    if !legacy_client {
+        return false;
+    }
+    let target = |ps: &[VibrationPreset]| {
+        ps.iter()
+            .position(|x| x.name == "默认")
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    };
+    match presets.iter().position(|x| x.name == "ACT1 特供") {
+        None => {
+            if let Some(pr) = default_vibration_presets()
+                .into_iter()
+                .find(|p| p.name == "ACT1 特供")
+            {
+                /* 插在「默认」之后 (用户要求: 默认下面), 无默认则置顶 */
+                presets.insert(target(presets), pr);
+                true
+            } else {
+                false
+            }
+        }
+        Some(idx) => {
+            let want = target(presets);
+            if idx == want {
+                return false;
+            }
+            /* 先删后重算目标位 (remove 会使「默认」在其后的情形索引偏移) */
+            let pr = presets.remove(idx);
+            presets.insert(target(presets), pr);
+            true
+        }
+    }
 }
 
 /// Main application configuration structure.
@@ -1868,5 +1977,85 @@ mod tests {
         assert_eq!(loaded_config.mappings[0].target_keys[5], "6");
 
         cleanup_test_file(&path);
+    }
+
+    /* ── ensure_act1_preset_position 回归 (修"ACT1 特供在列表末尾") ──
+     * 旧版 ensure 是 push 到末尾并已持久化进 Vibration.toml; 位置修正
+     * 提交只改了插入点, 对"已存在但错位"的残留条目永不搬动。 */
+
+    /// 构造最小预设条目
+    fn preset_named(name: &str) -> VibrationPreset {
+        VibrationPreset {
+            name: name.to_string(),
+            params: [0; 60],
+            item_lr: [0; 26],
+            rank_lr: [0; 30],
+            rank_type_gain: [0; 15],
+            rank_level_gain: 0,
+            rank_duration: 0,
+            out_smooth: 0,
+        }
+    }
+
+    fn act1_builtin() -> VibrationPreset {
+        default_vibration_presets()
+            .into_iter()
+            .find(|p| p.name == "ACT1 特供")
+            .expect("内置预设表必须含 ACT1 特供")
+    }
+
+    #[test]
+    fn act1_preset_missing_inserted_right_below_default() {
+        let mut presets = vec![
+            preset_named("默认"),
+            preset_named("用户A"),
+            preset_named("用户B"),
+        ];
+        assert!(ensure_act1_preset_position(&mut presets, true));
+        assert_eq!(presets[1].name, "ACT1 特供", "应插在「默认」之下一位");
+        assert_eq!(presets.len(), 4);
+    }
+
+    #[test]
+    fn act1_preset_stale_end_position_is_moved_below_default() {
+        /* 用户实际残留: 旧版 push 到末尾且已落盘 */
+        let mut presets = vec![
+            preset_named("默认"),
+            preset_named("用户A"),
+            preset_named("用户B"),
+            act1_builtin(),
+        ];
+        assert!(
+            ensure_act1_preset_position(&mut presets, true),
+            "错位条目必须被搬移 (本测试即 bug 回归)"
+        );
+        assert_eq!(presets[1].name, "ACT1 特供", "应搬移到「默认」之下一位");
+        assert_eq!(presets[0].name, "默认");
+        assert_eq!(presets.len(), 4, "搬移不得增删条目");
+    }
+
+    #[test]
+    fn act1_preset_already_correct_is_untouched() {
+        let mut presets = vec![preset_named("默认"), act1_builtin(), preset_named("用户A")];
+        assert!(!ensure_act1_preset_position(&mut presets, true));
+        assert_eq!(presets[1].name, "ACT1 特供");
+    }
+
+    #[test]
+    fn act1_preset_not_managed_when_not_legacy() {
+        let mut presets = vec![preset_named("默认"), act1_builtin()];
+        assert!(!ensure_act1_preset_position(&mut presets, false));
+        assert_eq!(presets.len(), 2, "非 S1 路线由过滤器隐藏, 不增不删");
+
+        let mut missing = vec![preset_named("默认")];
+        assert!(!ensure_act1_preset_position(&mut missing, false));
+        assert_eq!(missing.len(), 1, "非 S1 路线不插入");
+    }
+
+    #[test]
+    fn act1_preset_inserted_top_when_no_default() {
+        let mut presets = vec![preset_named("用户A")];
+        assert!(ensure_act1_preset_position(&mut presets, true));
+        assert_eq!(presets[0].name, "ACT1 特供", "无「默认」时置顶");
     }
 }

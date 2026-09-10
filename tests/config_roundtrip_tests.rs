@@ -132,6 +132,7 @@ fn full_vibration() -> VibrationConfig {
         pulse_enabled: false,
         storm_unified_enabled: true,
         storm_unified_ms: 137,
+        legacy_output_mode: 2,
         attack_gain: 82,
         damage_gain: 83,
         shake_gain: 84,
@@ -206,6 +207,7 @@ fn full_config() -> AppConfig {
     c.presets = vec![Preset {
         name: "快照A".to_string(),
         mappings: vec![distinct_mapping("F8", 88)],
+        switch_key: "CTRL+F8".to_string(),
     }];
     c.current_preset = "快照A".to_string();
     c.vibration = full_vibration();
@@ -335,6 +337,7 @@ fn preset_double_tap_survives_save() {
     c.presets = vec![Preset {
         name: "快照A".to_string(),
         mappings: vec![distinct_mapping("F8", 88)],
+        switch_key: String::new(),
     }];
 
     c.save_to_file(&p).unwrap();

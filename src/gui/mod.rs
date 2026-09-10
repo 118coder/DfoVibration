@@ -19,6 +19,7 @@ mod whitelist_page;
 mod mouse_direction_dialog;
 mod mouse_scroll_dialog;
 mod settings_dialog;
+mod classic_mode;
 mod theme;
 mod types;
 mod widgets;
@@ -49,6 +50,22 @@ enum ParsedSwitchKey {
         /// Main keys (VK codes)
         keys: SmallVec<[u32; 4]>,
     },
+}
+
+/// ★v20.3: 手柄快速捕获待确认项 (升级自 `(usize, bool, String)` 元组)。
+/// 确认条上可直接勾选【连发】【1×双击】, 与连发映射区的同名开关写同一字段。
+#[derive(Debug, Clone, PartialEq)]
+pub struct QuickGamepadPending {
+    /// 手柄槽位 id (SLOTS 下标)
+    pub slot_id: usize,
+    /// true = 本次捕获的是槽位触发键, false = 目标键
+    pub is_trigger: bool,
+    /// 捕获到的输入名 (如 "GAMEPAD_045E_A" / "F" / "LBUTTON")
+    pub input: String,
+    /// 确认时写入该槽位映射的 连发 开关 (新建默认 true = 沿用旧行为)
+    pub turbo: bool,
+    /// 确认时写入该槽位映射的 1×双击 开关 (默认 false)
+    pub double_tap: bool,
 }
 
 /// Main GUI application structure.
@@ -84,6 +101,9 @@ pub struct SorahkGui {
     pub vib_job_snapshot: Vec<u32>,
     /// 全职业预设页: 高级调校允许开关 (默认开, 独立于全局 advanced_enabled)
     pub vib_job_adv_on: bool,
+    /// ★v20: 高级调校内的「专家参数」显示开关 (会话内瞬态, 默认关) ——
+    /// 关时只显示各算法的高层旋钮, 低频微调收进专家模式, 减少参数噪音
+    pub vib_show_expert: bool,
     /// 导出提示 (显示最近一次导出文件名)
     pub vib_export_msg: Option<String>,
     /// 导入文件选择索引 (通用震动设定页 / 全职业预设页共用布局)
@@ -113,9 +133,26 @@ pub struct SorahkGui {
     /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
     new_whitelist_name: String,
     whitelist_error: Option<String>,
-    /// 手柄快速捕获待确认项 (槽位 id, 是否触发键, 捕获到的输入)。
+    /// 手柄快速捕获待确认项。
     /// 捕获不再立即写映射, 需用户在槽位面板点「确认应用」(防误操作)。
-    pub quick_gamepad_pending: Option<(usize, bool, String)>,
+    /// ★v20.3: 升级为结构体 —— 确认条上可直接勾选【连发】【1×双击】(与连发映射区同字段)。
+    pub quick_gamepad_pending: Option<QuickGamepadPending>,
+    /// ★v20.3: 连发页「新增映射」置顶后滚动到编辑面板 (一次性标志)
+    pub scroll_to_edit_row: bool,
+    /// ★v20.3: 经典模式页当前子页签 (0=连发映射 1=通用型震动设定 2=全职业预设)
+    pub classic_tab: usize,
+    /// ★v20.4: 经典模式窗口 (与极简模式同级, 820×600 复刻老宿主; config.classic_mode 默认 true)
+    pub classic_mode: bool,
+    /// 经典模式窗口矩形记忆 (运行时)
+    pub classic_window_rect: Option<(egui::Pos2, egui::Vec2)>,
+    /// 经典模式位置锁存帧数 (与 InnerSize 竞争时校正)
+    pub classic_pos_latch: u8,
+    /// ★v20.3: 预设切换键的逐键按压状态 (与 config.presets 下标一一对应, 边缘检测用)
+    pub preset_switch_key_states: Vec<bool>,
+    /// ★v20.3: 预设切换键编辑 — 目标预设下标 / 键名输入 / 冲突错误
+    pub preset_key_target: usize,
+    pub preset_key_input: String,
+    pub preset_key_error: Option<String>,
     /// Device manager dialog visibility
     show_device_manager: bool,
     /// Device manager dialog
@@ -235,6 +272,9 @@ impl SorahkGui {
         let cached_light_style = Self::create_light_style();
         let parsed_switch_key = Self::parse_switch_key(&config.switch_key);
         let minimal_mode = config.minimal_mode;
+        /* 经典模式默认开, 但显式设置的极简模式优先 (双标记同真时极简赢) */
+        let classic_mode = config.classic_mode && !config.minimal_mode;
+        let classic_mode = config.classic_mode;
         let minimal_vib_preset_job = config.minimal_vib_preset_job;
 
         Self {
@@ -254,6 +294,7 @@ impl SorahkGui {
             vib_job_enabled: false,
             vib_job_snapshot: Vec::new(),
             vib_job_adv_on: true,
+            vib_show_expert: false,
             vib_export_msg: None,
             vib_import_sel: 0,
             job_import_sel: 0,
@@ -269,6 +310,15 @@ impl SorahkGui {
             new_whitelist_name: String::new(),
             whitelist_error: None,
             quick_gamepad_pending: None,
+            scroll_to_edit_row: false,
+            classic_tab: 0,
+            classic_mode,
+            classic_window_rect: None,
+            classic_pos_latch: 0,
+            preset_switch_key_states: Vec::new(),
+            preset_key_target: 0,
+            preset_key_input: String::new(),
+            preset_key_error: None,
             show_device_manager: false,
             device_manager_dialog: None,
             hid_activation_dialog: None,

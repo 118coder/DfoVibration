@@ -681,6 +681,8 @@ pub struct AppState {
     /// 统合衰减期 (v17, 仅 S1 风暴期, 默认关) + 固定衰减周期 ms
     pub vibration_storm_unified_enabled: std::sync::atomic::AtomicBool,
     pub vibration_storm_unified_ms: std::sync::atomic::AtomicU32,
+    /// S1 输出引擎模式 (v20: 0 经典 / 1 S4 纯 / 2 S4+不丢; 仅 S1 生效)
+    pub vibration_legacy_output_mode: std::sync::atomic::AtomicU32,
     /// 独立测试模式 (v24.2: 评分/移动通道独立于全局总调整)
     pub vibration_independent_test: std::sync::atomic::AtomicBool,
     /// 移动持续震动独立于全局强度 (v24.5: 默认开)
@@ -1100,6 +1102,9 @@ impl AppState {
             vibration_storm_unified_ms: std::sync::atomic::AtomicU32::new(
                 config.vibration.storm_unified_ms,
             ),
+            vibration_legacy_output_mode: std::sync::atomic::AtomicU32::new(
+                config.vibration.legacy_output_mode,
+            ),
             vibration_independent_test: std::sync::atomic::AtomicBool::new(
                 config.vibration.independent_test,
             ),
@@ -1184,6 +1189,9 @@ impl AppState {
         // ★S1 老方案总开关 (设置切换 / 首启选择后即时生效)
         self.vib_legacy_client
             .store(config.vib_legacy_client, Ordering::Relaxed);
+        // ★S1 输出引擎模式 (v20): 配置导入/重载后同步
+        self.vibration_legacy_output_mode
+            .store(config.vibration.legacy_output_mode, Ordering::Relaxed);
 
         // Update input timeout
         self.input_timeout

@@ -1781,6 +1781,72 @@ impl SorahkGui {
                         );
                         ui.add_space(4.0);
                     }
+                    /* ★v20 专家参数开关: 默认关 —— 只露各算法最关键的高层旋钮,
+                     * 低频微调 (窗口/封顶/补发/恢复快慢等) 收进专家模式, 减少噪音。
+                     * 会话内瞬态, 不影响任何参数值 (隐藏的滑块保持当前配置)。 */
+                    let mut show_expert = self.vib_show_expert;
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut show_expert, "显示专家参数 (低频微调)")
+                            .on_hover_text(
+                                "默认关闭: 每个算法只显示最关键的旋钮, 减少干扰。\n\
+                                 开启后显示全部微调滑块 (窗口时长/封顶/补发/恢复快慢等),\n\
+                                 关闭隐藏不影响参数值。",
+                            );
+                        ui.label(
+                            egui::RichText::new(if show_expert {
+                                "已开启: 全部参数可见"
+                            } else {
+                                "已关闭: 低频微调已隐藏 (默认)"
+                            })
+                            .size(11.0)
+                            .color(if show_expert { th.good } else { th.hint }),
+                        );
+                    });
+                    self.vib_show_expert = show_expert;
+                    ui.add_space(4.0);
+
+                    /* ★S1 输出引擎模式 (v20, 用户定稿): 经典 / S4 纯 / S4+不丢震动。
+                     * 置于高级区顶部 (而非输出质感深处), 便于玩家找到这个"引擎级"选择。 */
+                    let s1_route = self.config.vib_legacy_client;
+                    let s1_mode = self
+                        .app_state
+                        .vibration_legacy_output_mode
+                        .load(Ordering::Relaxed)
+                        .min(2);
+                    if s1_route {
+                        ui.separator();
+                        ui.add_space(2.0);
+                        ui.label(
+                            egui::RichText::new("S1 输出引擎模式 (S4 特调)")
+                                .size(12.0)
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(
+                                "经典 = 现行 ACT1 管线 (默认, 手感与升级前一致); \
+                                 S4 纯 = 换成 S4 输出整形 (低于死区的轻反馈会被吞掉); \
+                                 S4+不丢震动 = 同 S4 整形, 但轻反馈攒厚再出, 不丢震动。",
+                            )
+                            .size(11.0)
+                            .weak(),
+                        );
+                        let mut sel = s1_mode;
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(&mut sel, 0, "经典");
+                            ui.selectable_value(&mut sel, 1, "S4 纯");
+                            ui.selectable_value(&mut sel, 2, "S4+不丢震动");
+                        });
+                        if sel != s1_mode {
+                            self.app_state
+                                .vibration_legacy_output_mode
+                                .store(sel, Ordering::Relaxed);
+                            self.config.vibration.legacy_output_mode = sel;
+                            let _ = self.config.save_vibration_to_file(
+                                crate::config::AppConfig::vibration_path_for("Config.toml"),
+                            );
+                        }
+                        ui.add_space(2.0);
+                    }
 
                 /* ★S1 群怪不打手 (v14.1-v16 治理算法): 高级调校区内小节 (v16.5 用户定稿) */
                 /* ── 群怪不打手 (S1 命中治理) ── */
@@ -1828,6 +1894,8 @@ impl SorahkGui {
                             self.config.vibration.hitmerge_ms = hmz as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        /* ★v20 专家参数: 合并保留/封顶/补发窗口 (低频微调) */
+                        if show_expert {
                         let mut mk = self
                             .app_state
                             .vibration_merge_keep
@@ -1881,6 +1949,7 @@ impl SorahkGui {
                             self.config.vibration.merge_hold = mh as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        } /* show_expert */
                         ui.add_space(4.0);
                         /* ── 命中限频 ── */
                         ui.label(
@@ -1918,6 +1987,7 @@ impl SorahkGui {
                             self.config.vibration.hitcap_max = hm as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        if show_expert {
                         let mut hw = self
                             .app_state
                             .vibration_hitcap_win
@@ -1936,6 +2006,7 @@ impl SorahkGui {
                             self.config.vibration.hitcap_win_ms = hw as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        } /* show_expert */
                         ui.add_space(4.0);
                         /* ── 命中风暴抽样 (v16) ── */
                         ui.label(
@@ -2007,6 +2078,7 @@ impl SorahkGui {
                             self.config.vibration.storm_pause_ms = st_pause as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        if show_expert {
                         let mut st_win = self
                             .app_state
                             .vibration_storm_win_ms
@@ -2025,6 +2097,7 @@ impl SorahkGui {
                             self.config.vibration.storm_win_ms = st_win as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        } /* show_expert */
                         /* ★统合衰减期 (v17): 风暴期每一击重新起振, 旧包络瞬间消亡 */
                         let mut sue = self
                             .app_state
@@ -2041,6 +2114,7 @@ impl SorahkGui {
                             self.config.vibration.storm_unified_enabled = sue;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        if show_expert {
                         let mut sum_ms = self
                             .app_state
                             .vibration_storm_unified_ms
@@ -2059,6 +2133,7 @@ impl SorahkGui {
                             self.config.vibration.storm_unified_ms = sum_ms as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        } /* show_expert */
                         /* ★风暴静音怪物异常 (v16.6, 可选): 风暴期间暂时关掉
                          * 0x04 出血/中毒跳字反馈, 风暴结束自动恢复 */
                         let mut sma = self
@@ -2159,6 +2234,7 @@ impl SorahkGui {
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
                         /* ★脉冲落地 (v15): 高负载期衰减尾巴提前归零, 脉冲间真静音 */
+                        if show_expert {
                         let mut tl_pct = self
                             .app_state
                             .vibration_tail_land_pct
@@ -2177,6 +2253,7 @@ impl SorahkGui {
                             self.config.vibration.tail_land_pct = tl_pct as u32;
                             let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                         }
+                        } /* show_expert */
                     });
                 }
                 ui.add_space(4.0);
@@ -2237,6 +2314,10 @@ impl SorahkGui {
                             ("恢复快慢 ms (0=立刻)", 34, 0.0, 800.0),
                         ];
                         for (name, idx, lo, hi) in d_rows {
+                            /* ★v20 专家参数: 统计时长/恢复窗口/恢复快慢 (低频) */
+                            if !show_expert && matches!(idx, 30 | 32 | 34) {
+                                continue;
+                            }
                             let mut v = p[idx].load(Ordering::Relaxed) as f32;
                             if ui
                                 .add(egui::Slider::new(&mut v, lo..=hi).text(name))
@@ -2279,6 +2360,10 @@ impl SorahkGui {
                         ("减弱后最轻不低于原来的 %", 53, 0.0, 100.0),
                     ];
                     for (name, idx, lo, hi) in adapt_rows {
+                        /* ★v20 专家参数: 斜率/补脉冲门槛/恢复间隔/保底 (低频) */
+                        if !show_expert && matches!(idx, 48 | 49 | 52 | 53) {
+                            continue;
+                        }
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
                         if ui
                             .add(egui::Slider::new(&mut v, lo..=hi).text(name))
@@ -2552,11 +2637,13 @@ impl SorahkGui {
                     ui.add_space(4.0);
                     ui.separator();
                     ui.add_space(4.0);
-                    /* S4 新方案专属管线 (S1 下禁用并注明, 消除"调了没用") */
-                    let s1_route = self.config.vib_legacy_client;
+                    /* S4 输出整形组 (S1 模式 1/2 时对 S1 解锁, 消除"调了没用") */
+                    let s4_shape_on = !s1_route || s1_mode != 0;
                     ui.label(
-                        egui::RichText::new(if s1_route {
-                            "以下为 S4+ 新方案专属 (ACT1 路线使用内置管线, 不受此组影响)"
+                        egui::RichText::new(if !s4_shape_on {
+                            "以下为 S4+ 新方案专属 (ACT1 经典模式使用内置管线, 不受此组影响)"
+                        } else if s1_route {
+                            "S4 输出整形 (S1 已启用 S4 模式, 此组生效)"
                         } else {
                             "S4+ 新方案专属管线"
                         })
@@ -2571,9 +2658,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                !s1_route,
+                                s4_shape_on,
                                 egui::Slider::new(&mut v, 0.0..=60.0)
-                                    .text("输出低强度抑制 % (仅 S4, 转子马达建议 25-35)"),
+                                    .text("输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)"),
                             )
                             .changed()
                         {
@@ -2592,14 +2679,15 @@ impl SorahkGui {
                             .load(Ordering::Relaxed);
                         if ui
                             .add_enabled(
-                                !s1_route,
-                                egui::Checkbox::new(&mut rm, "输出动态范围重映射 (Xbox360/ERM, 仅 S4)"),
+                                s4_shape_on,
+                                egui::Checkbox::new(&mut rm, "输出动态范围重映射 (Xbox360/ERM, S4 / S1-S4模式)"),
                             )
                             .on_hover_text(
                                 "把非零输出映射到 [最小输出, 100%] 区间:\n\
                                  任何非零反馈至少以最小输出驱动马达 (转子一定转起来),\n\
                                  相对强弱保留, 轻反馈不再被死区吞掉。\n\
-                                 (ACT 版本使用内置重映射管线, 下限跟随全局总调整)",
+                                 (ACT1 经典模式使用内置重映射管线, 下限跟随全局总调整;\n\
+                                 S1 切到 S4 模式后此组生效)",
                             )
                             .changed()
                         {
@@ -2615,9 +2703,9 @@ impl SorahkGui {
                             .load(Ordering::Relaxed) as f32;
                         if ui
                             .add_enabled(
-                                rm && !s1_route,
+                                rm && s4_shape_on,
                                 egui::Slider::new(&mut rmn, 10.0..=60.0)
-                                    .text("重映射最小输出 % (与死区一致, 仅 S4)"),
+                                    .text("重映射最小输出 % (与死区一致, S4 / S1-S4模式)"),
                             )
                             .changed()
                         {

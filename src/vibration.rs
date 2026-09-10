@@ -348,8 +348,19 @@ struct VibEngine {
     storm_unified_enabled: bool,
     storm_unified_ms: u32,
     unified_until: u32,
+    /* ★S1 输出引擎模式 (v20): 0 经典 / 1 S4 纯 / 2 S4+不丢 (见 config 字段注释) */
+    legacy_output_mode: u32,
+    /* ★模式 2 后置携带 (v20): 低于死区的输出能量暂存, 攒到阈值释放成一次厚脉冲
+     * —— S4 死区会吞掉的轻反馈在此"攒厚再出", 保证不丢击 */
+    shape_carry_l: f32,
+    shape_carry_r: f32,
     /* ★S1 单帧脉冲 (v15.1): 衰减 0-5ms 时注入帧全幅直出、下一帧硬归零 */
     instant_armed: bool,
+    /* ★优先级阶梯 (v20): 本帧被高位阶段 (统合衰减/脉冲落地/单帧脉冲) 硬归零的
+     * 马达标记 —— 低位阶段 (爆发保底/输出平滑) 不得把已归零的震动抬回。
+     * 每帧 tick 开头清零, 仅 legacy 分支置位; S4 恒 false = 行为逐字节不变 (红线) */
+    hard_cut_l: bool,
+    hard_cut_r: bool,
     /* ★总闸 L/R (v15.1): item_lr[0]/[1] 接通为左右马达独立总闸微调 (0-1 乘数) */
     gate_lr_l: f32,
     gate_lr_r: f32,
@@ -487,7 +498,12 @@ impl VibEngine {
             storm_unified_enabled: false,
             storm_unified_ms: 120,
             unified_until: 0,
+            legacy_output_mode: 0,
+            shape_carry_l: 0.0,
+            shape_carry_r: 0.0,
             instant_armed: false,
+            hard_cut_l: false,
+            hard_cut_r: false,
             gate_lr_l: 1.0,
             gate_lr_r: 1.0,
             throttle_count: 0,
@@ -1311,6 +1327,10 @@ impl VibEngine {
             }
 
             let mut s_eff = s;
+            /* ★合并降幅 (v20, 仅 S1): 命中自适应与持续压制原本各自相乘叠加
+             * (= 过压/不可预测), S1 改为取两者中更强的降幅只应用一次 (见下方
+             * k_cool)。S4 维持逐项相乘, 行为逐字节不变 (红线)。 */
+            let mut k_adapt = 1.0f32;
             /* 自适应降强度: v26 绝对频率模式下失效 */
             if !abs_mode
                 && a6 & FONT_ATTACK != 0
@@ -1329,7 +1349,11 @@ impl VibEngine {
                     let span = (maxg - thr).max(1) as f32;
                     1.0 - reduce + reduce * ((gap - thr) as f32 / span)
                 };
-                s_eff = s * k.max(floor);
+                if self.legacy && self.legacy_output_mode != 0 {
+                    k_adapt = k.max(floor);
+                } else {
+                    s_eff = s * k.max(floor);
+                }
             }
 
             let rr2 = if self.state == VibState::Burst {
@@ -1365,6 +1389,7 @@ impl VibEngine {
             /* ★S1 持续压制 (v15.3): 长窗统计真实命中注入次数 —— 持续打满限速
              * 上限 (限速上限 × 窗口秒数) 超时后, 命中震动自动再降一档 (狂战士
              * 血之狂暴等持续性双倍打击的降温; 降速/停手即自动恢复, 单挑不触发) */
+            let mut k_sustain = 1.0f32;
             if self.legacy && font_ch == Some(3) && self.sustain_secs > 0 {
                 let sus_win = (self.sustain_secs * 1000).max(500);
                 if self.sus_start == 0 || now.wrapping_sub(self.sus_start) >= sus_win {
@@ -1377,8 +1402,18 @@ impl VibEngine {
                     .ceil()
                     .max(1.0);
                 if self.sus_count as f32 >= sus_thr {
-                    s_out *= 1.0 - (self.sustain_reduce.min(80) as f32 / 100.0);
+                    let red = 1.0 - (self.sustain_reduce.min(80) as f32 / 100.0);
+                    if self.legacy && self.legacy_output_mode != 0 {
+                        k_sustain = red;
+                    } else {
+                        s_out *= red;
+                    }
                 }
+            }
+            /* ★合并降幅 (v20, 仅 S1 的 S4 模式 1/2): 自适应/持续压制取强者应用一次;
+             * 经典模式 0 维持 v19.7 逐项相乘 (ACT1 特调手感基线, 勿动) */
+            if self.legacy && self.legacy_output_mode != 0 {
+                s_out *= k_adapt.min(k_sustain);
             }
             /* 职业专属算法 (v31): 攻击/受击强度修正 */
             if is_attack {
@@ -1563,6 +1598,9 @@ impl VibEngine {
 
     fn tick(&mut self, params: &[u32; 60]) {
         let now = now_ms();
+        /* ★优先级阶梯: 本帧硬归零标记清零 (仅下方 legacy 分支会重新置位) */
+        self.hard_cut_l = false;
+        self.hard_cut_r = false;
         let dt = if self.last_output == 0 {
             16.0
         } else {
@@ -1727,6 +1765,9 @@ impl VibEngine {
                 } else {
                     self.left = 0.0;
                     self.right = 0.0;
+                    /* 高位阶段硬归零: 标记, 禁止低位阶段抬回 */
+                    self.hard_cut_l = true;
+                    self.hard_cut_r = true;
                 }
             } else {
                 let dl = (-(dt) / self.decay_l.max(10.0)).exp();
@@ -1742,6 +1783,9 @@ impl VibEngine {
                 self.decay_l = 0.0;
                 self.decay_r = 0.0;
                 self.unified_until = 0;
+                /* 高位阶段硬归零: 标记, 禁止低位阶段抬回 */
+                self.hard_cut_l = true;
+                self.hard_cut_r = true;
             }
             /* ★S1 脉冲落地 (v15): 高负载期 (密度自适应激活 / 命中限频咬合) 衰减
              * 尾巴降到本脉冲峰值的 tail_land_pct% 即归零 —— 脉冲之间出真静音
@@ -1754,9 +1798,11 @@ impl VibEngine {
                 let k = self.tail_land_pct.min(100) as f32 / 100.0;
                 if self.tail_peak_l > 0.0 && self.left < self.tail_peak_l * k {
                     self.left = 0.0;
+                    self.hard_cut_l = true; /* 高位阶段落地: 禁止低位阶段抬回 */
                 }
                 if self.tail_peak_r > 0.0 && self.right < self.tail_peak_r * k {
                     self.right = 0.0;
+                    self.hard_cut_r = true;
                 }
             }
             l_acc = l_acc.max(self.left);
@@ -1806,8 +1852,15 @@ impl VibEngine {
         if !self.legacy && self.dot_active {
             self.left = self.left.max(0.03);
         }
-        if self.state == VibState::Burst
-            && !(self.legacy && self.storm_unified_enabled && self.storm_active)
+        /* ★优先级阶梯 (v20): 高位阶段本帧硬归零的马达, 爆发保底不得抬回。
+         * ★只在 S1 的 S4 模式 (1/2) 生效; 经典模式 0 维持 v19.7 原条件
+         * (仅排除统合衰减期), 保证 ACT1 特调手感逐字节不变; S4 路线亦不变。 */
+        let burst_floor_ok = if self.legacy && self.legacy_output_mode != 0 {
+            !self.hard_cut_r
+        } else {
+            !(self.legacy && self.storm_unified_enabled && self.storm_active)
+        };
+        if self.state == VibState::Burst && burst_floor_ok
         {
             /* ★v17: 统合衰减期让路 —— 否则 Burst 保底会在硬归零后立刻把右马达
              * 抬回地板值, "旧的瞬间消失"失效 (实测 left=0 而 right=1.0) */
@@ -1840,6 +1893,68 @@ impl VibEngine {
                 *r_out = mn + *r_out * scale;
             }
         }
+    }
+
+    /* ★S1 × S4 不丢震动 (v20, 模式 2): S4 死区会把低于阈值的输出归零 ——
+     * 那正是"轻反馈丢失"的来源。这里改为: 低于死区的能量不丢弃, 转入后置携带,
+     * 攒到阈值即释放成一次厚脉冲 (攒厚再出); 高于死区的正常脉冲照常通过。
+     * 携带无输入时按帧缓慢泄放 (防幽灵脉冲), 上限 = 2×阈值。
+     * 最后统一走 S4 的重映射 (非零输出抬进 [remap_min,100])。 */
+    fn shape_carry_and_filter(&mut self, l_out: &mut f32, r_out: &mut f32) {
+        let thr = (self.out_threshold.min(50.0) / 100.0) * 65535.0;
+        if thr <= 0.0 {
+            self.remap_out(l_out, r_out);
+            return;
+        }
+        let cap = thr * 2.0;
+        let mut added_l = false;
+        if *l_out > 0.0 && *l_out < thr {
+            self.shape_carry_l = (self.shape_carry_l + *l_out).min(cap);
+            *l_out = 0.0;
+            added_l = true;
+        }
+        if self.shape_carry_l >= thr {
+            *l_out = (*l_out).max(self.shape_carry_l);
+            self.shape_carry_l = 0.0;
+        } else if !added_l && *l_out <= 0.0 {
+            self.shape_carry_l *= 0.9;
+        }
+        let mut added_r = false;
+        if *r_out > 0.0 && *r_out < thr {
+            self.shape_carry_r = (self.shape_carry_r + *r_out).min(cap);
+            *r_out = 0.0;
+            added_r = true;
+        }
+        if self.shape_carry_r >= thr {
+            *r_out = (*r_out).max(self.shape_carry_r);
+            self.shape_carry_r = 0.0;
+        } else if !added_r && *r_out <= 0.0 {
+            self.shape_carry_r *= 0.9;
+        }
+        self.remap_out(l_out, r_out);
+    }
+
+    /* ★优先级阶梯 (v20): 输出平滑统一入口 —— 高位阶段硬归零的马达直接复位
+     * 平滑状态, 不让一阶低通把静音尾巴拖回来 (低通是"低位阶段", 不得压过
+     * 统合衰减/脉冲落地的静音)。k<=0 与旧实现一致: 不平滑, 直接输出原值。
+     * ★阶梯只在 S1 的 S4 模式 (legacy_output_mode 1/2) 生效; 经典模式 0 与
+     * S4 路线维持旧的一阶低通逐字节不变 (ACT1 特调手感基线, 勿动)。 */
+    fn smooth_out(&mut self, l: f32, r: f32, k: f32) -> (f32, f32) {
+        if k <= 0.0 {
+            return (l, r);
+        }
+        let ladder = self.legacy && self.legacy_output_mode != 0;
+        if ladder && self.hard_cut_l {
+            self.out_smooth_l = 0.0;
+        } else {
+            self.out_smooth_l += (l - self.out_smooth_l) * k;
+        }
+        if ladder && self.hard_cut_r {
+            self.out_smooth_r = 0.0;
+        } else {
+            self.out_smooth_r += (r - self.out_smooth_r) * k;
+        }
+        (self.out_smooth_l.min(65535.0), self.out_smooth_r.min(65535.0))
     }
 
     /* 输出低强度死区: hysteresis=true 时恢复线为 1.8×阈值 (v29.3 防反复启停);
@@ -1917,16 +2032,32 @@ impl VibEngine {
          * 新方案 (v29.3/v30): 迟滞死区在前 (1.8× 恢复线防阈值附近反复启停),
          * 重映射在后。 */
         if self.legacy {
-            let f = 0.20 * (master / 100.0).clamp(0.0, 1.0);
-            let mn = f * 65535.0;
-            let scale = 1.0 - f;
-            if l_out > 0.0 {
-                l_out = mn + l_out * scale;
+            match self.legacy_output_mode {
+                1 => {
+                    /* ★模式 1 S4 纯 (v20): S4 输出整形 —— 迟滞死区 (真静音) +
+                     * 重映射在后。低于死区的轻反馈会被吞掉 (= 丢震动), A/B 对照用 */
+                    self.deadzone_filter(&mut l_out, &mut r_out, true, self.out_threshold);
+                    self.remap_out(&mut l_out, &mut r_out);
+                }
+                2 => {
+                    /* ★模式 2 S4+不丢震动 (v20): 同 S4 整形, 但低于死区的能量
+                     * 后置携带攒厚再出 —— 玩家不丢震动 */
+                    self.shape_carry_and_filter(&mut l_out, &mut r_out);
+                }
+                _ => {
+                    /* 模式 0 经典 ACT1 管线 (默认, 逐字节不变) */
+                    let f = 0.20 * (master / 100.0).clamp(0.0, 1.0);
+                    let mn = f * 65535.0;
+                    let scale = 1.0 - f;
+                    if l_out > 0.0 {
+                        l_out = mn + l_out * scale;
+                    }
+                    if r_out > 0.0 {
+                        r_out = mn + r_out * scale;
+                    }
+                    self.deadzone_filter(&mut l_out, &mut r_out, false, 15.0);
+                }
             }
-            if r_out > 0.0 {
-                r_out = mn + r_out * scale;
-            }
-            self.deadzone_filter(&mut l_out, &mut r_out, false, 15.0);
         } else {
             /* 输出低强度迟滞死区 (v29.3): 低于阈值归 0, 超过 1.8×阈值才恢复
              * (迟滞防阈值附近反复启停产生嗡声; 消除马达低强度电流声) */
@@ -2410,6 +2541,9 @@ pub fn run(state: Arc<AppState>) {
                         engine.storm_unified_enabled =
                             state.vibration_storm_unified_enabled.load(Ordering::Relaxed);
                         engine.storm_unified_ms = state.vibration_storm_unified_ms.load(Ordering::Relaxed);
+                        /* ★S1 输出引擎模式 (v20): 每帧同步 (0-2, 越界回经典) */
+                        engine.legacy_output_mode =
+                            state.vibration_legacy_output_mode.load(Ordering::Relaxed).min(2);
                         /* 总闸 L/R (v15.1): item_lr[0]/[1] → 左右马达独立总闸微调 */
                         engine.gate_lr_l = (1.0
                             + state.vibration_item_lr[0].load(Ordering::Relaxed) as i32 as f32 / 100.0)
@@ -2475,14 +2609,7 @@ pub fn run(state: Arc<AppState>) {
                             if legacy {
                                 let (efl, efr) = engine.finalize(&params);
                                 let smr = state.vibration_out_smooth.load(Ordering::Relaxed).min(100) as f32 / 100.0;
-                                let kr = smr * 0.9;
-                                let (efl, efr) = if kr > 0.0 {
-                                    engine.out_smooth_l += (efl as f32 - engine.out_smooth_l) * kr;
-                                    engine.out_smooth_r += (efr as f32 - engine.out_smooth_r) * kr;
-                                    (engine.out_smooth_l.min(65535.0), engine.out_smooth_r.min(65535.0))
-                                } else {
-                                    (efl as f32, efr as f32)
-                                };
+                                let (efl, efr) = engine.smooth_out(efl as f32, efr as f32, smr * 0.9);
                                 let vl = vl.max((efl * motor_l * (1.0 + rnd)).min(65535.0) as u16);
                                 let vr = vr.max((efr * motor_r * (1.0 + rnd)).min(65535.0) as u16);
                                 send_vibration(vl, vr);
@@ -2574,14 +2701,7 @@ pub fn run(state: Arc<AppState>) {
                             if legacy {
                                 let (efl, efr) = engine.finalize(&params);
                                 let smr = state.vibration_out_smooth.load(Ordering::Relaxed).min(100) as f32 / 100.0;
-                                let kr = smr * 0.9;
-                                let (efl, efr) = if kr > 0.0 {
-                                    engine.out_smooth_l += (efl as f32 - engine.out_smooth_l) * kr;
-                                    engine.out_smooth_r += (efr as f32 - engine.out_smooth_r) * kr;
-                                    (engine.out_smooth_l.min(65535.0), engine.out_smooth_r.min(65535.0))
-                                } else {
-                                    (efl as f32, efr as f32)
-                                };
+                                let (efl, efr) = engine.smooth_out(efl as f32, efr as f32, smr * 0.9);
                                 let vl = vl.max((efl * motor_l * (1.0 + rnd)).min(65535.0) as u16);
                                 let vr = vr.max((efr * motor_r * (1.0 + rnd)).min(65535.0) as u16);
                                 send_vibration(vl, vr);
@@ -2597,16 +2717,9 @@ pub fn run(state: Arc<AppState>) {
                             /* 输出平滑 (v22.3): 一阶低通抑制低频嗡嗡声 (快速连击/衰减尾音
                              * 的输出跳变被柔化; 0=不平滑, 100=强平滑, 默认 55) */
                             let sm = state.vibration_out_smooth.load(Ordering::Relaxed).min(100) as f32 / 100.0;
-                            let k = sm * 0.9;
-                            let (l, r) = if k > 0.0 {
-                                let lf = l as f32;
-                                let rf = r as f32;
-                                engine.out_smooth_l += (lf - engine.out_smooth_l) * k;
-                                engine.out_smooth_r += (rf - engine.out_smooth_r) * k;
-                                (engine.out_smooth_l.min(65535.0) as u16, engine.out_smooth_r.min(65535.0) as u16)
-                            } else {
-                                (l, r)
-                            };
+                            let (l, r) = engine.smooth_out(l as f32, r as f32, sm * 0.9);
+                            let l = l as u16;
+                            let r = r as u16;
                             let rk = 1.0 + rnd;
                             let vl = ((l as f32) * motor_l * rk).min(65535.0) as u16;
                             let vr = ((r as f32) * motor_r * rk).min(65535.0) as u16;
@@ -3120,6 +3233,234 @@ mod legacy_route_tests {
             n.left > 0.02,
             "新方案: 输出应按自然衰减推进, 不被强制清零: {}",
             n.left
+        );
+    }
+
+    /* ── ★优先级阶梯 (v20): 高位归零后低位不得抬回 ── */
+
+    /* 脉冲落地归零右马达后, 爆发保底不得把右马达抬回 (否则"脉冲间真静音"失效)。
+     * 仅 S1 的 S4 模式 (1/2) 生效。红灯判据: 去掉 Burst 门的 hard_cut_r 检查,
+     * right 会被地板抬到 1.0。 */
+    #[test]
+    fn legacy_hard_cut_suppresses_burst_floor() {
+        let mut e = carry_engine(true);
+        e.legacy_output_mode = 2;
+        e.tail_land_pct = 50; /* 峰值 0.9 的 50% = 0.45, 首帧 0.258 即触发落地 */
+        e.density_active = true;
+        e.last_combo = now_ms();
+        e.state = VibState::Burst;
+        e.burst_until = now_ms().wrapping_add(800);
+        e.last_event = now_ms(); /* 防 tick 的空闲判定把 Burst 打回 Idle */
+        e.inject(0.9, 1.0, 1.0, 60.0, 48.0);
+        let mut params = landing_params();
+        params[P_BURST_MIN] = 30;
+        params[P_FONT_ATTACK] = 65; /* 地板 = 0.30×0.65 = 0.195 (可观测, 低于落地线) */
+        for _ in 0..2 {
+            e.last_output = now_ms().wrapping_sub(60);
+            e.tick(&params);
+        }
+        assert!(e.hard_cut_r, "落地应置硬归零标记");
+        assert_eq!(
+            e.right, 0.0,
+            "落地归零后爆发保底不得抬回右马达 (优先级阶梯)"
+        );
+    }
+
+    /* ★金标回归: 经典模式 0 的爆发保底维持 v19.7 行为 —— 落地归零后仍抬回
+     * (ACT1 特调手感基线; 优先级阶梯只在 S4 模式生效)。 */
+    #[test]
+    fn legacy_mode0_burst_floor_still_applies_after_tail_land() {
+        let mut e = carry_engine(true);
+        assert_eq!(e.legacy_output_mode, 0, "默认必须是经典模式");
+        e.tail_land_pct = 50;
+        e.density_active = true;
+        e.last_combo = now_ms();
+        e.state = VibState::Burst;
+        e.burst_until = now_ms().wrapping_add(800);
+        e.last_event = now_ms(); /* 防 tick 的空闲判定把 Burst 打回 Idle */
+        e.inject(0.9, 1.0, 1.0, 60.0, 48.0);
+        let mut params = landing_params();
+        params[P_BURST_MIN] = 30;
+        params[P_FONT_ATTACK] = 65;
+        for _ in 0..2 {
+            e.last_output = now_ms().wrapping_sub(60);
+            e.tick(&params);
+        }
+        assert!(e.hard_cut_r, "落地标记仍会置位 (只是模式 0 不消费)");
+        assert!(
+            e.right > 0.0,
+            "经典模式: 爆发保底必须照旧抬回右马达 (v19.7 行为): {}",
+            e.right
+        );
+    }
+
+    /* 红线: S4 路径不参与优先级阶梯, 硬归零标记恒 false */
+    #[test]
+    fn s4_route_hard_cut_flags_never_set() {
+        let mut n = carry_engine(false);
+        n.tail_land_pct = 25;
+        n.density_active = true;
+        n.last_combo = now_ms();
+        n.inject(0.9, 1.0, 1.0, 60.0, 48.0);
+        n.last_output = now_ms().wrapping_sub(60);
+        n.tick(&landing_params());
+        assert!(
+            !n.hard_cut_l && !n.hard_cut_r,
+            "红线: S4 不得进入优先级阶梯"
+        );
+    }
+
+    /* 输出平滑不得把硬归零的帧拖回非零 (仅 S1 的 S4 模式; 否则低通把静音尾巴变回嗡鸣) */
+    #[test]
+    fn legacy_smooth_out_resets_on_hard_cut() {
+        let mut e = engine_with(true);
+        e.legacy_output_mode = 2;
+        e.out_smooth_l = 1000.0;
+        e.out_smooth_r = 1000.0;
+        e.hard_cut_l = true;
+        e.hard_cut_r = true;
+        let (l, r) = e.smooth_out(0.0, 0.0, 0.5);
+        assert_eq!(
+            (l, r),
+            (0.0, 0.0),
+            "硬归零帧: 平滑状态应直接复位, 不得拖尾"
+        );
+        /* 对照: 无硬归零时维持旧的一阶低通 (1000 → 500) */
+        let mut n = engine_with(true);
+        n.out_smooth_l = 1000.0;
+        let (l2, _) = n.smooth_out(0.0, 0.0, 0.5);
+        assert!((l2 - 500.0).abs() < 0.01, "无硬归零: 低通行为不变: {l2}");
+    }
+
+    /* ★金标回归: 经典模式 0 即使置了硬归零标记, 输出平滑也维持 v19.7 低通
+     * (阶梯不消费), 保证 ACT1 特调手感不变。 */
+    #[test]
+    fn legacy_mode0_smooth_out_ignores_hard_cut() {
+        let mut e = engine_with(true);
+        assert_eq!(e.legacy_output_mode, 0);
+        e.out_smooth_l = 1000.0;
+        e.out_smooth_r = 1000.0;
+        e.hard_cut_l = true;
+        e.hard_cut_r = true;
+        let (l, r) = e.smooth_out(0.0, 0.0, 0.5);
+        assert!(
+            (l - 500.0).abs() < 0.01 && (r - 500.0).abs() < 0.01,
+            "经典模式: 平滑必须照旧插值 (v19.7): {l}/{r}"
+        );
+    }
+
+    /* ── ★S1 输出引擎模式 (v20): 0 经典 / 1 S4 纯 / 2 S4+不丢 ── */
+
+    /* 模式 1 (S4 纯): 低于死区的轻反馈被直接吞掉 = 丢震动 (A/B 对照) */
+    #[test]
+    fn legacy_mode1_s4_pure_drops_subthreshold() {
+        let params = [100u32; 60];
+        let mut e = engine_with(true);
+        e.legacy_output_mode = 1;
+        e.out_threshold = 30.0;
+        e.remap_min = 0.0;
+        e.left = 0.15;
+        let (l, _) = e.finalize(&params);
+        assert_eq!(l, 0, "模式 1: 低于死区直接丢弃 (S4 纯语义)");
+        assert_eq!(e.shape_carry_l, 0.0, "模式 1 不启用后置携带");
+    }
+
+    /* 模式 2 (S4+不丢): 低于死区的能量不丢, 攒够阈值释放成厚脉冲 */
+    #[test]
+    fn legacy_mode2_carries_subthreshold_into_thicker_pulse() {
+        let params = [100u32; 60];
+        let mut e = engine_with(true);
+        e.legacy_output_mode = 2;
+        e.out_threshold = 30.0;
+        e.remap_min = 0.0;
+        e.right = 0.0;
+        e.left = 0.15; /* 9830 < 阈值 19660 */
+        let (l1, _) = e.finalize(&params);
+        assert_eq!(l1, 0, "单次轻反馈: 本帧先攒着不输出");
+        assert!(e.shape_carry_l > 0.0, "能量应进入后置携带而非被丢弃");
+        let (l2, _) = e.finalize(&params);
+        assert!(
+            l2 as f32 >= 0.30 * 65535.0 * 0.99,
+            "攒够阈值应释放成 ≥阈值 的厚脉冲: {l2}"
+        );
+        assert_eq!(e.shape_carry_l, 0.0, "释放后携带清零");
+    }
+
+    /* 模式 2 的能量守恒: 连续轻反馈不得成批蒸发 (攒厚再出的核心承诺) */
+    #[test]
+    fn legacy_mode2_carry_conserves_energy() {
+        let params = [100u32; 60];
+        let mut e = engine_with(true);
+        e.legacy_output_mode = 2;
+        e.out_threshold = 30.0;
+        e.remap_min = 0.0; /* 关掉重映射抬底, 直接核对能量账 */
+        e.right = 0.0;
+        let mut fed = 0.0f64;
+        let mut emitted = 0.0f64;
+        for _ in 0..21 {
+            e.left = 0.10; /* 6553.5 < 阈值 19660 → 全额携带 */
+            fed += 0.10 * 65535.0;
+            let (l, _) = e.finalize(&params);
+            emitted += l as f64;
+        }
+        emitted += e.shape_carry_l as f64; /* 尚未释放的携带也算保留 */
+        assert!(
+            emitted >= fed * 0.95,
+            "模式 2 能量不得蒸发: fed={fed:.0} emitted={emitted:.0}"
+        );
+        assert!(emitted > 0.0, "应至少释放出厚脉冲");
+    }
+
+    /* 红线: S4 路线不读 legacy_output_mode, 不启用 S1 后置携带 */
+    #[test]
+    fn s4_route_ignores_legacy_output_mode() {
+        let params = [100u32; 60];
+        let mut n = engine_with(false);
+        n.legacy_output_mode = 2;
+        n.out_threshold = 30.0;
+        n.remap_min = 0.0;
+        n.left = 0.15;
+        let (l, _) = n.finalize(&params);
+        assert_eq!(l, 0, "S4 走自己的迟滞死区");
+        assert_eq!(n.shape_carry_l, 0.0, "红线: S4 不得启用 S1 后置携带");
+    }
+
+    /* ★合并降幅 (v20): 只在 S1 的 S4 模式 (1/2) 生效 (取强者一次);
+     * 经典模式 0 维持 v19.7 逐项相乘 —— 这是 ACT1 特调手感基线, 必须锁定。 */
+    #[test]
+    fn legacy_adapt_sustain_merge_only_in_s4_mode() {
+        fn mk(mode: u32, adapt: bool, sustain: bool) -> VibEngine {
+            let mut e = carry_engine(true);
+            e.legacy_output_mode = mode;
+            e.merge_keep = 0;
+            e.hitmerge_ms = 0;
+            e.hitcap_max = if sustain { 1 } else { 0 };
+            e.hitcap_win_ms = 1000;
+            e.sustain_secs = if sustain { 1 } else { 0 };
+            e.sustain_reduce = 20;
+            e.p[P_ADAPT_REDUCE] = if adapt { 50.0 } else { 0.0 };
+            e.p[P_ADAPT_THR] = if adapt { 100000.0 } else { 0.0 };
+            e.p[P_ADAPT_MAXGAP] = 100000.0;
+            e.p[P_ADAPT_FLOOR] = 0.0;
+            e.last_font_ch[3] = now_ms().wrapping_sub(1000);
+            push_font(&mut e, 0x01);
+            e
+        }
+        /* S4 模式: 取强者 (min) 应用一次 */
+        let a2 = mk(2, true, false).left;
+        let s2 = mk(2, false, true).left;
+        let b2 = mk(2, true, true).left;
+        assert!(
+            (b2 - a2.min(s2)).abs() < 1e-4,
+            "S4 模式应取强者一次: b={b2} a={a2} s={s2}"
+        );
+        /* 经典模式 0: 逐项相乘 (b/a=0.8, b/s=0.5) */
+        let a0 = mk(0, true, false).left;
+        let s0 = mk(0, false, true).left;
+        let b0 = mk(0, true, true).left;
+        assert!(
+            (b0 / a0 - 0.8).abs() < 1e-3 && (b0 / s0 - 0.5).abs() < 1e-3,
+            "经典模式必须逐项相乘 (v19.7): b={b0} a={a0} s={s0}"
         );
     }
 

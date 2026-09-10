@@ -415,69 +415,69 @@ impl SorahkGui {
             );
             let r_eff = radius * scale;
 
-            if !is_click {
-                if is_capturing {
-                    /* 捕获态: 雷达扩散环 + 琥珀主环 */
-                    let phase = (ui.ctx().input(|i| i.time) * 1.6) % 1.0;
-                    painter.circle_stroke(
-                        center,
-                        r_eff * (1.05 + 0.40 * phase as f32),
-                        egui::Stroke::new(
-                            2.0,
-                            egui::Color32::from_rgba_unmultiplied(
-                                255,
-                                190,
-                                60,
-                                (190.0 * (1.0 - phase as f32)) as u8,
-                            ),
+            /* ★v20.2: 摇杆按下 (StickClick) 热点恢复显示 —— 与其余槽位同款
+             * 玻璃底+主环+中心点 (09-08 曾改隐形热点, 用户要求加回) */
+            if is_capturing {
+                /* 捕获态: 雷达扩散环 + 琥珀主环 */
+                let phase = (ui.ctx().input(|i| i.time) * 1.6) % 1.0;
+                painter.circle_stroke(
+                    center,
+                    r_eff * (1.05 + 0.40 * phase as f32),
+                    egui::Stroke::new(
+                        2.0,
+                        egui::Color32::from_rgba_unmultiplied(
+                            255,
+                            190,
+                            60,
+                            (190.0 * (1.0 - phase as f32)) as u8,
                         ),
-                    );
-                    painter.circle_filled(center, r_eff, egui::Color32::from_rgba_unmultiplied(255, 190, 60, 60));
-                    painter.circle_stroke(center, r_eff, egui::Stroke::new(2.2, egui::Color32::from_rgb(255, 200, 80)));
-                } else {
-                    /* 悬停/选中: 外柔光 */
-                    if hot {
-                        painter.circle_filled(center, r_eff * 1.5, slot_col(if is_selected { 55 } else { 40 }));
-                    }
-                    /* 玻璃底 (深机身增透, 亮机身轻压暗) */
+                    ),
+                );
+                painter.circle_filled(center, r_eff, egui::Color32::from_rgba_unmultiplied(255, 190, 60, 60));
+                painter.circle_stroke(center, r_eff, egui::Stroke::new(2.2, egui::Color32::from_rgb(255, 200, 80)));
+            } else {
+                /* 悬停/选中: 外柔光 */
+                if hot {
+                    painter.circle_filled(center, r_eff * 1.5, slot_col(if is_selected { 55 } else { 40 }));
+                }
+                /* 玻璃底 (深机身增透, 亮机身轻压暗) */
+                painter.circle_filled(
+                    center,
+                    r_eff,
+                    if th.dark {
+                        egui::Color32::from_black_alpha(64)
+                    } else {
+                        egui::Color32::from_black_alpha(30)
+                    },
+                );
+                /* 主环: 选中=强调色 / 已配置=类色实线 / 空槽=类色细线 */
+                painter.circle_stroke(
+                    center,
+                    r_eff,
+                    if is_selected {
+                        egui::Stroke::new(2.6, th.accent)
+                    } else if configured {
+                        egui::Stroke::new(2.0, slot_col(235))
+                    } else {
+                        egui::Stroke::new(1.4, slot_col(125))
+                    },
+                );
+                /* 中心点 (单字符槽位与摇杆按下; Back/Start 保留文字空间) */
+                if slot.short.chars().count() == 1 || is_click {
                     painter.circle_filled(
                         center,
-                        r_eff,
-                        if th.dark {
-                            egui::Color32::from_black_alpha(64)
-                        } else {
-                            egui::Color32::from_black_alpha(30)
-                        },
-                    );
-                    /* 主环: 选中=强调色 / 已配置=类色实线 / 空槽=类色细线 */
-                    painter.circle_stroke(
-                        center,
-                        r_eff,
+                        r_eff * 0.15,
                         if is_selected {
-                            egui::Stroke::new(2.6, th.accent)
-                        } else if configured {
-                            egui::Stroke::new(2.0, slot_col(235))
+                            th.accent
                         } else {
-                            egui::Stroke::new(1.4, slot_col(125))
+                            slot_col(if configured { 255 } else { 140 })
                         },
                     );
-                    /* 中心点 (单字符槽位; Back/Start 保留文字空间) */
-                    if slot.short.chars().count() == 1 {
-                        painter.circle_filled(
-                            center,
-                            r_eff * 0.15,
-                            if is_selected {
-                                th.accent
-                            } else {
-                                slot_col(if configured { 255 } else { 140 })
-                            },
-                        );
-                    }
                 }
             }
 
-            /* 短标签 (方向箭头/肩键文字) 带微投影; 摇杆按下为隐形热点不绘字;
-             * ABXY 面键与 Back/Start 系统键圈内不绘字 (2026-09-08 用户要求留白) */
+            /* 短标签 (方向箭头/肩键文字) 带微投影; ABXY 面键与 Back/Start 系统键
+             * 圈内不绘字 (2026-09-08 用户要求留白); 摇杆按下 short 为空天然不绘 */
             if !slot.short.is_empty()
                 && !is_click
                 && !matches!(slot.kind, SlotKind::Button | SlotKind::System)
@@ -797,8 +797,11 @@ impl SorahkGui {
 
     /// 右侧槽位详情面板。
     fn render_gamepad_slot_panel(&mut self, ui: &mut egui::Ui, th: &Theme) {
-        /* 待确认捕获条: 捕获结果不再立即生效, 防止误操作 (确认应用 / 取消) */
-        if let Some((slot_id, is_trigger, captured)) = self.quick_gamepad_pending.clone() {
+        /* 待确认捕获条: 捕获结果不再立即生效, 防止误操作 (确认应用 / 取消)
+         * ★v20.3: 确认时可勾选【连发】【1×双击】(与连发映射区/设置弹窗同字段) */
+        if let Some(pending) = self.quick_gamepad_pending.clone() {
+            let (slot_id, is_trigger, captured) =
+                (pending.slot_id, pending.is_trigger, pending.input.clone());
             let slot_label = crate::gui::gamepad_mapping::get_slot(slot_id)
                 .map(|s| s.label)
                 .unwrap_or("未知槽位");
@@ -818,6 +821,35 @@ impl SorahkGui {
                     )));
                 });
                 ui.add_space(theme::SP_XS);
+                /* ★v20.3: 连发 / 1×双击 勾选 (写的是该槽位整条映射的开关) */
+                ui.horizontal(|ui| {
+                    let mut turbo = pending.turbo;
+                    if ui
+                        .checkbox(&mut turbo, "⚡ 连发")
+                        .on_hover_text(
+                            "勾选 = 此键触发连发; 不勾选 = 单发。\n与连发映射区里的「连发」是同一开关",
+                        )
+                        .changed()
+                    {
+                        if let Some(p) = &mut self.quick_gamepad_pending {
+                            p.turbo = turbo;
+                        }
+                    }
+                    ui.add_space(theme::SP_M);
+                    let mut dtap = pending.double_tap;
+                    if ui
+                        .checkbox(&mut dtap, "1× 双击")
+                        .on_hover_text(
+                            "首按自动补一次双击 (DNF 跑步用)。\n与连发映射区里的「1×双击」是同一开关",
+                        )
+                        .changed()
+                    {
+                        if let Some(p) = &mut self.quick_gamepad_pending {
+                            p.double_tap = dtap;
+                        }
+                    }
+                });
+                ui.add_space(theme::SP_XS);
                 ui.horizontal(|ui| {
                     if ui.add(th.primary_button("✓ 确认应用")).clicked() {
                         self.quick_gamepad_pending = None;
@@ -834,6 +866,13 @@ impl SorahkGui {
                                     sl,
                                     captured,
                                 );
+                            }
+                            /* ★v20.3: 应用确认条上勾选的 连发/1×双击 到该槽位映射 */
+                            if let Some(mi) =
+                                crate::gui::gamepad_mapping::find_slot_mapping_index(&self.config, sl)
+                            {
+                                self.config.mappings[mi].turbo_enabled = pending.turbo;
+                                self.config.mappings[mi].double_tap_enabled = pending.double_tap;
                             }
                             let _ = self.config.save_to_file("Config.toml");
                             if let Err(e) =
@@ -983,8 +1022,14 @@ impl SorahkGui {
                     .on_hover_text("物理 Esc 键用于取消捕获; 点此按钮可把 Esc 绑定为触发键/目标键")
                     .clicked()
                 {
-                    self.quick_gamepad_pending =
-                        Some((slot.id, is_capturing_trigger, "ESC".to_string()));
+                    /* ★v20.3: 待确认项升级为结构体; Esc 直接绑定时沿用默认勾选 (连发开/双击关) */
+                    self.quick_gamepad_pending = Some(crate::gui::QuickGamepadPending {
+                        slot_id: slot.id,
+                        is_trigger: is_capturing_trigger,
+                        input: "ESC".to_string(),
+                        turbo: true,
+                        double_tap: false,
+                    });
                     self.key_capture_mode = KeyCaptureMode::None;
                     self.capture_pressed_keys.clear();
                     self.app_state.set_raw_input_capture_mode(false);

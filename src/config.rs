@@ -282,6 +282,13 @@ pub struct VibrationConfig {
     /// 统合衰减期时长 ms (固定衰减周期, 40-400)
     #[serde(default = "default_vib_storm_unified_ms")]
     pub storm_unified_ms: u32,
+    /// ★S1 输出引擎模式 (v20, 仅 S1/ACT 路线; S4 路线不读此字段, 红线):
+    /// 0 = 经典 ACT1 管线 (默认, 逐字节不变: 前置抬底 + 15% 只杀真零);
+    /// 1 = S4 纯输出整形 (迟滞死区 + 重映射在后; 低于死区的轻反馈会被吞掉);
+    /// 2 = S4+不丢震动 (S4 整形 + 低于死区的能量后置携带, 攒厚再出, 不丢击)。
+    /// 模式 1/2 下 S4 的死区%/重映射下限% 旋钮对 S1 解锁可调。
+    #[serde(default)]
+    pub legacy_output_mode: u32,
     /// Attack frequency gain -196
     #[serde(default = "default_vib_40")]
     pub attack_gain: u32,
@@ -480,6 +487,7 @@ impl Default for VibrationConfig {
             pulse_enabled: true,
             storm_unified_enabled: false,
             storm_unified_ms: default_vib_storm_unified_ms(),
+            legacy_output_mode: 0,
             item_lr: default_vib_item_lr(),
             rank_lr: default_vib_rank_lr(),
             rank_type_gain: default_vib_rank_gain(),
@@ -1351,6 +1359,13 @@ pub struct AppConfig {    /// Display tray icon
     /// 启动时进入极简模式
     #[serde(default)]
     pub minimal_mode: bool,
+    /// ★v20.4: 经典模式 (老宿主 820×600 三页签窗口) 窗口矩形记忆 [x, y, w, h]
+    #[serde(default)]
+    pub window_rect_classic: Option<[f32; 4]>,
+    /// ★v20.4: 启动时进入经典模式 (用户定稿: 经典界面默认开启;
+    /// 与极简模式互斥, 后切换的模式生效)
+    #[serde(default = "default_classic_mode")]
+    pub classic_mode: bool,
     /// 极简模式震动预设来源 (false=通用 / true=全职业)
     #[serde(default)]
     pub minimal_vib_preset_job: bool,
@@ -1437,6 +1452,11 @@ pub struct Preset {
     /// Key mappings included in this preset
     #[serde(default)]
     pub mappings: Vec<KeyMapping>,
+    /// ★v20.3: 切换到此预设的组合键 (如 "F6" / "CTRL+F6"; 空 = 不绑定)。
+    /// 全局热键 (GetAsyncKeyState, 游戏内也可切); 保存时校验: 不得与其他预设
+    /// 或「连发切换键」重复 (防冲突)。
+    #[serde(default)]
+    pub switch_key: String,
 }
 
 /// Key mapping configuration for trigger-target pairs.
@@ -1544,6 +1564,11 @@ fn default_dfo_player() -> bool {
     true
 }
 
+/// ★v20.4: 经典模式默认开启 (用户定稿"经典界面为默认开启"; serde default 使旧配置也生效)
+fn default_classic_mode() -> bool {
+    true
+}
+
 fn default_whitelist_enabled() -> bool {
     true
 }
@@ -1574,7 +1599,9 @@ impl Default for AppConfig {
             guide_seen: false,
             window_rect_normal: None,
             window_rect_minimal: None,
+            window_rect_classic: None,
             minimal_mode: false,
+            classic_mode: default_classic_mode(),
             minimal_vib_preset_job: false,
             dfo_player: default_dfo_player(),
             vib_legacy_client: false,
@@ -1604,6 +1631,7 @@ impl Default for AppConfig {
             presets: vec![Preset {
                 name: "默认".to_string(),
                 mappings: Vec::new(),
+                switch_key: String::new(),
             }],
             current_preset: String::new(),
             vibration: VibrationConfig::default(),

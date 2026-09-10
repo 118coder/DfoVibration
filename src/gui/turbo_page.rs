@@ -13,11 +13,10 @@ use super::main_window::FrameState;
 impl SorahkGui {
     /// 连发页: 状态 hero + 映射列表 + 全局参数。
     pub(super) fn render_turbo_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, frame_state: &FrameState) {
-        let _ = ctx;
         self.render_turbo_hero(ui, frame_state);
         self.render_turbo_preset_manager(ui);
         self.render_turbo_mappings(ui);
-        self.render_turbo_params(ui);
+        self.render_turbo_params(ui, ctx);
     }
 
 
@@ -96,10 +95,19 @@ impl SorahkGui {
                         typed
                     };
                     if !name.is_empty() {
+                        /* ★v20.3: 同名覆盖时保留已绑定的切换键 */
+                        let switch_key = self
+                            .config
+                            .presets
+                            .iter()
+                            .find(|p| p.name == name)
+                            .map(|p| p.switch_key.clone())
+                            .unwrap_or_default();
                         self.config.presets.retain(|p| p.name != name);
                         self.config.presets.push(crate::config::Preset {
                             name: name.clone(),
                             mappings: self.config.mappings.clone(),
+                            switch_key,
                         });
                         self.config.current_preset = name;
                         self.page_preset_name_input.clear();
@@ -193,7 +201,108 @@ impl SorahkGui {
             } else {
                 ui.label(th.hint_text("顶栏选择「(无)」时映射未入档: 用上方「保存预设」起名入档后可切换/重命名/删除"));
             }
+
+            /* ★v20.3 行4: 预设切换键 —— 游戏内按组合键直接切预设 (保存时防冲突) */
+            ui.add_space(theme::SP_S);
+            ui.separator();
+            ui.add_space(theme::SP_XS);
+            if self.config.presets.is_empty() {
+                ui.label(th.hint_text("组合键切换预设: 先用上方「保存预设」入档, 再在这里绑定切换键"));
+            } else {
+                if self.preset_key_target >= self.config.presets.len() {
+                    self.preset_key_target = self.config.presets.len() - 1;
+                }
+                let cur_key = self.config.presets[self.preset_key_target].switch_key.clone();
+                /* 输入框未聚焦时跟随所选预设回显 (聚焦时保留用户正在输入的内容) */
+                let input_id = egui::Id::new("preset_switch_key_input");
+                let editing = ui.memory(|m| m.has_focus(input_id));
+                if !editing && self.preset_key_input != cur_key {
+                    self.preset_key_input = cur_key;
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(th.weak("切换键:"));
+                    let target_name = self.config.presets[self.preset_key_target].name.clone();
+                    let mut next_idx = self.preset_key_target;
+                    egui::ComboBox::from_id_salt("preset_switch_key_target")
+                        .selected_text(target_name)
+                        .width(130.0)
+                        .show_ui(ui, |ui| {
+                            for (i, pr) in self.config.presets.iter().enumerate() {
+                                if ui
+                                    .selectable_label(i == self.preset_key_target, &pr.name)
+                                    .clicked()
+                                {
+                                    next_idx = i;
+                                }
+                            }
+                        });
+                    if next_idx != self.preset_key_target {
+                        self.preset_key_target = next_idx;
+                        self.preset_key_input = self.config.presets[next_idx].switch_key.clone();
+                        self.preset_key_error = None;
+                    }
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.preset_key_input)
+                            .id_salt(input_id)
+                            .hint_text("如 F6 或 CTRL+F6")
+                            .desired_width(120.0),
+                    );
+                    if ui.add(th.secondary_button("✓ 保存")).clicked() {
+                        self.save_preset_switch_key();
+                    }
+                    if ui.add(th.secondary_button("清除")).clicked() {
+                        self.preset_key_input.clear();
+                        self.save_preset_switch_key();
+                    }
+                    if let Some(err) = &self.preset_key_error {
+                        ui.label(
+                            egui::RichText::new(format!("❌ {}", err))
+                                .size(11.0)
+                                .color(th.bad),
+                        );
+                    } else {
+                        ui.label(th.hint_text("游戏内/任意界面按该键即切到此预设; 各预设键不得重复"));
+                    }
+                });
+            }
         });
+    }
+
+    /// ★v20.3: 保存所选预设的切换键。
+    /// 校验: ①键名可被解析 ②不与其他预设的切换键重复 ③不与「连发切换键」重复。
+    pub(super) fn save_preset_switch_key(&mut self) {
+        if self.preset_key_target >= self.config.presets.len() {
+            return;
+        }
+        let target_name = self.config.presets[self.preset_key_target].name.clone();
+        let key = self.preset_key_input.trim().to_uppercase();
+        if key.is_empty() {
+            self.config.presets[self.preset_key_target].switch_key.clear();
+            self.preset_key_error = None;
+        } else if matches!(
+            Self::parse_switch_key(&key),
+            crate::gui::ParsedSwitchKey::None
+        ) {
+            self.preset_key_error =
+                Some("无法识别的按键名 (示例: F6 / CTRL+F6 / ALT+1)".to_string());
+            return;
+        } else if let Some(other) = self.config.presets.iter().find(|p| {
+            p.name != target_name
+                && !p.switch_key.trim().is_empty()
+                && p.switch_key.trim().to_uppercase() == key
+        }) {
+            self.preset_key_error = Some(format!("与预设「{}」的切换键冲突", other.name));
+            return;
+        } else if !self.config.switch_key.trim().is_empty()
+            && self.config.switch_key.trim().to_uppercase() == key
+        {
+            self.preset_key_error = Some("与「连发切换键」冲突, 请换一个键".to_string());
+            return;
+        } else {
+            self.config.presets[self.preset_key_target].switch_key = key;
+            self.preset_key_error = None;
+        }
+        let _ = self.config.save_to_file("Config.toml");
     }
 
 
@@ -366,6 +475,10 @@ impl SorahkGui {
                 let mut idx = 0usize;
                 while idx < self.config.mappings.len() {
                     if self.edit_mapping_idx == Some(idx) {
+                        /* ★v20.3: 新增映射置顶后, 把编辑面板滚到可视区顶部 */
+                        if std::mem::take(&mut self.scroll_to_edit_row) {
+                            ui.scroll_to_cursor(Some(egui::Align::TOP));
+                        }
                         self.render_mapping_edit_row(ui, idx, interval, duration);
                         // 编辑行可能触发删除, 重新检查下标
                         if idx >= self.config.mappings.len() {
@@ -396,6 +509,8 @@ impl SorahkGui {
                         turbo,
                         &note,
                         &mut |ui| {
+                            /* 方向/滚动/连发/1×双击 全部收在「编辑」面板内 (v20.4 用户定稿:
+                             * 不往静态行塞按钮); 点编辑即可配齐 */
                             if ui.add(th.secondary_button("编辑")).clicked() {
                                 self.begin_mapping_edit(idx);
                             }
@@ -411,22 +526,27 @@ impl SorahkGui {
 
 
     /// 新增一条映射并进入编辑态 (取消时自动删除)。
+    /// ★v20.3: 插到列表**最前** (用户定稿: 新增映射的编辑面板必须显示在最前面),
+    /// 并在下一帧滚动到编辑面板顶部。
     pub(super) fn add_new_mapping(&mut self) {
-        self.config.mappings.push(crate::config::KeyMapping {
-            trigger_key: "A".to_string(),
-            target_keys: Default::default(),
-            interval: None,
-            event_duration: None,
-            turbo_enabled: true,
-            move_speed: 5,
-            double_tap_enabled: false,
-            double_tap_gap_ms: 50,
-            note: String::new(),
-        });
-        let idx = self.config.mappings.len() - 1;
+        self.config.mappings.insert(
+            0,
+            crate::config::KeyMapping {
+                trigger_key: "A".to_string(),
+                target_keys: Default::default(),
+                interval: None,
+                event_duration: None,
+                turbo_enabled: true,
+                move_speed: 5,
+                double_tap_enabled: false,
+                double_tap_gap_ms: 50,
+                note: String::new(),
+            },
+        );
         self.edit_mapping_is_new = true;
         self.edit_mapping_snapshot = None;
-        self.edit_mapping_idx = Some(idx);
+        self.edit_mapping_idx = Some(0);
+        self.scroll_to_edit_row = true;
     }
 
 
@@ -436,6 +556,47 @@ impl SorahkGui {
             self.edit_mapping_snapshot = Some(m.clone());
             self.edit_mapping_is_new = false;
             self.edit_mapping_idx = Some(idx);
+        }
+    }
+
+
+    /// ★v20.3: 在连发页内联编辑行打开「鼠标方向」选择 (设置弹窗同款对话框)。
+    pub(super) fn open_mouse_direction_dialog(&mut self, idx: usize) {
+        self.mouse_direction_mapping_idx = Some(idx);
+        self.mouse_direction_dialog = Some(
+            crate::gui::mouse_direction_dialog::MouseDirectionDialog::new(),
+        );
+    }
+
+    /// ★v20.3: 在连发页内联编辑行打开「鼠标滚动」选择 (设置弹窗同款对话框)。
+    pub(super) fn open_mouse_scroll_dialog(&mut self, idx: usize) {
+        self.mouse_scroll_mapping_idx = Some(idx);
+        self.mouse_scroll_dialog = Some(
+            crate::gui::mouse_scroll_dialog::MouseScrollDialog::new(),
+        );
+    }
+
+    /// ★v20.3: 按预设名切换连发预设 (热键/下拉共用; 切换即落盘 + 热重载 + 同步弹窗暂存)。
+    pub(super) fn switch_to_turbo_preset(&mut self, name: &str) {
+        if self.config.current_preset == name {
+            return;
+        }
+        if let Some(pr) = self.config.presets.iter().find(|p| p.name == name) {
+            self.config.current_preset = pr.name.clone();
+            /* 空预设不覆盖 (防止把当前映射清空) */
+            if !pr.mappings.is_empty() {
+                self.config.mappings = pr.mappings.clone();
+            }
+            self.page_preset_delete_arm = false;
+            let _ = self.config.save_to_file("Config.toml");
+            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                eprintln!("Failed to reload config after preset switch: {}", e);
+            }
+            if let Some(tc) = &mut self.temp_config {
+                tc.current_preset = self.config.current_preset.clone();
+                tc.mappings = self.config.mappings.clone();
+                tc.presets = self.config.presets.clone();
+            }
         }
     }
 
@@ -460,6 +621,14 @@ impl SorahkGui {
         let mut interval = mapping.interval.unwrap_or(default_interval) as f64;
         let mut duration = mapping.event_duration.unwrap_or(default_duration) as f64;
         let mut turbo = mapping.turbo_enabled;
+        let mut double_tap = mapping.double_tap_enabled;
+        let mut move_speed = mapping.move_speed as f32;
+        /* 滚动映射的移动速度上限更高 (与设置弹窗一致: 普通 100 / 滚动 1200) */
+        let speed_hi = if targets.iter().any(|k| k.starts_with("SCROLL")) {
+            1200.0
+        } else {
+            100.0
+        };
         let mut note = mapping.note.clone();
         let mut remove_target: Option<usize> = None;
         let mut request_delete = false;
@@ -509,11 +678,14 @@ impl SorahkGui {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("目标键"));
                     for (i, t) in targets.iter().enumerate() {
-                        let chip = th.badge_clickable(ui, &format!("{}  ✕", t), th.target_fg, th.target_bg);
+                        /* ★v20.5: 长名截断 35 字符 (悬停看全名), 行不溢出 */
+                        let short = truncate_chars(t, 35);
+                        let chip =
+                            th.badge_clickable(ui, &format!("{}  ✕", short), th.target_fg, th.target_bg);
                         if chip.clicked() {
                             remove_target = Some(i);
                         }
-                        chip.on_hover_text("点击移除该目标键");
+                        chip.on_hover_text(format!("{}\n点击移除该目标键", t));
                     }
                     if targets.is_empty() {
                         ui.label(th.hint_text("尚未设置目标键"));
@@ -555,6 +727,53 @@ impl SorahkGui {
                     ui.add_space(theme::SP_L);
                     if ui.checkbox(&mut turbo, "连发").changed() {
                         self.config.mappings[idx].turbo_enabled = turbo;
+                    }
+                    ui.add_space(theme::SP_L);
+                    /* ★v20.3: 1×双击补齐到连发页 (原只在设置弹窗有) */
+                    if ui
+                        .checkbox(&mut double_tap, "1× 双击")
+                        .on_hover_text(
+                            "首按自动补一次双击 (DNF 跑步用); 与设置弹窗里的「1×双击」是同一开关",
+                        )
+                        .changed()
+                    {
+                        self.config.mappings[idx].double_tap_enabled = double_tap;
+                    }
+                });
+                ui.add_space(theme::SP_S);
+
+                /* ★v20.3: 鼠标方向/滚动/移动速度补齐到连发页 (原只在设置弹窗有) */
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(th.weak("鼠标"));
+                    if ui
+                        .add(th.secondary_button("⌖ 方向"))
+                        .on_hover_text("把鼠标方向 (如 MOUSE_UP_LEFT) 加入目标键")
+                        .clicked()
+                    {
+                        self.open_mouse_direction_dialog(idx);
+                    }
+                    if ui
+                        .add(th.secondary_button("🎡 滚动"))
+                        .on_hover_text("把鼠标滚动 (SCROLL_UP/DOWN/MBUTTON) 加入目标键")
+                        .clicked()
+                    {
+                        self.open_mouse_scroll_dialog(idx);
+                    }
+                    ui.add_space(theme::SP_L);
+                    ui.label(th.weak("移动速度"));
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut move_speed)
+                                .range(1.0..=speed_hi)
+                                .speed(1.0),
+                        )
+                        .on_hover_text(format!(
+                            "方向/滚动映射的每步移动量 (px/步)\n当前映射上限 {}",
+                            speed_hi as i32
+                        ))
+                        .changed()
+                    {
+                        self.config.mappings[idx].move_speed = move_speed.round().max(1.0) as i32;
                     }
                 });
                 ui.add_space(theme::SP_S);
@@ -730,9 +949,19 @@ impl SorahkGui {
 
 
     /// 全局参数卡。
-    pub(super) fn render_turbo_params(&self, ui: &mut egui::Ui) {
-        let t = &self.translations;
+    /// 全局配置卡 (★v20.5: 从只读改为**可编辑** —— 玩家在映射页直接改, 不用跑设置弹窗)。
+    /// 数值改动即保存 + 热重载; 置顶切换实时作用于窗口。
+    pub(super) fn render_turbo_params(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let th = self.theme();
+        /* 标签先克隆: 避免闭包内 &self.translations 与 &mut self.config 冲突 */
+        let lbl_timeout = self.translations.input_timeout_display().to_owned();
+        let lbl_interval = self.translations.default_interval_display().to_owned();
+        let lbl_duration = self.translations.default_duration_display().to_owned();
+        let lbl_tray = self.translations.show_tray_icon_display().to_owned();
+        let lbl_notif = self.translations.show_notifications_display().to_owned();
+        let lbl_top = self.translations.always_on_top_display().to_owned();
+        let mut dirty = false;
+        let mut top_changed: Option<bool> = None;
         th.card(ui, Some("全局配置"), |ui| {
             egui::Grid::new("turbo_params_grid")
                 .num_columns(2)
@@ -740,20 +969,115 @@ impl SorahkGui {
                 .min_col_width(ui.available_width() * 0.42)
                 .striped(false)
                 .show(ui, |ui| {
-                    Self::param_row(ui, &th, t.input_timeout_display(), &format!("{} ms", self.config.input_timeout));
-                    Self::param_flag(ui, &th, t.show_tray_icon_display(), self.config.show_tray_icon);
-                    Self::param_row(ui, &th, t.default_interval_display(), &format!("{} ms", self.config.interval));
-                    Self::param_flag(ui, &th, t.show_notifications_display(), self.config.show_notifications);
-                    Self::param_row(ui, &th, t.default_duration_display(), &format!("{} ms", self.config.event_duration));
-                    Self::param_flag(ui, &th, t.always_on_top_display(), self.config.always_on_top);
+                    let mut v = self.config.input_timeout as f64;
+                    ui.label(th.weak(&lbl_timeout));
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(1.0..=2000.0)
+                                .speed(1.0)
+                                .suffix(" ms"),
+                        )
+                        .on_hover_text("按键输入超时/去抖 (1-2000 ms)")
+                        .changed()
+                    {
+                        self.config.input_timeout = (v.round().max(1.0) as u64).clamp(1, 2000);
+                        dirty = true;
+                    }
+                    ui.end_row();
+
+                    let mut v = self.config.interval as f64;
+                    ui.label(th.weak(&lbl_interval));
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(1.0..=5000.0)
+                                .speed(1.0)
+                                .suffix(" ms"),
+                        )
+                        .on_hover_text("连发按键的默认重复间隔 (单条映射可在编辑里覆盖)")
+                        .changed()
+                    {
+                        self.config.interval = (v.round().max(1.0) as u64).max(1);
+                        dirty = true;
+                    }
+                    ui.end_row();
+
+                    let mut v = self.config.event_duration as f64;
+                    ui.label(th.weak(&lbl_duration));
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(1.0..=5000.0)
+                                .speed(1.0)
+                                .suffix(" ms"),
+                        )
+                        .on_hover_text("每次按键的默认按压时长 (单条映射可在编辑里覆盖)")
+                        .changed()
+                    {
+                        self.config.event_duration = (v.round().max(1.0) as u64).max(1);
+                        dirty = true;
+                    }
+                    ui.end_row();
+
+                    ui.label(th.weak(&lbl_tray));
+                    let mut flag = self.config.show_tray_icon;
+                    if ui
+                        .add(egui::Checkbox::new(&mut flag, ""))
+                        .on_hover_text("显示系统托盘图标")
+                        .changed()
+                    {
+                        self.config.show_tray_icon = flag;
+                        dirty = true;
+                    }
+                    ui.end_row();
+
+                    ui.label(th.weak(&lbl_notif));
+                    let mut flag = self.config.show_notifications;
+                    if ui
+                        .add(egui::Checkbox::new(&mut flag, ""))
+                        .on_hover_text("显示系统通知")
+                        .changed()
+                    {
+                        self.config.show_notifications = flag;
+                        dirty = true;
+                    }
+                    ui.end_row();
+
+                    ui.label(th.weak(&lbl_top));
+                    let mut flag = self.config.always_on_top;
+                    if ui
+                        .add(egui::Checkbox::new(&mut flag, ""))
+                        .on_hover_text("窗口置顶 (即时生效)")
+                        .changed()
+                    {
+                        self.config.always_on_top = flag;
+                        top_changed = Some(flag);
+                        dirty = true;
+                    }
+                    ui.end_row();
                 });
             ui.add_space(theme::SP_XS);
-            ui.label(th.hint_text("以上参数在「设置」中修改并即时生效"));
+            ui.label(th.hint_text("改动即时生效并自动保存 (拖动数值 / 勾选开关)"));
         });
+        if dirty {
+            let _ = self.config.save_to_file("Config.toml");
+            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                eprintln!("Failed to reload config after global params edit: {}", e);
+            }
+            if let Some(top) = top_changed {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if top {
+                    egui::WindowLevel::AlwaysOnTop
+                } else {
+                    egui::WindowLevel::Normal
+                }));
+            }
+        }
     }
 
 
     /// 参数行: 标签 | 值 (网格内)。
+    #[allow(dead_code)]
     pub(super) fn param_row(ui: &mut egui::Ui, th: &Theme, label: &str, value: &str) {
         ui.label(th.weak(label));
         ui.label(egui::RichText::new(value).size(13.0).strong().color(th.accent_text));
@@ -762,6 +1086,7 @@ impl SorahkGui {
 
 
     /// 布尔参数行: 标签 | 状态徽章 (网格内)。
+    #[allow(dead_code)]
     pub(super) fn param_flag(ui: &mut egui::Ui, th: &Theme, label: &str, on: bool) {
         ui.label(th.weak(label));
         let (text, fg, bg) = if on {
@@ -797,18 +1122,20 @@ fn render_mapping_row(
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
-                    // 触发键帽 (多键拆分)
+                    // 触发键帽 (多键拆分; ★v20.5 长名截断 20 字符防溢出, 悬停看全名 —— 老宿主口径)
                     for part in trigger.split('+') {
-                        widgets::keycap(ui, th, part);
+                        let short = truncate_chars(part, 20);
+                        widgets::keycap(ui, th, &short).on_hover_text(part.to_string());
                     }
                     // 指向箭头
                     ui.label(egui::RichText::new("→").size(12.0).color(th.hint));
-                    // 目标键帽
+                    // 目标键帽 (★v20.5 长名截断 35 字符, 悬停看全名)
                     if targets.is_empty() {
                         ui.label(th.hint_text("(未设置目标)"));
                     } else {
                         for t in targets {
-                            widgets::keycap(ui, th, t);
+                            let short = truncate_chars(t, 35);
+                            widgets::keycap(ui, th, &short).on_hover_text(t.clone());
                         }
                     }
 

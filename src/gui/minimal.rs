@@ -14,6 +14,13 @@ impl SorahkGui {
     pub(super) fn set_minimal_mode(&mut self, ctx: &egui::Context, on: bool) {
         self.minimal_mode = on;
         self.config.minimal_mode = on;
+        if on {
+            /* ★v20.4: 与经典模式互斥 —— 进入极简即退经典 (双标记同真会让外壳分支打架);
+             * 同时解除经典模式的 820×600 最小尺寸, 否则小窗缩不下去 */
+            self.classic_mode = false;
+            self.config.classic_mode = false;
+            ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::Vec2::ZERO));
+        }
         if !on {
             /* 退出极简: 极简矩形落盘 + 精确还原完整模式上次的窗口位置+尺寸 */
             if let Some((pos, sz)) = self.minimal_window_rect {

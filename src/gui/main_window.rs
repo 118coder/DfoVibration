@@ -274,11 +274,22 @@ impl eframe::App for SorahkGui {
                 if let Some(selected) = dialog.get_selected_direction() {
                     // Apply the selected direction
                     if let Some(idx) = self.mouse_direction_mapping_idx {
-                        // Editing existing mapping - add to existing target keys
-                        if let Some(temp_config) = &mut self.temp_config
-                            && let Some(mapping) = temp_config.mappings.get_mut(idx)
-                        {
-                            mapping.add_target_key(selected);
+                        if self.show_settings_dialog {
+                            // Editing existing mapping - add to existing target keys
+                            if let Some(temp_config) = &mut self.temp_config
+                                && let Some(mapping) = temp_config.mappings.get_mut(idx)
+                            {
+                                mapping.add_target_key(selected);
+                            }
+                        } else {
+                            // ★v20.3: 连发页内联入口 (设置弹窗未开) — 直接写正式配置并热重载
+                            if let Some(mapping) = self.config.mappings.get_mut(idx) {
+                                mapping.add_target_key(selected);
+                                let _ = self.config.save_to_file("Config.toml");
+                                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                                    eprintln!("Failed to reload config after direction add: {}", e);
+                                }
+                            }
                         }
                     } else {
                         // New mapping - add to target keys list
@@ -300,10 +311,21 @@ impl eframe::App for SorahkGui {
             if should_close {
                 if let Some(selected) = dialog.get_selected_direction() {
                     if let Some(idx) = self.mouse_scroll_mapping_idx {
-                        if let Some(temp_config) = &mut self.temp_config
-                            && let Some(mapping) = temp_config.mappings.get_mut(idx)
-                        {
-                            mapping.add_target_key(selected);
+                        if self.show_settings_dialog {
+                            if let Some(temp_config) = &mut self.temp_config
+                                && let Some(mapping) = temp_config.mappings.get_mut(idx)
+                            {
+                                mapping.add_target_key(selected);
+                            }
+                        } else {
+                            // ★v20.3: 连发页内联入口 (设置弹窗未开) — 直接写正式配置并热重载
+                            if let Some(mapping) = self.config.mappings.get_mut(idx) {
+                                mapping.add_target_key(selected);
+                                let _ = self.config.save_to_file("Config.toml");
+                                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                                    eprintln!("Failed to reload config after scroll add: {}", e);
+                                }
+                            }
                         }
                     } else {
                         self.new_mapping_target = selected.clone();
@@ -319,6 +341,8 @@ impl eframe::App for SorahkGui {
 
         // Handle switch key
         self.handle_keyboard_input(ctx);
+        // ★v20.3: 预设切换键 (组合键切连发预设)
+        self.handle_preset_switch_keys();
 
         // 手柄可视化页快速捕获 + 连发页内联编辑捕获（均在设置弹窗关闭时生效）
         if !self.show_settings_dialog {
@@ -562,6 +586,58 @@ impl SorahkGui {
     }
 
 
+    /// ★v20.3: 预设切换键轮询 (全局热键, 游戏内也生效)。
+    /// 冲突在保存时已校验 (预设互异 + 不撞连发切换键); 此处只做按压边缘检测 + 切换。
+    pub(super) fn handle_preset_switch_keys(&mut self) {
+        if self.config.presets.len() != self.preset_switch_key_states.len() {
+            self.preset_switch_key_states = vec![false; self.config.presets.len()];
+        }
+        /* 先拷出 (名字, 键), 避免迭代借用与 switch_to_turbo_preset 的 &mut self 冲突 */
+        let entries: Vec<(String, String)> = self
+            .config
+            .presets
+            .iter()
+            .map(|p| (p.name.clone(), p.switch_key.clone()))
+            .collect();
+        for (i, (name, key)) in entries.iter().enumerate() {
+            if key.trim().is_empty() {
+                self.preset_switch_key_states[i] = false;
+                continue;
+            }
+            let pressed = Self::poll_switch_key_down(key);
+            let was = self.preset_switch_key_states[i];
+            self.preset_switch_key_states[i] = pressed;
+            if pressed && !was {
+                self.switch_to_turbo_preset(name);
+            }
+        }
+    }
+
+    /// ★v20.3: 轮询一个组合键当前是否处于按下状态 (不含边缘检测)。
+    fn poll_switch_key_down(key: &str) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let parsed = Self::parse_switch_key(key);
+        unsafe {
+            match &parsed {
+                crate::gui::ParsedSwitchKey::None => false,
+                crate::gui::ParsedSwitchKey::Single(vk) => GetAsyncKeyState(*vk as i32) < 0,
+                crate::gui::ParsedSwitchKey::Combo { modifiers, keys } => {
+                    if keys.is_empty() {
+                        return false;
+                    }
+                    let has_ctrl = (modifiers & 0b001) != 0;
+                    let has_shift = (modifiers & 0b010) != 0;
+                    let has_alt = (modifiers & 0b100) != 0;
+                    (!has_ctrl || GetAsyncKeyState(0xA2) < 0 || GetAsyncKeyState(0xA3) < 0)
+                        && (!has_shift || GetAsyncKeyState(0xA0) < 0 || GetAsyncKeyState(0xA1) < 0)
+                        && (!has_alt || GetAsyncKeyState(0xA4) < 0 || GetAsyncKeyState(0xA5) < 0)
+                        && keys.iter().all(|&k| GetAsyncKeyState(k as i32) < 0)
+                }
+            }
+        }
+    }
+
+
     /// Convert VK code to bit position using modulo mapping.
     /// Uses 16 bits to track key states with collision handling.
     #[inline(always)]
@@ -597,6 +673,92 @@ impl SorahkGui {
             } else {
                 self.render_guide_window(ctx);
             }
+        }
+
+        /* ★v20.4 经典模式: 老宿主 820×600 单窗 (标题栏 + 三页签), 布局复刻 1.5 版。
+         * 尺寸只设一次 + 最小 820×600 (可自由放大, 与老宿主 min_inner_size 一致);
+         * 位置记忆 + 短暂锁存。 */
+        if self.classic_mode {
+            if self.normal_window_size.is_none() {
+                // 进入经典时记录完整模式矩形 (退出恢复; 只在大窗时记录, 同极简)
+                self.normal_was_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                if let Some(inner) = ctx.input(|i| i.viewport().inner_rect) {
+                    if inner.width() > 600.0 {
+                        self.normal_window_size = Some(inner.size());
+                        if let Some(outer) = ctx.input(|i| i.viewport().outer_rect) {
+                            let pos = outer.min;
+                            let sz = inner.size();
+                            self.normal_window_rect = Some((pos, sz));
+                            self.config.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]);
+                            let _ = self.config.save_to_file("Config.toml");
+                        }
+                    }
+                }
+                if self.normal_was_maximized {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(false));
+                }
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                    crate::gui::classic_mode::CLASSIC_SIZE,
+                ));
+                /* 启动即经典: 与按钮进入同语义, 最小 900×600 (可放大) */
+                ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(
+                    crate::gui::classic_mode::CLASSIC_SIZE,
+                ));
+                /* 经典窗回到上次位置 (运行时记忆 → 配置持久化) + 位置锁存 */
+                let classic = self.classic_window_rect.or_else(|| {
+                    self.config
+                        .window_rect_classic
+                        .map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
+                });
+                if let Some((pos, _)) = classic {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                    self.classic_pos_latch = 12;
+                }
+            } else {
+                /* 记录矩形 (不强制尺寸: 老宿主可自由缩放, 下限由 MinInnerSize 保证) */
+                let vp = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
+                if let (Some(outer), Some(inner)) = vp {
+                    self.classic_window_rect = Some((outer.min, inner.size()));
+                    /* 位置锁存: 与 InnerSize 竞争丢失时持续校正 (最多 12 帧) */
+                    if self.classic_pos_latch > 0 {
+                        self.classic_pos_latch -= 1;
+                        if let Some((pos, _)) = self.classic_window_rect {
+                            if (outer.min.x - pos.x).abs() > 2.0
+                                || (outer.min.y - pos.y).abs() > 2.0
+                            {
+                                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
+                            }
+                        }
+                    }
+                }
+            }
+            egui::TopBottomPanel::top("top_bar")
+                .frame(
+                    egui::Frame::NONE
+                        .fill(th.surface)
+                        .inner_margin(egui::Margin::symmetric(10, 9)),
+                )
+                .show_separator_line(false)
+                .show(ctx, |ui| {
+                    self.render_classic_top_bar(ui, ctx);
+                });
+            egui::CentralPanel::default()
+                .frame(
+                    egui::Frame::central_panel(&ctx.style())
+                        .fill(th.bg)
+                        .inner_margin(egui::Margin::same(16)),
+                )
+                .show(ctx, |ui| {
+                    widgets::paint_top_glow(ui, &th);
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false; 2])
+                        .show(ui, |ui| {
+                            self.render_classic_tabs(ui);
+                            ui.add_space(theme::SP_M);
+                            self.render_classic_content(ui, ctx, frame_state);
+                        });
+                });
+            return;
         }
 
         /* 极简模式: 小窗 + 顶栏(返回/主题/预设) + 两个总开关 */
@@ -891,6 +1053,23 @@ impl SorahkGui {
             self.set_minimal_mode(ctx, true);
         }
 
+        // ★v20.4 经典模式入口: 文字按钮【典】 (老宿主 1.5 布局的 820×600 独立窗口)
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("典").size(14.0).strong().color(th.btn_secondary_text))
+                    .fill(th.btn_secondary)
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL))
+                    .min_size(egui::vec2(30.0, 30.0)),
+            )
+            .on_hover_text("经典模式: 老版布局窗口 (820×600, 连发映射/通用型震动设定/全职业预设 三页签)")
+            .clicked()
+        {
+            if self.minimal_mode {
+                self.set_minimal_mode(ctx, false);
+            }
+            self.set_classic_mode(ctx, true);
+        }
+
         // 设置 = 主操作 (强调色填充圆角按钮)
         let settings_btn = egui::Button::new(
             egui::RichText::new(format!(
@@ -907,16 +1086,25 @@ impl SorahkGui {
         .min_size(egui::vec2(0.0, 30.0));
         let settings_resp = ui.add(settings_btn);
         if settings_resp.clicked() {
-            let was_paused = self.app_state.is_paused();
-            self.was_paused_before_settings = Some(was_paused);
-            if !was_paused {
-                self.app_state.set_paused(true);
-            }
-            self.show_settings_dialog = true;
-            self.temp_config = Some(self.config.clone());
-            self.preset_rename_target.clear();
-            self.preset_rename_input.clear();
+            self.open_settings_dialog();
         }
+    }
+
+
+    /// ★v20.5: 打开设置弹窗 (完整顶栏与经典标题栏共用入口)。
+    /// 前置缺一不可: 记录暂停状态并暂停连发 (关闭时恢复) / 暂存配置快照 temp_config
+    /// (弹窗渲染直接解包它, None = 崩溃 —— 经典齿轮最初漏了这步就是这个崩溃) /
+    /// 清理预设重命名暂存。
+    pub(super) fn open_settings_dialog(&mut self) {
+        let was_paused = self.app_state.is_paused();
+        self.was_paused_before_settings = Some(was_paused);
+        if !was_paused {
+            self.app_state.set_paused(true);
+        }
+        self.show_settings_dialog = true;
+        self.temp_config = Some(self.config.clone());
+        self.preset_rename_target.clear();
+        self.preset_rename_input.clear();
     }
 
 

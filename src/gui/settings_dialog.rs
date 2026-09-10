@@ -105,6 +105,25 @@ impl SorahkGui {
 
         let t = &self.translations;
 
+        /* ★v20.6: 弹窗尺寸随视口收紧 —— 经典窗 (900×600) 里 800×600 会上下顶满被截断;
+         * 且完整/经典各自独立记忆尺寸 (防完整模式拉大的尺寸在经典窗里溢出)。
+         * 内容区自带滚动条, 高度收紧只影响可视范围不影响功能。 */
+        let vr = ctx.viewport_rect();
+        let max_w = (vr.width() - 48.0).max(640.0);
+        let max_h = (vr.height() - 48.0).max(440.0);
+        let def_w = 800.0_f32.min(max_w);
+        let def_h = 600.0_f32.min(max_h);
+        let min_w = 780.0_f32.min(max_w);
+        let min_h = 560.0_f32.min(max_h);
+        /* ★v20.6: 中部滚动区高度随弹窗高度走 (原写死 500 → 弹窗固有高度 ~620,
+         * 在 900×600 经典窗里必然被截断; 170 = 标题栏+底栏+边距的扣减) */
+        let scroll_max = (def_h - 170.0).max(220.0);
+        let win_id = if self.classic_mode {
+            "settings_dialog_window_classic"
+        } else {
+            "settings_dialog_window"
+        };
+
         // Handle key and mouse capture if in capture mode
         // Priority: Keyboard > Mouse > Raw Input (gamepad/joystick)
         // Skip input handling when HID activation dialog is active
@@ -229,10 +248,10 @@ impl SorahkGui {
             .title_bar(false)
             .collapsible(false)
             .resizable(true)
-            .default_size([800.0, 600.0])
-            .min_size([780.0, 560.0])
+            .default_size([def_w, def_h])
+            .min_size([min_w, min_h])
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .id(egui::Id::new("settings_dialog_window"))
+            .id(egui::Id::new(win_id))
             .frame(
                 egui::Frame::window(&ctx.style())
                     .fill(dialog_bg)
@@ -280,12 +299,17 @@ impl SorahkGui {
                     ui.add_space(12.0);
 
                     // Wrap ScrollArea in a frame with padding (like main window)
-                    let temp_config = self.temp_config.as_mut().unwrap();
+                    // ★v20.6: 无快照不渲染 (原 unwrap = 经典齿轮打开崩溃的爆点);
+                    // 正常路径 open_settings_dialog 一定先建快照, 异常时静默关弹窗
+                    let Some(temp_config) = self.temp_config.as_mut() else {
+                        self.show_settings_dialog = false;
+                        return;
+                    };
                     egui::Frame::NONE
                         .inner_margin(egui::Margin::symmetric(12, 0))
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
-                                .max_height(500.0)
+                                .max_height(scroll_max)
                                 .show(ui, |ui| {
                                     // Toggle Key Section
                                     let card_bg = if self.dark_mode {
@@ -454,10 +478,18 @@ impl SorahkGui {
                                                         if !name.is_empty() {
                                                             // Remove existing preset with same name
                                                             temp_config.presets.retain(|p| p.name != name);
+                                                            // ★v20.3: 同名覆盖时保留已绑定的切换键
+                                                            let switch_key = temp_config
+                                                                .presets
+                                                                .iter()
+                                                                .find(|p| p.name == name)
+                                                                .map(|p| p.switch_key.clone())
+                                                                .unwrap_or_default();
                                                             // Save current mappings as preset
                                                             temp_config.presets.push(crate::config::Preset {
                                                                 name: name.to_string(),
                                                                 mappings: temp_config.mappings.clone(),
+                                                                switch_key,
                                                             });
                                                             temp_config.current_preset = name.to_string();
                                                             self.preset_name_input.clear();
@@ -2282,8 +2314,15 @@ impl SorahkGui {
 
         if let Some(input_name) = captured_input {
             // 捕获完成 → 进入待确认状态 (不立即写映射, 防误操作);
-            // 用户在槽位面板点「确认应用」才落盘生效, 「取消」直接丢弃
-            self.quick_gamepad_pending = Some((slot_id, is_trigger, input_name));
+            // 用户在槽位面板点「确认应用」才落盘生效, 「取消」直接丢弃。
+            // ★v20.3: 待确认项带 连发/1×双击 勾选 (默认 连发开 = 沿用旧 set_slot_trigger 行为)
+            self.quick_gamepad_pending = Some(crate::gui::QuickGamepadPending {
+                slot_id,
+                is_trigger,
+                input: input_name,
+                turbo: true,
+                double_tap: false,
+            });
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
             self.app_state.set_raw_input_capture_mode(false);

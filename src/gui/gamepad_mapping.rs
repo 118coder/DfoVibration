@@ -164,6 +164,9 @@ pub fn set_slot_trigger(config: &mut AppConfig, slot: &GamepadSlot, trigger: Str
             move_speed: 5,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: slot_note(slot.label),
         });
         config.mappings.len() - 1
@@ -848,6 +851,22 @@ impl SorahkGui {
                             p.double_tap = dtap;
                         }
                     }
+                    ui.add_space(theme::SP_M);
+                    /* ★v21.0 摇杆三区奔跑勾选 (摇杆方向槽位的主用途) */
+                    let mut run = pending.run;
+                    if ui
+                        .checkbox(&mut run, "🏃 奔跑")
+                        .on_hover_text(
+                            "摇杆三区奔跑: 轻推=方向键按住 (走路), 推过重推阈值=自动补一次\
+                             松开再按下 (游戏判定双击→奔跑)\n\
+                             勾选后此槽位的 连发/1×双击 不生效; 重推阈值在连发页编辑面板调",
+                        )
+                        .changed()
+                    {
+                        if let Some(p) = &mut self.quick_gamepad_pending {
+                            p.run = run;
+                        }
+                    }
                 });
                 ui.add_space(theme::SP_XS);
                 ui.horizontal(|ui| {
@@ -867,12 +886,14 @@ impl SorahkGui {
                                     captured,
                                 );
                             }
-                            /* ★v20.3: 应用确认条上勾选的 连发/1×双击 到该槽位映射 */
+                            /* ★v20.3: 应用确认条上勾选的 连发/1×双击 到该槽位映射
+                             * ★v21.0: 奔跑勾选同步 (勾选后引擎侧压制 连发/双击) */
                             if let Some(mi) =
                                 crate::gui::gamepad_mapping::find_slot_mapping_index(&self.config, sl)
                             {
                                 self.config.mappings[mi].turbo_enabled = pending.turbo;
                                 self.config.mappings[mi].double_tap_enabled = pending.double_tap;
+                                self.config.mappings[mi].run_enabled = pending.run;
                             }
                             let _ = self.config.save_to_file("Config.toml");
                             if let Err(e) =
@@ -1029,6 +1050,7 @@ impl SorahkGui {
                         input: "ESC".to_string(),
                         turbo: true,
                         double_tap: false,
+                        run: false,
                     });
                     self.key_capture_mode = KeyCaptureMode::None;
                     self.capture_pressed_keys.clear();

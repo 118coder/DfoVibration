@@ -29,6 +29,10 @@ struct WorkerPool {
     mouse_action_cache: [std::sync::atomic::AtomicU8; 256],
 }
 
+/// ★v21.0 双击模拟的首击时长 (ms): 游戏要求两次方向敲击可辨识,
+/// 原来 5ms 的短敲不被计数 (1×双击奔跑失效的根因, 用户实测定案)。
+const DOUBLE_TAP_FIRST_TAP_MS: u64 = 80;
+
 impl WorkerPool {
     fn new(
         worker_count: usize,
@@ -67,7 +71,7 @@ impl crate::state::EventDispatcher for WorkerPool {
         }
 
         let device = match &event {
-            InputEvent::Pressed(d) | InputEvent::Released(d) => d,
+            InputEvent::Pressed(d) | InputEvent::Released(d) | InputEvent::RunTap(d) => d,
         };
 
         // Fast path: check cache for keyboard keys (most common case)
@@ -368,7 +372,7 @@ impl KeyboardHook {
         // Store device state along with cached mapping info to avoid repeated lookups
         // Cache format: (last_time, interval, event_duration, target_action, turbo_enabled)
         // Pre-allocate with reasonable capacity to reduce allocations
-        let mut device_states: HashMap<InputDevice, (Instant, u64, u64, OutputAction, bool)> =
+        let mut device_states: HashMap<InputDevice, (Instant, u64, u64, OutputAction, bool, u16, bool)> =
             HashMap::with_capacity(16);
 
         while !state.should_exit() {
@@ -377,7 +381,7 @@ impl KeyboardHook {
                     // 暂停清理前补发释放: 非连发按住条目的注入键不能悬空
                     // (暂停期间闸门吞掉了 Released, 清缓存后它永远不会再送达)。
                     // 连发条目直接丢弃 —— 停止连发本身就是暂停的正确语义。
-                    for (_, (_, _, _, action, turbo)) in device_states.drain() {
+                    for (_, (_, _, _, action, turbo, _run_gap, _recheck)) in device_states.drain() {
                         if !turbo {
                             state.simulate_release(&action);
                         }
@@ -415,7 +419,7 @@ impl KeyboardHook {
         state: &AppState,
         device_states: &mut HashMap<
             InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool),
+            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
         >,
         event_rx: &Receiver<InputEvent>,
     ) {
@@ -423,7 +427,7 @@ impl KeyboardHook {
         while let Ok(event) = event_rx.try_recv() {
             EVENT_BACKLOG.fetch_sub(1, Ordering::Relaxed);
             match event {
-                InputEvent::Pressed(device) => {
+                InputEvent::Pressed(device) | InputEvent::RunTap(device) => {
                     latest.insert(device, true);
                 }
                 InputEvent::Released(device) => {
@@ -446,18 +450,58 @@ impl KeyboardHook {
         state: &AppState,
         device_states: &mut HashMap<
             InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool),
+            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
         >,
         event: InputEvent,
     ) {
         use crate::state::OutputAction;
 
         match event {
+            /* ★v21.0 摇杆三区奔跑: 轻推→重推跳变的"第二次敲击"。
+             * 单敲模式 (再检测关): 补足首击时长 → 松开 → 停间隔 → 再按住;
+             *   首击补足用于快速甩杆 (轻推区停留 <80ms 时游戏认不出第一击)。
+             * ★v21.1 再检测开 (默认, 用户实测 DNF 定案): "一直按住"不算敲击序列,
+             *   走路中只补一次松按游戏仍判定走路 —— 必须模拟完整双击:
+             *   松开 → 敲(80ms) → 松开 → 再按住。 */
+            InputEvent::RunTap(device) => {
+                const RUN_FIRST_TAP_MIN_MS: u64 = 80;
+                if let Some((last_time, _, _, target_action, _turbo, run_gap, run_recheck)) =
+                    device_states.get_mut(&device)
+                {
+                    if *run_gap > 0 {
+                        if *run_recheck {
+                            /* 完整双击序列: 长按(走路)本身不算敲击, 松开即重置。
+                             * ★v21.2 节奏优化 (用户实测: 松开后先停一个间隔视觉顿挫明显):
+                             * 松开后立即接敲1 (角色脚不停, 视觉=继续走 80ms),
+                             * 「二次敲击间隔」只用在 走→跑 的切换点 (敲1→敲2 之间) ——
+                             * 视觉序列 = 走 → 走 → 轻微一顿(可调) → 跑 */
+                            state.simulate_release(target_action);
+                            state.simulate_action(
+                                target_action.clone(),
+                                RUN_FIRST_TAP_MIN_MS,
+                            );
+                            std::thread::sleep(Duration::from_millis(*run_gap as u64));
+                            state.simulate_press(target_action);
+                        } else {
+                            let held_ms = last_time.elapsed().as_millis() as u64;
+                            if held_ms < RUN_FIRST_TAP_MIN_MS {
+                                std::thread::sleep(Duration::from_millis(
+                                    RUN_FIRST_TAP_MIN_MS - held_ms,
+                                ));
+                            }
+                            state.simulate_release(target_action);
+                            std::thread::sleep(Duration::from_millis(*run_gap as u64));
+                            state.simulate_press(target_action);
+                        }
+                        *last_time = Instant::now();
+                    }
+                }
+            }
             InputEvent::Pressed(device) => {
                 let now = Instant::now();
 
                 // Fast path: check if device already in cache (common case for repeats)
-                if let Some((last_time, _interval, duration, target_action, turbo_enabled)) =
+                if let Some((last_time, _interval, duration, target_action, turbo_enabled, _run_gap, _recheck)) =
                     device_states.get_mut(&device)
                 {
                     if *turbo_enabled {
@@ -499,6 +543,8 @@ impl KeyboardHook {
                         let turbo_enabled = mapping.turbo_enabled;
                         let double_tap_enabled = mapping.double_tap_enabled;
                         let double_tap_gap = mapping.double_tap_gap_ms.clamp(1, 500); // 上限 500ms: 防大值阻塞 worker
+                        let run_gap = if mapping.run_enabled { double_tap_gap as u16 } else { 0 };
+                        let run_recheck = mapping.run_recheck;
                         let duration = mapping.event_duration;
 
                         device_states.insert(
@@ -509,6 +555,8 @@ impl KeyboardHook {
                                 mapping.event_duration,
                                 mapping.target_action,
                                 turbo_enabled,
+                                run_gap,
+                                run_recheck,
                             ),
                         );
 
@@ -519,7 +567,13 @@ impl KeyboardHook {
                             // then a second press. In follow (non-turbo) mode the
                             // second press stays held so the character keeps running
                             // while the trigger is held; released on trigger up.
-                            state.simulate_action(target_action_clone.clone(), duration);
+                            // ★v21.0 首击时长改用 80ms 常量: 原来传 event_duration
+                            // (默认 5ms), 游戏对这么短的敲击不计数 → 双击奔跑无效
+                            // (用户实测定案: 两次方向键之间要有可辨识的间隔)。
+                            state.simulate_action(
+                                target_action_clone.clone(),
+                                DOUBLE_TAP_FIRST_TAP_MS,
+                            );
                             std::thread::sleep(Duration::from_millis(double_tap_gap));
                             if turbo_enabled {
                                 state.simulate_action(target_action_clone, duration);
@@ -540,7 +594,8 @@ impl KeyboardHook {
             }
             InputEvent::Released(device) => {
                 // For non-turbo mode, simulate release event
-                if let Some((_, _, _, target_action, turbo_enabled)) = device_states.get(&device)
+                if let Some((_, _, _, target_action, turbo_enabled, _run_gap, _recheck)) =
+                    device_states.get(&device)
                     && !turbo_enabled
                 {
                     state.simulate_release(target_action);
@@ -555,7 +610,7 @@ impl KeyboardHook {
         state: &AppState,
         device_states: &mut HashMap<
             InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool),
+            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
         >,
     ) {
         // Early return if no active devices
@@ -566,7 +621,7 @@ impl KeyboardHook {
         let now = Instant::now();
 
         // Iterate over cached device states
-        for (_device, (last_time, interval, duration, target_action, turbo_enabled)) in
+        for (_device, (last_time, interval, duration, target_action, turbo_enabled, _run_gap, _recheck)) in
             device_states.iter_mut()
         {
             // Only repeat if turbo mode is enabled
@@ -860,6 +915,8 @@ impl KeyboardHook {
         let now = Instant::now();
 
         match event {
+            /* ★v21.0: 奔跑补敲事件只涉及键盘/摇杆映射, 与鼠标移动/滚轮槽位无关 */
+            InputEvent::RunTap(_) => {}
             InputEvent::Pressed(device) => {
                 // Check if this is a scroll action first
                 // First check if device already in scroll_devices (Windows repeat)
@@ -1303,6 +1360,9 @@ mod tests {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
 }];
 

@@ -39,6 +39,9 @@ fn test_state_input_mapping_lookup() {
         move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
     }];
 
@@ -146,6 +149,9 @@ fn test_state_multiple_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -157,6 +163,9 @@ fn test_state_multiple_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -168,6 +177,9 @@ fn test_state_multiple_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
     ];
@@ -213,6 +225,9 @@ fn test_state_config_reload_clears_mappings() {
         move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
     }];
 
@@ -242,6 +257,9 @@ fn test_state_turbo_enabled_in_mapping() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -253,6 +271,9 @@ fn test_state_turbo_enabled_in_mapping() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
     ];

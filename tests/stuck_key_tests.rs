@@ -41,6 +41,9 @@ fn mapping(trigger: &str, target: &str) -> KeyMapping {
         move_speed: 10,
         double_tap_enabled: false,
         double_tap_gap_ms: 50,
+        run_enabled: false,
+        run_threshold: 80,
+        run_recheck: true,
         note: String::new(),
     }
 }

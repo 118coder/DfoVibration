@@ -1486,6 +1486,19 @@ pub struct KeyMapping {
     /// Gap between the two simulated taps in milliseconds
     #[serde(default = "default_double_tap_gap_ms")]
     pub double_tap_gap_ms: u64,
+    /// ★v21.0 摇杆三区奔跑: 勾选后该映射改走"按住"语义 (连发失效) ——
+    /// 轻推摇杆(过死区)=方向键按住(走), 推过重推阈值=自动补一次"松开→再按下"
+    /// (游戏判定双击→奔跑)。仅对 XInput 摇杆方向映射有意义, 其他触发源勾选无效果。
+    #[serde(default)]
+    pub run_enabled: bool,
+    /// 重推阈值 (轴值满量程 32768 的百分比, 50-95; 默认 80)
+    #[serde(default = "default_run_threshold")]
+    pub run_threshold: u8,
+    /// ★v21.1 重推阈值再检测: 进入重推区时模拟完整双击序列
+    /// (松开→敲→松开→再按住)。DNF 的双击判定不把"一直按住"算作敲击,
+    /// 走路中只补一次"松开→按下"仍判定走路 (用户实测); 默认 true。
+    #[serde(default = "default_run_recheck")]
+    pub run_recheck: bool,
     /// User note/remark for this mapping
     #[serde(default)]
     pub note: String,
@@ -1498,6 +1511,16 @@ fn default_move_speed() -> i32 {
 /// 双击间隔默认值 (pub(crate): state.rs 测试模块复用)
 pub(crate) fn default_double_tap_gap_ms() -> u64 {
     50
+}
+
+/// 奔跑重推阈值默认值 (80% 满量程; pub(crate): 测试夹具复用)
+pub(crate) fn default_run_threshold() -> u8 {
+    80
+}
+
+/// 重推再检测默认值 (true: DNF 要求完整双击序列; 测试夹具复用)
+pub(crate) fn default_run_recheck() -> bool {
+    true
 }
 
 fn default_turbo_enabled() -> bool {
@@ -1616,6 +1639,9 @@ impl Default for AppConfig {
                 move_speed: 10,
                 double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
                 note: String::new(),
             }],
             input_timeout: default_input_timeout(),
@@ -1992,6 +2018,9 @@ mod tests {
             move_speed: 5,
             double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2013,6 +2042,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2091,6 +2123,9 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
 
                 note: String::new(),
             },
@@ -2103,6 +2138,9 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
 
                 note: String::new(),
             },
@@ -2115,6 +2153,9 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
 
                 note: String::new(),
             },
@@ -2324,6 +2365,9 @@ mod tests {
             move_speed: 5,
             double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2343,6 +2387,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2362,6 +2409,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2381,6 +2431,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2409,6 +2462,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2430,6 +2486,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2457,6 +2516,9 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
 
                 note: String::new(),
             },
@@ -2472,6 +2534,9 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
 
                 note: String::new(),
             },
@@ -2522,6 +2587,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         };
@@ -2547,6 +2615,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         }];
@@ -2582,6 +2653,9 @@ mod tests {
             turbo_enabled: true,
             move_speed: 10,            double_tap_enabled: false,
             double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
 
             note: String::new(),
         }];

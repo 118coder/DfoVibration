@@ -225,6 +225,14 @@ struct XInputDeviceState {
     last_input_bits: u32,
     combo_masks: SmallVec<[ComboMask; 16]>,
     layered_index: LayeredComboIndex,
+    /// ★v21.0 摇杆三区奔跑: 8 个摇杆方向 (ID 0x10..0x17) 的当前区
+    /// (0=死区 1=轻推 2=重推; zone 本身带迟滞: 重推退出线 = 阈值×7/8)
+    stick_zones: [u8; 8],
+    /// ★v21.0 各方向奔跑重推阈值的绝对轴值缓存 (0 = 该方向无奔跑映射)。
+    /// 与 combo_masks 同生命周期: 配置重载清零, 命中空时按映射表重建。
+    run_thr: [i16; 8],
+    /// ★v21.0 各方向上次 RunTap 派发时刻 (200ms 冷却防阈值附近抖动连发松按)
+    run_tap_last: [std::time::Instant; 8],
 }
 
 /// XInput handler for Xbox controller input.
@@ -267,6 +275,9 @@ impl XInputHandler {
                         last_input_bits: 0,
                         combo_masks: SmallVec::new(),
                         layered_index: LayeredComboIndex::new(),
+                        stick_zones: [0; 8],
+                        run_thr: [0; 8],
+                        run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
                     });
 
                     // Register device display info
@@ -355,6 +366,9 @@ impl XInputHandler {
                 device_state.combo_masks.clear();
                 device_state.layered_index = LayeredComboIndex::new();
                 device_state.last_input_bits = 0;
+                /* ★v21.0: 奔跑阈值缓存与三区状态同步失效 (下帧按新配置重建) */
+                device_state.run_thr = [0; 8];
+                device_state.stick_zones = [0; 8];
             }
         }
 
@@ -381,10 +395,16 @@ impl XInputHandler {
                     let gamepad = state.Gamepad;
 
                     let mut current_inputs = SmallVec::<[u32; MAX_INPUTS]>::new();
+                    let mut stick_axis_mag = [0i16; 8];
 
                     Self::check_buttons_fast(&gamepad, &mut current_inputs);
-                    Self::check_analog_sticks_fast(&gamepad, &mut current_inputs);
+                    Self::check_analog_sticks_fast(&gamepad, &mut current_inputs, &mut stick_axis_mag);
                     Self::check_triggers_fast(&gamepad, &mut current_inputs);
+
+                    /* ★v21.0 摇杆三区奔跑检测: 每帧跑 (幅度变化不改变 active 集合,
+                     * 不能只挂在 inputs_changed 上); 无奔跑映射时 run_thr 全 0, 开销近零 */
+                    let run_pool = self.state.get_worker_pool();
+                    Self::detect_run_taps(device_state, &stick_axis_mag, run_pool);
 
                     let inputs_changed = current_inputs != device_state.active_inputs;
 
@@ -433,6 +453,9 @@ impl XInputHandler {
                             last_input_bits: 0,
                             combo_masks: SmallVec::new(),
                             layered_index: LayeredComboIndex::new(),
+                            stick_zones: [0; 8],
+                            run_thr: [0; 8],
+                            run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
                         });
                     }
                 }
@@ -572,6 +595,19 @@ impl XInputHandler {
             let all_combos = state.get_xinput_combos_for_device(&device_type);
             Self::build_combo_masks(&all_combos, &mut device_state.combo_masks);
             Self::build_layered_index(&all_combos, &mut device_state.layered_index);
+            /* ★v21.0: 奔跑重推阈值缓存 —— 遍历 8 个摇杆单方向组合, 勾选【奔跑】的
+             * 方向记录阈值绝对值; 与 combo_masks 同生命周期 (配置重载时一起清) */
+            for i in 0..8usize {
+                let dev = InputDevice::XInputCombo {
+                    device_type: device_type.clone(),
+                    button_ids: vec![0x10 + i as u32],
+                };
+                if let Some(m) = state.get_input_mapping(&dev)
+                    && m.run_enabled
+                {
+                    device_state.run_thr[i] = ((32767i32 * m.run_threshold as i32) / 100) as i16;
+                }
+            }
         }
 
         let mut new_active_combos = SmallVec::<[Vec<u32>; 4]>::new();
@@ -899,40 +935,51 @@ impl XInputHandler {
     }
 
     /// Checks analog stick states and records active directions.
+    /// ★v21.0 同时把 8 个方向的轴值幅度 (|axis|, 死区内=0) 写入 `axis_mag`
+    /// (下标 = 方向 ID - 0x10), 供三区奔跑检测使用。
     #[inline(always)]
     fn check_analog_sticks_fast(
         gamepad: &XINPUT_GAMEPAD,
         active: &mut SmallVec<[u32; MAX_INPUTS]>,
+        axis_mag: &mut [i16; 8],
     ) {
         // Left stick X-axis
-        let lx = gamepad.sThumbLX;
-        if unlikely(lx > STICK_DEADZONE) {
+        let lx = gamepad.sThumbLX as i32;
+        axis_mag[0] = lx.max(0).min(i16::MAX as i32) as i16;
+        axis_mag[1] = (-lx).max(0).min(i16::MAX as i32) as i16;
+        if unlikely(lx > STICK_DEADZONE as i32) {
             active.push(0x10); // Left stick right
-        } else if unlikely(lx < -STICK_DEADZONE) {
+        } else if unlikely(lx < -(STICK_DEADZONE as i32)) {
             active.push(0x11); // Left stick left
         }
 
         // Left stick Y-axis
-        let ly = gamepad.sThumbLY;
-        if unlikely(ly > STICK_DEADZONE) {
+        let ly = gamepad.sThumbLY as i32;
+        axis_mag[2] = ly.max(0).min(i16::MAX as i32) as i16;
+        axis_mag[3] = (-ly).max(0).min(i16::MAX as i32) as i16;
+        if unlikely(ly > STICK_DEADZONE as i32) {
             active.push(0x12); // Left stick up
-        } else if unlikely(ly < -STICK_DEADZONE) {
+        } else if unlikely(ly < -(STICK_DEADZONE as i32)) {
             active.push(0x13); // Left stick down
         }
 
         // Right stick X-axis
-        let rx = gamepad.sThumbRX;
-        if unlikely(rx > STICK_DEADZONE) {
+        let rx = gamepad.sThumbRX as i32;
+        axis_mag[4] = rx.max(0).min(i16::MAX as i32) as i16;
+        axis_mag[5] = (-rx).max(0).min(i16::MAX as i32) as i16;
+        if unlikely(rx > STICK_DEADZONE as i32) {
             active.push(0x14); // Right stick right
-        } else if unlikely(rx < -STICK_DEADZONE) {
+        } else if unlikely(rx < -(STICK_DEADZONE as i32)) {
             active.push(0x15); // Right stick left
         }
 
         // Right stick Y-axis
-        let ry = gamepad.sThumbRY;
-        if unlikely(ry > STICK_DEADZONE) {
+        let ry = gamepad.sThumbRY as i32;
+        axis_mag[6] = ry.max(0).min(i16::MAX as i32) as i16;
+        axis_mag[7] = (-ry).max(0).min(i16::MAX as i32) as i16;
+        if unlikely(ry > STICK_DEADZONE as i32) {
             active.push(0x16); // Right stick up
-        } else if unlikely(ry < -STICK_DEADZONE) {
+        } else if unlikely(ry < -(STICK_DEADZONE as i32)) {
             active.push(0x17); // Right stick down
         }
     }
@@ -945,6 +992,81 @@ impl XInputHandler {
         }
         if unlikely(gamepad.bRightTrigger > TRIGGER_THRESHOLD) {
             active.push(0x19); // Right trigger
+        }
+    }
+
+    /// ★v21.0 摇杆三区奔跑: 轻推区(死区~重推阈值)按下方向键=走;
+    /// 跳入重推区派发 RunTap (松开→再按下) → 游戏判定双击 → 奔跑。
+    /// 仅对勾选【奔跑】的摇杆方向映射生效 (run_thr 由映射表缓存, 0=无)。
+    #[inline]
+    fn detect_run_taps(
+        device_state: &mut XInputDeviceState,
+        axis_mag: &[i16; 8],
+        pool: Option<&std::sync::Arc<dyn crate::state::EventDispatcher>>,
+    ) {
+        const RUN_TAP_COOLDOWN_MS: u64 = 200;
+        let now = std::time::Instant::now();
+        let vid = device_state.vid_pid.0;
+        for i in 0..8 {
+            let v = axis_mag[i];
+            let thr = device_state.run_thr[i];
+            let old_zone = device_state.stick_zones[i];
+
+            /* 区更新 (带迟滞): 重推退出线 = 阈值 × 7/8, 阈值附近微抖不反复触发 */
+            let new_zone = if thr == 0 {
+                /* 该方向无奔跑映射: 只维护死区/轻推两态 (零行为变化) */
+                if v > STICK_DEADZONE {
+                    1
+                } else {
+                    0
+                }
+            } else {
+                match old_zone {
+                    0 => {
+                        if v > STICK_DEADZONE {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    1 => {
+                        if v >= thr {
+                            2
+                        } else if v > STICK_DEADZONE {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                    _ => {
+                        /* i32 中转: thr*7 在 i16 上会溢出回绕 (测试抓到的真 bug) */
+                        if v >= (thr as i32 * 7 / 8) as i16 {
+                            2
+                        } else if v > STICK_DEADZONE {
+                            1
+                        } else {
+                            0
+                        }
+                    }
+                }
+            };
+            device_state.stick_zones[i] = new_zone;
+
+            /* 轻推 → 重推跳变: 派发 RunTap (松开→再按下), 冷却防抖 */
+            if old_zone == 1 && new_zone == 2
+                && now.duration_since(device_state.run_tap_last[i]).as_millis() as u64
+                    >= RUN_TAP_COOLDOWN_MS
+            {
+                device_state.run_tap_last[i] = now;
+                if let Some(pool) = pool {
+                    pool.dispatch(crate::state::InputEvent::RunTap(
+                        crate::state::InputDevice::XInputCombo {
+                            device_type: crate::state::DeviceType::Gamepad(vid),
+                            button_ids: vec![0x10 + i as u32],
+                        },
+                    ));
+                }
+            }
         }
     }
 
@@ -1409,6 +1531,84 @@ impl XInputHandler {
 mod tests {
     use super::*;
 
+    /// 构造三区检测用的最小 device_state
+    fn make_device_state(run_thr: [i16; 8]) -> XInputDeviceState {
+        XInputDeviceState {
+            packet_number: 0,
+            last_state: XINPUT_GAMEPAD::default(),
+            vid_pid: (XBOX_VID, 0x028E),
+            capture_frames: std::array::from_fn(|_| CaptureFrame::new()),
+            capture_frame_count: 0,
+            active_inputs: SmallVec::new(),
+            active_combos: SmallVec::new(),
+            last_input_bits: 0,
+            combo_masks: SmallVec::new(),
+            layered_index: LayeredComboIndex::new(),
+            stick_zones: [0; 8],
+            run_thr,
+            run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
+        }
+    }
+
+    #[test]
+    fn test_run_zones_no_mapping_stays_two_state() {
+        // 无奔跑映射 (run_thr 全 0): 永远只进轻推区, 不可能进入重推区
+        let mut ds = make_device_state([0; 8]);
+        let mag = [10000i16; 8]; // ~30% 满量
+        XInputHandler::detect_run_taps(&mut ds, &mag, None);
+        assert_eq!(ds.stick_zones, [1; 8], "过死区应进轻推区");
+        let mag = [32000i16; 8]; // 推到底
+        XInputHandler::detect_run_taps(&mut ds, &mag, None);
+        assert_eq!(ds.stick_zones, [1; 8], "无映射时推到底也不进重推区");
+    }
+
+    #[test]
+    fn test_run_zones_light_to_heavy_transition() {
+        // 80% 阈值 (0.8*32767 ≈ 26214): 死区→轻推→重推→保持→回落→再触发
+        let thr = ((32767i32 * 80) / 100) as i16;
+        let mut ds = make_device_state([thr, 0, 0, 0, 0, 0, 0, 0]);
+        let base = [0i16; 8];
+        // 死区内
+        XInputHandler::detect_run_taps(&mut ds, &base, None);
+        assert_eq!(ds.stick_zones[0], 0);
+        // 轻推 (30%)
+        let light = [9000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &light, None);
+        assert_eq!(ds.stick_zones[0], 1, "轻推应进轻推区");
+        // 重推 (90%) → 触发区跳变 (pool=None: 只验证状态机, 不验证派发)
+        let heavy = [30000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &heavy, None);
+        assert_eq!(ds.stick_zones[0], 2, "过阈值应进重推区");
+        // 保持重推: zone 不变 (不会重新武装)
+        XInputHandler::detect_run_taps(&mut ds, &heavy, None);
+        assert_eq!(ds.stick_zones[0], 2);
+        // 回落到 72%: 高于迟滞线 (80%*7/8=70%) → 仍是重推区
+        let mid = [24000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &mid, None);
+        assert_eq!(ds.stick_zones[0], 2, "迟滞带内应保持重推区");
+        // 回落到 50%: 低于迟滞线 → 退回轻推区 (重新武装)
+        let light2 = [16000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &light2, None);
+        assert_eq!(ds.stick_zones[0], 1, "低于迟滞线应退回轻推区");
+        // 再次推过阈值 → 重新进重推区 (可再次触发奔跑)
+        XInputHandler::detect_run_taps(&mut ds, &heavy, None);
+        assert_eq!(ds.stick_zones[0], 2, "重新武装后应再次进重推区");
+    }
+
+    #[test]
+    fn test_run_zones_return_to_dead() {
+        let thr = ((32767i32 * 80) / 100) as i16;
+        let mut ds = make_device_state([thr, 0, 0, 0, 0, 0, 0, 0]);
+        let seq: [&[i16]; 4] = [&[9000; 8], &[30000; 8], &[9000; 8], &[100; 8]];
+        let expect = [1u8, 2, 1, 0];
+        for (i, mag) in seq.iter().enumerate() {
+            let mut m = [0i16; 8];
+            m.copy_from_slice(mag);
+            XInputHandler::detect_run_taps(&mut ds, &m, None);
+            assert_eq!(ds.stick_zones[0], expect[i], "step {i}");
+        }
+    }
+
     #[test]
     fn test_xinput13_enable_resolves() {
         // Win10/11 自带 xinput1_3.dll: 「重置手柄」依赖它的真实 XInputEnable
@@ -1565,7 +1765,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 0);
     }
 
@@ -1583,7 +1783,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 1);
         assert_eq!(active[0], 0x10); // Left stick right
     }
@@ -1602,7 +1802,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 1);
         assert_eq!(active[0], 0x12); // Left stick up
     }
@@ -1621,7 +1821,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 2);
         assert!(active.contains(&0x10)); // Right
         assert!(active.contains(&0x12)); // Up
@@ -1641,7 +1841,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 0);
     }
 
@@ -1659,7 +1859,7 @@ mod tests {
 
         let mut active = SmallVec::<[u32; MAX_INPUTS]>::new();
 
-        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active);
+        XInputHandler::check_analog_sticks_fast(&gamepad, &mut active, &mut [0i16; 8]);
         assert_eq!(active.len(), 2);
         assert!(active.contains(&0x15)); // Right stick left
         assert!(active.contains(&0x17)); // Right stick down

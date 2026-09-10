@@ -52,6 +52,9 @@ fn distinct_mapping(trigger: &str, gap: u64) -> KeyMapping {
         move_speed: 13,
         double_tap_enabled: true,
         double_tap_gap_ms: gap,
+        run_enabled: true,
+        run_threshold: 73,
+        run_recheck: false,
         note: format!("备注-{trigger}"),
     }
 }
@@ -67,6 +70,9 @@ fn none_options_mapping() -> KeyMapping {
         move_speed: 5,
         double_tap_enabled: false,
         double_tap_gap_ms: 50,
+        run_enabled: false,
+        run_threshold: 80,
+        run_recheck: true,
         note: String::new(),
     }
 }

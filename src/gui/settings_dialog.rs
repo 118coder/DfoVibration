@@ -1307,6 +1307,34 @@ impl SorahkGui {
                                                                 mapping.double_tap_enabled = !mapping.double_tap_enabled;
                                                             }
                                                             ui.add_space(4.0);
+                                                            // ★v21.0 摇杆三区奔跑开关 (与连发/双击互斥, 勾选后二者失效)
+                                                            let run_enabled = mapping.run_enabled;
+                                                            let run_color = if run_enabled {
+                                                                Theme::new(self.dark_mode).good
+                                                            } else { Theme::new(self.dark_mode).hint };
+                                                            let run_icon =
+                                                                if run_enabled { "🏃 奔跑:开" } else { "🏃 奔跑" };
+                                                            let run_btn = egui::Button::new(
+                                                                egui::RichText::new(run_icon)
+                                                                    .color(egui::Color32::WHITE)
+                                                                    .size(12.0),
+                                                            )
+                                                            .fill(run_color)
+                                                            .corner_radius(8.0)
+                                                            .sense(egui::Sense::click());
+                                                            let run_hover = if run_enabled {
+                                                                "摇杆三区奔跑: 开\n轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (双击→奔跑)\n勾选后本条映射的 连发/1×双击 不生效\n重推阈值与二次敲击间隔在连发页编辑面板调整\n点击关闭"
+                                                            } else {
+                                                                "摇杆三区奔跑: 关\n开启后: 轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (游戏判定双击→奔跑)\n仅对摇杆方向映射有效; 勾选后本条的 连发/1×双击 不生效"
+                                                            };
+                                                            if ui
+                                                                .add_sized([96.0, 32.0], run_btn)
+                                                                .on_hover_text(run_hover)
+                                                                .clicked()
+                                                            {
+                                                                mapping.run_enabled = !mapping.run_enabled;
+                                                            }
+                                                            ui.add_space(4.0);
                                                             // Delete mapping
                                                             let delete_btn = egui::Button::new(
                                                                 egui::RichText::new("🗑 删除")
@@ -1838,6 +1866,9 @@ impl SorahkGui {
                                                                     move_speed,
                                                                     double_tap_enabled: self.new_mapping_double_tap,
                                                                     double_tap_gap_ms: 50,
+                                                                    run_enabled: false,
+                                                                    run_threshold: 80,
+                                                                    run_recheck: true,
                                                                     note: self.new_mapping_note.clone(),
                                                                 });
 
@@ -2322,6 +2353,7 @@ impl SorahkGui {
                 input: input_name,
                 turbo: true,
                 double_tap: false,
+                run: false,
             });
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();

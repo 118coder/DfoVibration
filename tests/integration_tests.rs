@@ -40,6 +40,9 @@ fn test_config_with_complex_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -51,6 +54,9 @@ fn test_config_with_complex_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -62,6 +68,9 @@ fn test_config_with_complex_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -73,6 +82,9 @@ fn test_config_with_complex_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
     ];
@@ -128,6 +140,9 @@ fn test_config_maximum_mappings() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         })
         .collect();
@@ -211,6 +226,9 @@ fn test_config_multiple_target_keys() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
         KeyMapping {
@@ -225,6 +243,9 @@ fn test_config_multiple_target_keys() {
             move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
         },
     ];
@@ -264,6 +285,9 @@ fn test_config_many_target_keys() {
         move_speed: 10,
             double_tap_enabled: false,
             double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
             note: String::new(),
     }];
 

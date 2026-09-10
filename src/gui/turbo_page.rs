@@ -543,6 +543,9 @@ impl SorahkGui {
                 move_speed: 5,
                 double_tap_enabled: false,
                 double_tap_gap_ms: 50,
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
                 note: String::new(),
             },
         );
@@ -625,6 +628,11 @@ impl SorahkGui {
         let mut duration = mapping.event_duration.unwrap_or(default_duration) as f64;
         let mut turbo = mapping.turbo_enabled;
         let mut double_tap = mapping.double_tap_enabled;
+        /* ★v21.0 奔跑行局部副本 (二次敲击间隔与 1×双击共用 double_tap_gap_ms) */
+        let mut run_enabled = mapping.run_enabled;
+        let mut run_recheck = mapping.run_recheck;
+        let mut run_threshold = mapping.run_threshold as f32;
+        let mut run_gap = mapping.double_tap_gap_ms as f32;
         let mut move_speed = mapping.move_speed as f32;
         /* 滚动映射的移动速度上限更高 (与设置弹窗一致: 普通 100 / 滚动 1200) */
         let speed_hi = if targets.iter().any(|k| k.starts_with("SCROLL")) {
@@ -783,6 +791,78 @@ impl SorahkGui {
                         .changed()
                     {
                         self.config.mappings[idx].move_speed = move_speed.round().max(1.0) as i32;
+                    }
+                });
+                ui.add_space(theme::SP_S);
+
+                /* ★v21.0 摇杆三区奔跑: 轻推=走(方向键按住) / 推过重推阈值=自动补一次
+                 * 松开再按下 (游戏判定双击→奔跑)。勾选后本条的 连发/1×双击 不生效。 */
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(th.weak("奔跑"));
+                    if ui
+                        .checkbox(&mut run_enabled, "")
+                        .on_hover_text(
+                            "摇杆三区奔跑 (仅摇杆方向映射有效):\n\
+                             轻推摇杆 = 方向键按住 (走路)\n\
+                             推过「重推阈值」= 自动补一次松开再按下 → 游戏判定双击 → 奔跑\n\
+                             勾选后本条映射的 连发/1×双击 不生效 (奔跑改写按键节奏)",
+                        )
+                        .changed()
+                    {
+                        self.config.mappings[idx].run_enabled = run_enabled;
+                    }
+                    if run_enabled {
+                        ui.add_space(theme::SP_L);
+                        ui.label(th.weak("重推阈值"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut run_threshold)
+                                    .range(50.0..=95.0)
+                                    .suffix("%")
+                                    .speed(1.0),
+                            )
+                            .on_hover_text(
+                                "摇杆推过多大幅度算「重推」(满量的 %)\n\
+                                 轻推就误触奔跑 → 调高; 推到底还不跑 → 调低",
+                            )
+                            .changed()
+                        {
+                            self.config.mappings[idx].run_threshold =
+                                run_threshold.round().clamp(50.0, 95.0) as u8;
+                        }
+                        ui.add_space(theme::SP_L);
+                        ui.label(th.weak("二次敲击间隔"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut run_gap)
+                                    .range(20.0..=200.0)
+                                    .suffix("ms")
+                                    .speed(1.0),
+                            )
+                            .on_hover_text(
+                                "走→跑 切换时两次敲击之间的等待 (与 1×双击 的间隔是同一个值)\n\
+                                 视觉顿挫感明显 → 调小; 游戏没判定成双击 → 调大",
+                            )
+                            .changed()
+                        {
+                            self.config.mappings[idx].double_tap_gap_ms =
+                                run_gap.round().clamp(20.0, 200.0) as u64;
+                        }
+                        ui.add_space(theme::SP_L);
+                        /* ★v21.1 重推阈值再检测: 完整双击序列 (DNF 实测定案) */
+                        if ui
+                            .checkbox(&mut run_recheck, "再检测")
+                            .on_hover_text(
+                                "重推阈值再检测 (推荐开启):
+                                 DNF 里「一直按住方向键」不算敲击 —— 走路中推过重推线,
+                                 只补一次松开再按下游戏仍然判定走路
+                                 开启后重推时模拟完整双击: 松开 → 敲一下 → 再敲一下并保持 → 奔跑
+                                 个别双击判定宽松的游戏可关闭 (退回单次松按模式)",
+                            )
+                            .changed()
+                        {
+                            self.config.mappings[idx].run_recheck = run_recheck;
+                        }
                     }
                 });
                 ui.add_space(theme::SP_S);

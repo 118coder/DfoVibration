@@ -66,6 +66,8 @@ pub struct QuickGamepadPending {
     pub turbo: bool,
     /// 确认时写入该槽位映射的 1×双击 开关 (默认 false)
     pub double_tap: bool,
+    /// ★v21.0 确认时写入该槽位映射的 奔跑 开关 (默认 false; 勾选后连发/双击失效)
+    pub run: bool,
 }
 
 /// Main GUI application structure.

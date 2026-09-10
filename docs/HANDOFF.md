@@ -1,9 +1,27 @@
 # DfoVibration-V3 (原 SorahkDFO) — 交接文档 (HANDOFF)
 
-> 更新: 2026-09-10 08:00 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
+> 更新: 2026-09-10 23:30 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
 > 配套: `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
 >
-> **═══ 本会话收官快照 (09-10 深夜 · HEAD = 本提交 · 541 测试全绿 · exe 已交付 v20.7, md5 6ee0a27b) ═══**
+> **═══ 本会话收官快照 (09-10 深夜 · 543 测试全绿 · exe 已交付 v20.9.1, md5 581da914) ═══**
+>
+> **⚠ v20.9.1 = 键帽配色定稿为描边式 (v20.9 色块式被用户否决"颜色不好看", 选项定稿)**:
+> **中性键帽底 + 彩色细描边 + 彩色字** —— 紫=手柄 / 橙=鼠标 / 键盘=完全原样;
+> 编辑面板 chips 底色同步减半。实现与色值见第 41 条, **勿回退色块填充风格**。
+>
+> **⚠ v20.8 = 鼠标方向/滚动弹窗点状塌缩修复 (第 17 条冻结案结案)**: 两弹窗是
+> `Theme::modal_window` 构建器的最后两个使用者, 用户实测点击「⌖ 方向」「🎡 滚动」
+> 只出 ~24px 小圆点 → 方向永远选不上 → target_keys 恒空 → 列表显示【未设置目标】
+> (用户"问题二"实为问题一下游, Config.toml 四条 RS 映射 target_keys=[] 实锤)。
+> 修复 = 两弹窗照 about_dialog 内联 egui::Window 样板重写; 构建器改注释 ⛔禁用中+
+> #[allow(dead_code)] (零调用者)。红→绿闭环: SORAHK_DEBUG_MOUSE_DIALOG 注入 +
+> 离屏截图, 红灯拍到圆点/绿灯两弹窗全尺寸。详见第 40 条。
+>
+> **⚠★ GitHub 上交流程已启用 (09-10, 用户口令触发, 见第 42 条)**: 用户装了
+> GitHub Desktop 并把仓库 clone 到 `D:\Program Files\Gitgub\DfoVibration`
+> (remote = github.com/118coder/DfoVibration)。**当用户说【测试通过，上交到仓库】:
+> E盘主线 → 同步 D盘 clone → 生成更新记录 → commit + pull --rebase + push**。
+> 完整步骤/注意事项必读第 42 条, 勿擅自 push (只在该口令后执行)。
 >
 > **⚠ v20.6 = 设置弹窗经典窗截断修复 (最新)**: ①弹窗 default/min 随视口收紧 (900×600 里
 > 不再顶满截断); ②中部滚动区 max_height 写死 500 改为随弹窗高度走 (截断的真正根因);
@@ -929,4 +947,94 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
       分发包 `V3版本\（适配A1手柄震动+映射）DfoVibration-Sorahk1.0-测试版.zip` 已原结构刷新
       (仅替换 DfoVibration-Sorahk.exe= v20.7 / Config.toml / Vibration.toml 三项, 其余条目
       字节不动; 双 DLL+研究资料保持用户原样)。
+
+40. **v20.8 鼠标方向/滚动弹窗点状塌缩修复 (2026-09-10 深夜, 用户两图反馈; 第 17 条冻结案结案)**:
+    - **现象 (用户截图)**: ① 连发页内联编辑面板点「⌖ 方向」「🎡 滚动」不弹窗, 只出现
+      ~24px 小圆点; ② 映射列表四条 RS 摇杆映射显示【未设置目标】, "鼠标设置没显示"。
+    - **根因 (一因两果)**: 两弹窗是 `Theme::modal_window` 构建器 (e7f927d 引入) 仅存的
+      使用者 —— 构建器点状塌缩 bug (第 17 条, Heisenberg 未定案) 使弹窗渲染塌成圆点,
+      九宫格/按钮从未可见 → 方向永远选不上 → `add_target_key` 从未执行 → target_keys
+      恒空 → 列表 `(未设置目标)`。**问题二是问题一的下游, 显示逻辑本身无 bug**:
+      用户 Config.toml 实证四条 RS 映射 `target_keys = []`, 全文件零 MOUSE_*/SCROLL_*。
+    - **修复**: `mouse_direction_dialog.rs` / `mouse_scroll_dialog.rs` 照 about_dialog.rs
+      内联样板重写窗体脚手架 (`egui::Window::new(名).id(名_window).title_bar(false)
+      .collapsible(false).resizable(false).fixed_size(原尺寸).anchor(CENTER_CENTER)
+      .frame(fill+圆角16+无描边+投影)`, 内容闭包逐字未动); theme.rs 构建器文档改
+      **⛔禁用中** + `#[allow(dead_code)]` (零调用者; 修清根因前不许再上)。
+    - **反馈回路 (红→绿闭环, 可复用)**: main_window.rs 临时注入
+      `SORAHK_DEBUG_MOUSE_DIALOG=direction|scroll` 无条件开弹窗 (验证后已删) +
+      `work/offscreen_capture.ps1` 离屏截图。红灯 = 修复版构建前拍到圆点 (经典窗
+      两卡之间); 绿灯 = 修复后方向 380×380 九宫格 / 滚动 320×380 三按钮全尺寸,
+      样式正常。**坑**: 截图脚本不收进程, 重拍前必须 taskkill sorahk.exe, 否则
+      cp 报 "Device or resource busy" 且拍到旧实例 (本轮真实踩到, 已靠 cp 失败拦截)。
+    - **字节验证注记**: 本修复无可靠 grep 标记 —— `egui::Id::new("…_window")` 的
+      字面量被 LLVM 常量折叠不落盘 (grep -ac = 0), `Window::new("mouse_…_dialog")`
+      标题串新旧版同名。交付证据链 = 构建↔交付 md5 一致 (7471d9cc) + 与 v20.7
+      (6ee0a27b) 不同 + 541/0 + 绿灯截图出自同一修复源码。
+    - **用户待实测**: ① 连发页编辑面板点「⌖ 方向」→ 九宫格弹窗 → 选向 → 目标键出现
+      (如 MOUSE_UP) 且保存生效; 「🎡 滚动」同理; ② 设置弹窗内两处鼠标入口同款弹窗
+      应一并恢复 (同组件); ③ 之前四条 RS 映射需**重新选一次方向** (旧数据从未写入,
+      非显示丢失); ④ 选完列表行目标键帽正常显示、【未设置目标】消失。
+    - exe 已交付 (v20.8, md5 7471d9cc...)。**遗留**: 第 17 条构建器点状根因调查仍冻结
+      (现在零调用者, 可安全冷处理或专攻); theme.rs 构建器待根因结案后再决定删除/修复。
+
+41. **v20.9 连发映射键帽按设备类型上色 (2026-09-10 深夜, 用户看截图提需"装配一下颜色方便识别")**:
+    - **配色语义 (明暗两套, 设计系统内新增四色)**: **紫 = 手柄** (GAMEPAD_ 前缀, 快速捕获
+      长名/摇杆) / **橙 = 鼠标** (MOUSE_* 八向 + SCROLL_* + LBUTTON/RBUTTON/MBUTTON/
+      XBUTTON1/XBUTTON2) / **键盘 = 中性键帽原样式** (extreme 底, 不打扰)。列表行的触发
+      与目标键帽、编辑面板的触发键帽全部生效; 编辑面板目标 chips 同步按类型上色
+      (键盘键保持原天蓝目标色, 保留"可点击移除"认知)。
+    - **实现 (三小件, 调用点仅 4 处全在 turbo_page)**: ① theme.rs Theme 新增
+      `gamepad_fg/gamepad_bg/mouse_fg/mouse_bg` (dark: #C4B5FD 紫字+紫40α底 /
+      orange-300 字+orange 32α底; light: #3F45D0 靛蓝字+靛蓝30α底 / orange-700 字+
+      orange 30α底); ② gui/utils.rs 新增 `KeyKind{Gamepad,Mouse,Keyboard}` +
+      `key_kind(name)` 前缀/精确名分类 (mod.rs 的 utils 改 pub(crate)), 单测
+      test_key_kind_classification; ③ widgets.rs 新增 `keycap_typed(ui,th,text,kind)`
+      (Keyboard 分支直接转调原 keycap, 原函数保留 —— 预设卡「切换键」仍用中性)。
+    - **★v20.9.1 描边式定稿 (同日, 用户否决色块式"颜色不好看", 二选项定稿)**:
+      keycap_typed 改为 **中性键帽底 (th.extreme) + 1.3px 彩色描边 (fg γ0.8) + 彩色字**,
+      键盘键完全原样; theme 的 gamepad_bg/mouse_bg 仅剩编辑面板 chips 在用且 α 减半
+      (dark 18/16, light 14) —— 键帽不再有色块。**用户在"描边式/轻着色/色点式"三选一里
+      拍板描边式, 鼠标保持橙色 (紫+橙对比)**。验证: 543/0; 明暗两主题离屏截图
+      `work/_uicheck/outline_{light,dark}.png`。
+    - (已弃用) v20.9 首版色块式截图: `work/_uicheck/keycolor_{light,dark}.png`。
+      **截图技巧 (新)**: 经典窗视口矮、映射列表在折叠区下, PrintWindow 整窗截图拍不到
+      → 本次在**构建副本** (E:\Sorahk-build\src, 非真源码) 临时让 render_turbo_page
+      只渲染映射列表卡, 截完 `sync_and_build.sh` 重新 sync 即自然清除 (grep SHOT-ONLY=0
+      已验证); 改工作副本 Config.toml 窗口高度无效 (egui 钳到屏幕)。
+    - exe 已交付 (v20.9.1, md5 581da914...)。
+
+42. **★GitHub 上交流程启用 (2026-09-10, 用户装 GitHub Desktop, 口令触发制)**:
+    - **触发口令**: 用户说**【测试通过，上交到仓库】** → 执行本节流程并**直接 push 到
+      GitHub**。其余任何时刻都不要 push (用户实测确认后才上交)。
+    - **环境事实 (09-10 实地考察)**:
+      * GitHub Desktop exe: `C:\Users\12290\AppData\Local\GitHubDesktop\GitHubDesktop.exe`
+      * GitHub 仓库: `https://github.com/118coder/DfoVibration` (origin, 用户本人账号)
+      * **D 盘 clone ("本地仓库")**: `D:\Program Files\Gitgub\DfoVibration`
+        (注意 Gitgub 是用户目录实际拼写, 勿"纠正"); 09-10 时 HEAD=661987d"修复窗口问题",
+        是用户经 GitHub Desktop 手动提交的另一条线, 落后 E 盘主线多个版本。
+      * **E 盘开发主线** (`E:\网页小工具\DfoVibration V3版本\SorahkDFO源码`): **无 remote**,
+        是唯一事实来源 (source of truth); 所有开发 commit 在这里。
+    - **上交流程 (口令后逐步执行)**:
+      1. E 盘主线确认干净: `git -C <E盘repo> status --short` 应为空 (未提交改动先按
+         惯例 commit)。
+      2. **同步到 D 盘 clone**: 按 E 盘 `git ls-files` 清单逐文件覆盖复制到 D 盘
+         (排除 .git); 然后删掉 D 盘工作区里 E 盘跟踪清单之外的多余文件 (保持两边
+         文件集合一致; 用 `git -C <D盘> status` 检查增删符合预期)。⚠ D 盘在
+         "Program Files" 下, 写文件可能要管理员权限 —— 若 cp 被拒, 提示用户给
+         GitHubDesktop/终端管理员权限, 或经 GitHub Desktop 界面操作。
+      3. **生成更新记录**: ① `CHANGELOG.md` 顶部追加本次版本段 (标题 = 版本号+日期,
+         要点按 Feature/Fix 分组, 中文); ② commit message 完整记录本次变更
+         (沿用 E 盘主线 commit 要点)。docs/HANDOFF.md 随源码一并推上去 (本身就是
+         无缝对接文档)。
+      4. **提交**: `git -C "D:\Program Files\Gitgub\DfoVibration" add -A` →
+         `git commit -m "..."`。
+      5. **拉取推送**: `git pull --rebase origin main` (远程若有用户新提交, rebase
+         到其上; 冲突时以 E 盘主线内容为准) → `git push origin main`。
+      6. **回执**: 汇报 push 的 commit 哈希 + 更新记录要点 + GitHub 仓库链接。
+    - **分支名注意**: 实际执行时先 `git -C <D盘> branch --show-current` 确认主分支名
+      (main/master 以实际为准, 上文按 main 书写)。
+    - **为什么中转 D 盘而不给 E 盘加 remote**: 用户明确要求"更新到本地仓库然后使用
+      拉取推送的方式"; D 盘 clone 归 GitHub Desktop 管 (用户可在 GUI 里看到历史),
+      E 盘 repo 保持无 remote 纯主线, 两边职责清晰。
 

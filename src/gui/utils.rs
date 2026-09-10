@@ -90,6 +90,36 @@ pub fn string_to_vk(key_name: &str) -> Option<u32> {
 }
 
 
+/// 键名设备类型 (连发映射键帽配色: 紫=手柄 / 橙=鼠标 / 键盘=中性)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    /// 手柄输入 (GAMEPAD_ 前缀, 快速捕获产物)
+    Gamepad,
+    /// 鼠标: 移动八向 MOUSE_* / 滚动 SCROLL_* / 按键 LBUTTON·RBUTTON·MBUTTON·XBUTTON1·XBUTTON2
+    Mouse,
+    /// 其余 = 键盘键 (保持中性键帽)
+    Keyboard,
+}
+
+/// 按键名分类设备类型 (大小写不敏感; 组合键整体传入时按前缀判定)。
+pub fn key_kind(key_name: &str) -> KeyKind {
+    let u = key_name.trim().to_ascii_uppercase();
+    if u.starts_with("GAMEPAD") {
+        return KeyKind::Gamepad;
+    }
+    if u.starts_with("MOUSE_")
+        || u.starts_with("SCROLL_")
+        || matches!(
+            u.as_str(),
+            "LBUTTON" | "RBUTTON" | "MBUTTON" | "XBUTTON1" | "XBUTTON2"
+        )
+    {
+        return KeyKind::Mouse;
+    }
+    KeyKind::Keyboard
+}
+
+
 /// Loads embedded application icon.
 pub fn create_icon() -> egui::IconData {
     const ICON_BYTES: &[u8] = include_bytes!("../../resources/sorahk.ico");
@@ -170,6 +200,24 @@ mod tests {
         assert_eq!(string_to_vk(""), None);
         assert_eq!(string_to_vk("F25"), None);
         assert_eq!(string_to_vk("ABC"), None);
+    }
+
+    #[test]
+    fn test_key_kind_classification() {
+        // 手柄: GAMEPAD 前缀 (快速捕获长名 / 摇杆方向)
+        assert_eq!(key_kind("GAMEPAD_20BC_5158_DEVC.57944"), KeyKind::Gamepad);
+        assert_eq!(key_kind("GAMEPAD_045E_RS_Left+RS_Down"), KeyKind::Gamepad);
+        assert_eq!(key_kind("gamepad_045e_ls_up"), KeyKind::Gamepad);
+        // 鼠标: 移动八向 / 滚动 / 按键
+        assert_eq!(key_kind("MOUSE_UP_LEFT"), KeyKind::Mouse);
+        assert_eq!(key_kind("SCROLL_DOWN"), KeyKind::Mouse);
+        assert_eq!(key_kind("MBUTTON"), KeyKind::Mouse);
+        assert_eq!(key_kind("XBUTTON1"), KeyKind::Mouse);
+        assert_eq!(key_kind("lbutton"), KeyKind::Mouse);
+        // 键盘: 其余
+        assert_eq!(key_kind("X"), KeyKind::Keyboard);
+        assert_eq!(key_kind("ESCAPE"), KeyKind::Keyboard);
+        assert_eq!(key_kind("CTRL+F6"), KeyKind::Keyboard);
     }
 
     #[test]

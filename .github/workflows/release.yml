@@ -1,0 +1,210 @@
+name: release
+
+# Only do the release on x.y.z tags.
+on:
+  push:
+    tags:
+    - "[0-9]+.[0-9]+.[0-9]+"
+
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: 'Tag to run the workflow on'
+        required: true
+        type: string
+
+# We need this to be able to create releases.
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Note: Release profile settings (strip, lto, codegen-units) are defined in Cargo.toml
+
+jobs:
+  # The create-release job runs purely to initialize the GitHub release itself,
+  # and names the release after the `x.y.z` tag that was pushed. It's separate
+  # from building the release so that we only create the release once.
+  create-release:
+    name: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Get the release version from the tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            version="${{ github.event.inputs.tags }}"
+          elif [ "${{ github.event_name }}" == "push" ] && [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            version="${{ github.ref_name }}"
+          else
+            version="$(grep -m1 -E "^version[[:space:]]*=[[:space:]]*\"[^\"]+\"" Cargo.toml | sed -E 's/^version[[:space:]]*=[[:space:]]*\"([^"]+)\"/\1/')"
+            if [ -z "$version" ]; then
+              echo "Failed to extract version from Cargo.toml" 1>&2
+              exit 1
+            fi
+          fi
+          echo "VERSION=$version" >> $GITHUB_ENV
+
+      - name: Show the version
+        run: |
+          echo "version is: $VERSION"
+
+      - name: Check that tag version and Cargo.toml version are the same
+        shell: bash
+        run: |
+          if ! grep -q -E "^version[[:space:]]*=[[:space:]]*\"$VERSION\"" Cargo.toml; then
+            echo "version does not match Cargo.toml" >&2
+            exit 1
+          fi
+
+      - name: Create GitHub release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create $VERSION --draft --verify-tag --title $VERSION
+
+    outputs:
+      version: ${{ env.VERSION }}
+
+  build-release:
+    name: build-release-${{ matrix.build }}
+    needs: ['create-release']
+    runs-on: ${{ matrix.os }}
+    env:
+      CARGO: cargo
+      TARGET_FLAGS:
+      TARGET_DIR: ./target
+      RUST_BACKTRACE: 1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - build: win-msvc
+          os: windows-latest
+          rust: stable
+          target: x86_64-pc-windows-msvc
+          avx2: false
+
+        - build: win-gnu
+          os: windows-latest
+          rust: stable-x86_64-gnu
+          target: x86_64-pc-windows-gnu
+          avx2: false
+
+        - build: win-msvc-avx2
+          os: windows-latest
+          rust: stable
+          target: x86_64-pc-windows-msvc
+          avx2: true
+
+        - build: win-gnu-avx2
+          os: windows-latest
+          rust: stable-x86_64-gnu
+          target: x86_64-pc-windows-gnu
+          avx2: true
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v5
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.rust }}
+        target: ${{ matrix.target }}
+
+    - name: Cache Cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry/index
+        key: release-${{ runner.os }}-${{ matrix.target }}-cargo-registry-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          release-${{ runner.os }}-${{ matrix.target }}-cargo-registry-
+          ${{ runner.os }}-${{ matrix.target }}-cargo-registry-
+
+    - name: Cache Cargo registry cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry/cache
+        key: release-${{ runner.os }}-${{ matrix.target }}-cargo-cache-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          release-${{ runner.os }}-${{ matrix.target }}-cargo-cache-
+          ${{ runner.os }}-${{ matrix.target }}-cargo-cache-
+
+    - name: Cache Cargo git dependencies
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: release-${{ runner.os }}-${{ matrix.target }}-cargo-git-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          release-${{ runner.os }}-${{ matrix.target }}-cargo-git-
+          ${{ runner.os }}-${{ matrix.target }}-cargo-git-
+
+    - name: Cache Cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: release-${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('Cargo.lock') }}-${{ hashFiles('**/*.rs') }}
+        restore-keys: |
+          release-${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('Cargo.lock') }}-
+          release-${{ runner.os }}-${{ matrix.target }}-cargo-build-
+          ${{ runner.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('Cargo.lock') }}-
+
+    - name: Set target variables
+      shell: bash
+      run: |
+        echo "TARGET_FLAGS=--target ${{ matrix.target }}" >> $GITHUB_ENV
+        echo "TARGET_DIR=./target/${{ matrix.target }}" >> $GITHUB_ENV
+        if [ "${{ matrix.avx2 }}" == "true" ]; then
+          echo "RUSTFLAGS=-C target-feature=+avx2" >> $GITHUB_ENV
+          echo "AVX2_SUFFIX=-avx2" >> $GITHUB_ENV
+        else
+          echo "AVX2_SUFFIX=" >> $GITHUB_ENV
+        fi
+
+    - name: Build release binary
+      shell: bash
+      run: |
+        if [ "${{ matrix.avx2 }}" == "true" ]; then
+          echo "Building AVX2-optimized release for target: ${{ matrix.target }}"
+        else
+          echo "Building standard release for target: ${{ matrix.target }}"
+        fi
+        ${{ env.CARGO }} build --release ${{ env.TARGET_FLAGS }}
+        bin="target/${{ matrix.target }}/release/sorahk.exe"
+        echo "BIN=$bin" >> $GITHUB_ENV
+        # Display binary size
+        ls -lh "$bin"
+
+    - name: Determine archive name
+      shell: bash
+      run: |
+        version="${{ needs.create-release.outputs.version }}"
+        echo "ARCHIVE=sorahk${{ env.AVX2_SUFFIX }}-$version-${{ matrix.target }}" >> $GITHUB_ENV
+
+    - name: Creating directory for archive
+      shell: bash
+      run: |
+        mkdir -p "$ARCHIVE"
+        cp "$BIN" "$ARCHIVE"/
+        cp {CHANGELOG.md,README.md,Config.toml,LICENSE} "$ARCHIVE"
+
+    - name: Build archive
+      shell: bash
+      run: |
+        # Create zip with maximum compression
+        7z a -tzip -mx=9 "$ARCHIVE.zip" "$ARCHIVE"
+        # Generate SHA256 checksum
+        certutil -hashfile "$ARCHIVE.zip" SHA256 > "$ARCHIVE.zip.sha256"
+        # Display archive info
+        ls -lh "$ARCHIVE.zip"
+        echo "ASSET=$ARCHIVE.zip" >> $GITHUB_ENV
+        echo "ASSET_SUM=$ARCHIVE.zip.sha256" >> $GITHUB_ENV
+
+    - name: Upload release archive
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      shell: bash
+      run: |
+        version="${{ needs.create-release.outputs.version }}"
+        echo "Uploading release assets for version: $version"
+        gh release upload "$version" ${{ env.ASSET }} ${{ env.ASSET_SUM }}

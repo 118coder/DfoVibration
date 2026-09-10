@@ -54,7 +54,29 @@ impl MouseDirectionDialog {
 
         let mut should_close = false;
 
-        Theme::new(dark_mode).modal_window(ctx, "mouse_direction_dialog", [380.0, 380.0], bg_color, |ui| {
+        /* 内联 egui::Window 样板 (照 about_dialog 同款, 已验证渲染正常)。
+         * 勿改回 Theme::modal_window 构建器 —— 该构建器有点状塌缩 bug (HANDOFF 第 17 条,
+         * 本弹窗 2026-09-10 用户实测复现: 弹窗塌成 ~24px 小圆点), 修复前禁用。 */
+        egui::Window::new("mouse_direction_dialog")
+            .id(egui::Id::new("mouse_direction_dialog_window"))
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .fixed_size([380.0, 380.0])
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .frame(
+                egui::Frame::window(&ctx.style())
+                    .fill(bg_color)
+                    .corner_radius(egui::CornerRadius::same(16))
+                    .stroke(egui::Stroke::NONE)
+                    .shadow(egui::epaint::Shadow {
+                        offset: [0, 8],
+                        blur: 24,
+                        spread: 0,
+                        color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
+                    }),
+            )
+            .show(ctx, |ui| {
                 ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
                     ui.add_space(20.0);
 

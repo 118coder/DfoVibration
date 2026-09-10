@@ -205,6 +205,38 @@ pub fn keycap(ui: &mut egui::Ui, th: &Theme, text: &str) -> egui::Response {
         .response
 }
 
+/// 按设备类型上色的键帽 (★v20.9.1 描边式: 中性键帽底 + 彩色细描边 + 彩色字)。
+/// 紫=手柄 / 橙=鼠标 / 键盘=完全原样式; 让用户一眼分清触发/目标来自哪种设备,
+/// 同时保留键帽本身的白/黑质感 (彩色块填充风格已否决, 勿回退)。
+pub fn keycap_typed(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    text: &str,
+    kind: crate::gui::utils::KeyKind,
+) -> egui::Response {
+    use crate::gui::utils::KeyKind;
+    let fg = match kind {
+        KeyKind::Gamepad => th.gamepad_fg,
+        KeyKind::Mouse => th.mouse_fg,
+        KeyKind::Keyboard => return keycap(ui, th, text),
+    };
+    egui::Frame::NONE
+        .fill(th.extreme)
+        .stroke(egui::Stroke::new(1.3, fg.gamma_multiply(0.8)))
+        .shadow(egui::epaint::Shadow {
+            offset: [0, 1],
+            blur: 0,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(if th.dark { 110 } else { 40 }),
+        })
+        .corner_radius(egui::CornerRadius::same(6))
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(text).size(12.0).strong().color(fg));
+        })
+        .response
+}
+
 /// 状态点 (呼吸动画, 主动请求重绘防止失焦冻结)。
 pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32, pulsing: bool, radius: f32) {
     let (rect, _) = ui.allocate_exact_size(

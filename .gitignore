@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+/dist/
+*.obj
+*.exe
+*.pdb
+*.zip
+*.bak
+
+# 运行时生成的分享/导出文件 (按需手动分享, 不跟踪)
+job_export_*.toml
+vibration_export_*.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 离屏调试工具与临时产物
+work/_patch_*.py

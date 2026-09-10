@@ -23,7 +23,7 @@ mod classic_mode;
 mod theme;
 mod types;
 mod widgets;
-mod utils;
+pub(crate) mod utils;
 
 use crate::config::AppConfig;
 use crate::gui::theme::Theme;

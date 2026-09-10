@@ -81,6 +81,11 @@ pub struct Theme {
     pub trigger_bg: egui::Color32,
     pub target_fg: egui::Color32,
     pub target_bg: egui::Color32,
+    // ── 键帽设备类型色 (连发映射: 紫=手柄 / 橙=鼠标; 键盘保持中性键帽) ──
+    pub gamepad_fg: egui::Color32,
+    pub gamepad_bg: egui::Color32,
+    pub mouse_fg: egui::Color32,
+    pub mouse_bg: egui::Color32,
     // ── 按钮档位 ──
     pub btn_primary: egui::Color32,
     pub btn_secondary: egui::Color32,
@@ -138,6 +143,10 @@ impl Theme {
             trigger_bg: egui::Color32::from_rgba_unmultiplied(252, 211, 77, 24),
             target_fg: egui::Color32::from_rgb(125, 211, 252),  // sky-300
             target_bg: egui::Color32::from_rgba_unmultiplied(125, 211, 252, 22),
+            gamepad_fg: egui::Color32::from_rgb(196, 181, 253),              // #C4B5FD 紫
+            gamepad_bg: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 18),
+            mouse_fg: egui::Color32::from_rgb(253, 186, 116),                // orange-300
+            mouse_bg: egui::Color32::from_rgba_unmultiplied(251, 146, 60, 16),
             btn_primary: egui::Color32::from_rgb(124, 58, 237), // #7C3AED (白字 5.9:1)
             btn_secondary: egui::Color32::from_rgb(44, 42, 72), // faint
             btn_secondary_text: egui::Color32::from_rgb(214, 210, 232),
@@ -179,6 +188,10 @@ impl Theme {
             trigger_bg: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 42),
             target_fg: egui::Color32::from_rgb(3, 105, 161),   // sky-700
             target_bg: egui::Color32::from_rgba_unmultiplied(56, 189, 248, 40),
+            gamepad_fg: egui::Color32::from_rgb(63, 69, 208),               // #3F45D0 靛蓝
+            gamepad_bg: egui::Color32::from_rgba_unmultiplied(79, 85, 232, 14),
+            mouse_fg: egui::Color32::from_rgb(194, 65, 12),                 // orange-700
+            mouse_bg: egui::Color32::from_rgba_unmultiplied(234, 88, 12, 14),
             btn_primary: egui::Color32::from_rgb(79, 85, 232), // #4F55E8 (白字 5.2:1)
             btn_secondary: egui::Color32::from_rgb(231, 233, 238),
             btn_secondary_text: egui::Color32::from_rgb(74, 80, 96),
@@ -390,9 +403,11 @@ impl Theme {
 
     // ───────────────────────── 弹窗脚手架 ─────────────────────────
 
-    /// 模态弹窗脚手架: 居中 / 无边框 / 固定尺寸 / 统一圆角投影。
-    /// 填充色由调用方传入 (个别弹窗有特调底色), 其余 chrome 全部归这里管。
-    /// 新弹窗一律用这个, 不要再手写 egui::Window + Frame 样板。
+    /// ⛔ 禁用中: 此构建器有点状塌缩 bug —— 经它渲染的弹窗会塌成 ~24px 小圆点
+    /// (HANDOFF 第 17 条, 鼠标方向/滚动弹窗 2026-09-10 用户实测复现; 四个内联回退的
+    /// 弹窗 = 设置/设备/关于/关闭 全部正常)。新弹窗一律照 about_dialog.rs 的
+    /// 内联 egui::Window 样板手写, 修清根因前不要调用本函数。
+    #[allow(dead_code)]
     pub fn modal_window(
         &self,
         ctx: &egui::Context,

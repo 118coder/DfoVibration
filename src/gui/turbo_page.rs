@@ -3,6 +3,7 @@
 use crate::gui::SorahkGui;
 use crate::gui::about_dialog::render_about_dialog;
 use crate::gui::theme::{self, Theme, truncate_chars};
+use crate::gui::utils;
 use crate::gui::widgets;
 use crate::gui::types::{KeyCaptureMode, Page};
 use crate::state::NotificationEvent;
@@ -660,7 +661,8 @@ impl SorahkGui {
                 // 触发键
                 ui.horizontal(|ui| {
                     ui.label(th.weak("触发键"));
-                    widgets::keycap(ui, &th, &trigger);
+                    /* ★v20.9: 键帽按设备类型上色 (紫=手柄 / 橙=鼠标 / 键盘=中性) */
+                    widgets::keycap_typed(ui, &th, &trigger, utils::key_kind(&trigger));
                     let capturing = matches!(
                         self.key_capture_mode,
                         KeyCaptureMode::MappingTrigger(i) if i == idx
@@ -680,10 +682,15 @@ impl SorahkGui {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("目标键"));
                     for (i, t) in targets.iter().enumerate() {
-                        /* ★v20.5: 长名截断 35 字符 (悬停看全名), 行不溢出 */
+                        /* ★v20.5: 长名截断 35 字符 (悬停看全名), 行不溢出
+                         * ★v20.9: chip 按设备类型上色 (键盘键保持天蓝目标色) */
                         let short = truncate_chars(t, 35);
-                        let chip =
-                            th.badge_clickable(ui, &format!("{}  ✕", short), th.target_fg, th.target_bg);
+                        let (fg, bg) = match utils::key_kind(t) {
+                            utils::KeyKind::Gamepad => (th.gamepad_fg, th.gamepad_bg),
+                            utils::KeyKind::Mouse => (th.mouse_fg, th.mouse_bg),
+                            utils::KeyKind::Keyboard => (th.target_fg, th.target_bg),
+                        };
+                        let chip = th.badge_clickable(ui, &format!("{}  ✕", short), fg, bg);
                         if chip.clicked() {
                             remove_target = Some(i);
                         }
@@ -1125,9 +1132,11 @@ fn render_mapping_row(
                 ui.set_min_width(ui.available_width());
                 ui.horizontal(|ui| {
                     // 触发键帽 (多键拆分; ★v20.5 长名截断 20 字符防溢出, 悬停看全名 —— 老宿主口径)
+                    // ★v20.9: 按设备类型上色 (紫=手柄 / 橙=鼠标 / 键盘=中性)
                     for part in trigger.split('+') {
                         let short = truncate_chars(part, 20);
-                        widgets::keycap(ui, th, &short).on_hover_text(part.to_string());
+                        widgets::keycap_typed(ui, th, &short, utils::key_kind(part))
+                            .on_hover_text(part.to_string());
                     }
                     // 指向箭头
                     ui.label(egui::RichText::new("→").size(12.0).color(th.hint));
@@ -1137,7 +1146,8 @@ fn render_mapping_row(
                     } else {
                         for t in targets {
                             let short = truncate_chars(t, 35);
-                            widgets::keycap(ui, th, &short).on_hover_text(t.clone());
+                            widgets::keycap_typed(ui, th, &short, utils::key_kind(t))
+                                .on_hover_text(t.clone());
                         }
                     }
 

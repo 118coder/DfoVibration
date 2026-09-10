@@ -1281,11 +1281,12 @@ impl SorahkGui {
                                                             ui.add_space(4.0);
                                                             // Double-tap toggle (DNF run on first press)
                                                             let double_tap_enabled = mapping.double_tap_enabled;
+                                                            let run_on = mapping.run_enabled;
                                                             let double_tap_color = if double_tap_enabled {
                                                                 Theme::new(self.dark_mode).good
                                                             } else { Theme::new(self.dark_mode).hint };
                                                             let double_tap_icon =
-                                                                if double_tap_enabled { "2× 双击" } else { "1× 双击" };
+                                                                if double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
                                                             let double_tap_btn = egui::Button::new(
                                                                 egui::RichText::new(double_tap_icon)
                                                                     .color(egui::Color32::WHITE)
@@ -1294,26 +1295,33 @@ impl SorahkGui {
                                                             .fill(double_tap_color)
                                                             .corner_radius(8.0)
                                                             .sense(egui::Sense::click());
-                                                            let double_tap_hover = if double_tap_enabled {
+                                                            let double_tap_hover = if run_on {
+                                                                "已勾选「重推奔跑」, 两者互斥 —— 先关掉重推奔跑"
+                                                            } else if double_tap_enabled {
                                                                 self.translations.double_tap_on_hover()
                                                             } else {
                                                                 self.translations.double_tap_off_hover()
                                                             };
+                                                            /* ★v21.5: 重推奔跑开启时此项禁用 (互斥) */
                                                             if ui
-                                                                .add_sized([96.0, 32.0], double_tap_btn)
-                                                                .on_hover_text(double_tap_hover)
+                                                                .add_enabled_ui(!run_on, |ui| {
+                                                                    ui.add_sized([96.0, 32.0], double_tap_btn)
+                                                                        .on_hover_text(double_tap_hover)
+                                                                })
+                                                                .inner
                                                                 .clicked()
                                                             {
                                                                 mapping.double_tap_enabled = !mapping.double_tap_enabled;
                                                             }
                                                             ui.add_space(4.0);
-                                                            // ★v21.0 摇杆三区奔跑开关 (与连发/双击互斥, 勾选后二者失效)
+                                                            // ★v21.0 重推奔跑开关 (与连发/简易奔跑互斥, 勾选后二者失效)
                                                             let run_enabled = mapping.run_enabled;
+                                                            let dtap_on = mapping.double_tap_enabled;
                                                             let run_color = if run_enabled {
                                                                 Theme::new(self.dark_mode).good
                                                             } else { Theme::new(self.dark_mode).hint };
                                                             let run_icon =
-                                                                if run_enabled { "🏃 奔跑:开" } else { "🏃 奔跑" };
+                                                                if run_enabled { "🏃 重推奔跑:开" } else { "🏃 重推奔跑" };
                                                             let run_btn = egui::Button::new(
                                                                 egui::RichText::new(run_icon)
                                                                     .color(egui::Color32::WHITE)
@@ -1322,14 +1330,20 @@ impl SorahkGui {
                                                             .fill(run_color)
                                                             .corner_radius(8.0)
                                                             .sense(egui::Sense::click());
-                                                            let run_hover = if run_enabled {
-                                                                "摇杆三区奔跑: 开\n轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (双击→奔跑)\n勾选后本条映射的 连发/1×双击 不生效\n重推阈值与二次敲击间隔在连发页编辑面板调整\n点击关闭"
+                                                            let run_hover = if dtap_on {
+                                                                "已勾选「简易奔跑」, 两者互斥 —— 先关掉简易奔跑"
+                                                            } else if run_enabled {
+                                                                "重推奔跑: 开\n轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (双击→奔跑)\n勾选后本条映射的 连发/简易奔跑 不生效\n重推阈值与二次敲击间隔在连发页编辑面板调整\n点击关闭"
                                                             } else {
-                                                                "摇杆三区奔跑: 关\n开启后: 轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (游戏判定双击→奔跑)\n仅对摇杆方向映射有效; 勾选后本条的 连发/1×双击 不生效"
+                                                                "重推奔跑: 关\n开启后: 轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (游戏判定双击→奔跑)\n仅对摇杆方向映射有效; 勾选后本条的 连发/简易奔跑 不生效"
                                                             };
+                                                            /* ★v21.5: 简易奔跑开启时此项禁用 (互斥) */
                                                             if ui
-                                                                .add_sized([96.0, 32.0], run_btn)
-                                                                .on_hover_text(run_hover)
+                                                                .add_enabled_ui(!dtap_on, |ui| {
+                                                                    ui.add_sized([96.0, 32.0], run_btn)
+                                                                        .on_hover_text(run_hover)
+                                                                })
+                                                                .inner
                                                                 .clicked()
                                                             {
                                                                 mapping.run_enabled = !mapping.run_enabled;
@@ -1763,7 +1777,7 @@ impl SorahkGui {
                                                             Theme::new(self.dark_mode).good
                                                         } else { Theme::new(self.dark_mode).hint };
                                                         let new_double_tap_icon =
-                                                            if new_double_tap_enabled { "2× 双击" } else { "1× 双击" };
+                                                            if new_double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
                                                         let new_double_tap_btn = egui::Button::new(
                                                             egui::RichText::new(new_double_tap_icon)
                                                                 .color(egui::Color32::WHITE)
@@ -2346,7 +2360,7 @@ impl SorahkGui {
         if let Some(input_name) = captured_input {
             // 捕获完成 → 进入待确认状态 (不立即写映射, 防误操作);
             // 用户在槽位面板点「确认应用」才落盘生效, 「取消」直接丢弃。
-            // ★v20.3: 待确认项带 连发/1×双击 勾选 (默认 连发开 = 沿用旧 set_slot_trigger 行为)
+            // ★v20.3: 待确认项带 连发/简易奔跑 勾选 (默认 连发开 = 沿用旧 set_slot_trigger 行为)
             self.quick_gamepad_pending = Some(crate::gui::QuickGamepadPending {
                 slot_id,
                 is_trigger,

@@ -425,7 +425,7 @@ pub enum MouseButton {
 pub enum InputEvent {
     Pressed(InputDevice),
     Released(InputDevice),
-    /// ★v21.0 摇杆三区奔跑: 轴值从轻推区跳入重推区时派发 (仅勾选【奔跑】的映射)。
+    /// ★v21.0 重推奔跑: 轴值从轻推区跳入重推区时派发 (仅勾选【奔跑】的映射)。
     /// 语义 = "模拟松开再按下" 的第二次敲击 → 游戏判定双击 → 奔跑。
     /// 处理方 (keyboard.rs) 负责补足首击时长 → 松开 → 停双击间隔 → 再按住。
     RunTap(InputDevice),
@@ -486,7 +486,7 @@ pub struct InputMappingInfo {
     pub double_tap_enabled: bool,
     /// Gap between the two simulated taps in milliseconds
     pub double_tap_gap_ms: u64,
-    /// ★v21.0 摇杆三区奔跑 (勾选后 turbo/double_tap 被压制, 改走"按住+重推补敲"语义)
+    /// ★v21.0 重推奔跑 (勾选后 turbo/double_tap 被压制, 改走"按住+重推补敲"语义)
     pub run_enabled: bool,
     /// 重推阈值: 满量程 32768 的百分比 (50-95)
     pub run_threshold: u8,
@@ -2727,7 +2727,7 @@ impl AppState {
             };
 
             // Create input mapping
-            /* ★v21.0 奔跑互斥: 勾选【奔跑】时压制 连发/1×双击 —— 奔跑语义 =
+            /* ★v21.0 奔跑互斥: 勾选【奔跑】时压制 连发/简易奔跑 —— 奔跑语义 =
              * 按住(轻推走) + 重推补敲(跑), 与连发的循环按压、双击的首按模拟都冲突 */
             input_mappings.insert(
                 trigger_device.clone(),

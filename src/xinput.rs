@@ -233,6 +233,14 @@ struct XInputDeviceState {
     run_thr: [i16; 8],
     /// ★v21.0 各方向上次 RunTap 派发时刻 (200ms 冷却防阈值附近抖动连发松按)
     run_tap_last: [std::time::Instant; 8],
+    /// ★v21.3 急推判定: 各方向「二次敲击间隔」缓存 (ms, 0=无奔跑映射)。
+    /// 双重用途: 双敲序列的间隔 + "瞬间推入"的判定窗口 —— 窗口内推进量
+    /// 达到 (重推阈值-死区) 的一半才算急推, 缓慢推进过线继续走路。
+    run_gap_ms: [u16; 8],
+    /// ★v21.3 轴值历史环形缓冲 (32 帧 × 8 方向), 供急推判定回看窗口内推进量
+    axis_hist: [[i16; 8]; 32],
+    axis_hist_t: [std::time::Instant; 32],
+    axis_hist_len: u8,
 }
 
 /// XInput handler for Xbox controller input.
@@ -278,6 +286,10 @@ impl XInputHandler {
                         stick_zones: [0; 8],
                         run_thr: [0; 8],
                         run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
+run_gap_ms: [0; 8],
+axis_hist: [[0; 8]; 32],
+axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
+axis_hist_len: 0,
                     });
 
                     // Register device display info
@@ -368,7 +380,9 @@ impl XInputHandler {
                 device_state.last_input_bits = 0;
                 /* ★v21.0: 奔跑阈值缓存与三区状态同步失效 (下帧按新配置重建) */
                 device_state.run_thr = [0; 8];
+                device_state.run_gap_ms = [0; 8];
                 device_state.stick_zones = [0; 8];
+                device_state.axis_hist_len = 0;
             }
         }
 
@@ -456,6 +470,10 @@ impl XInputHandler {
                             stick_zones: [0; 8],
                             run_thr: [0; 8],
                             run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
+run_gap_ms: [0; 8],
+axis_hist: [[0; 8]; 32],
+axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
+axis_hist_len: 0,
                         });
                     }
                 }
@@ -606,6 +624,7 @@ impl XInputHandler {
                     && m.run_enabled
                 {
                     device_state.run_thr[i] = ((32767i32 * m.run_threshold as i32) / 100) as i16;
+                    device_state.run_gap_ms[i] = m.double_tap_gap_ms.clamp(20, 200) as u16;
                 }
             }
         }
@@ -997,6 +1016,9 @@ impl XInputHandler {
 
     /// ★v21.0 摇杆三区奔跑: 轻推区(死区~重推阈值)按下方向键=走;
     /// 跳入重推区派发 RunTap (松开→再按下) → 游戏判定双击 → 奔跑。
+    /// ★v21.3 急推判定 (用户定案): 「再检测」只认**瞬间推入** ——
+    /// 缓慢推进越过重推线 = 继续走路 (玩家只是想走深一点);
+    /// 在「二次敲击间隔」窗口内从轻推区猛冲过线 = 明确的奔跑意图, 触发双击。
     /// 仅对勾选【奔跑】的摇杆方向映射生效 (run_thr 由映射表缓存, 0=无)。
     #[inline]
     fn detect_run_taps(
@@ -1007,6 +1029,8 @@ impl XInputHandler {
         const RUN_TAP_COOLDOWN_MS: u64 = 200;
         let now = std::time::Instant::now();
         let vid = device_state.vid_pid.0;
+        /* 先用历史帧判定 (历史不含当前帧), 再把当前帧压入缓冲 */
+        let hist_len = device_state.axis_hist_len as usize;
         for i in 0..8 {
             let v = axis_mag[i];
             let thr = device_state.run_thr[i];
@@ -1052,22 +1076,66 @@ impl XInputHandler {
             };
             device_state.stick_zones[i] = new_zone;
 
-            /* 轻推 → 重推跳变: 派发 RunTap (松开→再按下), 冷却防抖 */
-            if old_zone == 1 && new_zone == 2
-                && now.duration_since(device_state.run_tap_last[i]).as_millis() as u64
-                    >= RUN_TAP_COOLDOWN_MS
-            {
-                device_state.run_tap_last[i] = now;
-                if let Some(pool) = pool {
-                    pool.dispatch(crate::state::InputEvent::RunTap(
-                        crate::state::InputDevice::XInputCombo {
-                            device_type: crate::state::DeviceType::Gamepad(vid),
-                            button_ids: vec![0x10 + i as u32],
-                        },
-                    ));
+            /* 越线 (轻推→重推; 0→2 一帧跨两区 = 极端急推同判): 冷却 + 急推双闸 */
+            let crossed = (old_zone == 1 || old_zone == 0) && new_zone == 2 && thr != 0;
+            let cooldown_ok = now.duration_since(device_state.run_tap_last[i]).as_millis() as u64
+                >= RUN_TAP_COOLDOWN_MS;
+            if crossed && cooldown_ok {
+                let gap_ms = device_state.run_gap_ms[i] as u64;
+                let cutoff = now - std::time::Duration::from_millis(gap_ms);
+                let v_old = Self::axis_at(device_state, i, cutoff, hist_len);
+                /* 急推 = 窗口内推进量 ≥ (阈值-死区) 的一半; 缓推过线不触发 (保持走路) */
+                if Self::is_sudden_surge(v, v_old, thr) {
+                    device_state.run_tap_last[i] = now;
+                    if let Some(pool) = pool {
+                        pool.dispatch(crate::state::InputEvent::RunTap(
+                            crate::state::InputDevice::XInputCombo {
+                                device_type: crate::state::DeviceType::Gamepad(vid),
+                                button_ids: vec![0x10 + i as u32],
+                            },
+                        ));
+                    }
                 }
             }
         }
+        /* 当前帧压入环形缓冲 */
+        let slot = if hist_len < 32 { hist_len } else { 0 };
+        device_state.axis_hist[slot] = *axis_mag;
+        device_state.axis_hist_t[slot] = now;
+        if hist_len < 32 {
+            device_state.axis_hist_len = (hist_len + 1) as u8;
+        }
+    }
+
+    /// 回看历史: 取时刻 ≤ cutoff 的最新一帧的轴值; 历史不足时取最旧帧。
+    fn axis_at(device_state: &XInputDeviceState, i: usize, cutoff: std::time::Instant, hist_len: usize) -> i16 {
+        if hist_len == 0 {
+            return 0;
+        }
+        let mut best: Option<usize> = None;
+        for k in 0..hist_len {
+            if device_state.axis_hist_t[k] <= cutoff {
+                match best {
+                    None => best = Some(k),
+                    Some(b) if device_state.axis_hist_t[k] > device_state.axis_hist_t[b] => {
+                        best = Some(k)
+                    }
+                    _ => {}
+                }
+            }
+        }
+        match best {
+            Some(k) => device_state.axis_hist[k][i],
+            None => device_state.axis_hist[0][i], /* 历史跨度 < 窗口: 用最旧帧 */
+        }
+    }
+
+    /// 急推判定 (纯函数): 窗口内推进量 ≥ (重推阈值-死区) 的一半。
+    /// 即玩家把"半个重推区间"的行程压缩在二次敲击间隔内完成 = 瞬间推入。
+    fn is_sudden_surge(v_now: i16, v_old: i16, thr: i16) -> bool {
+        let surge = v_now as i32 - v_old as i32;
+        let span = thr as i32 - STICK_DEADZONE as i32;
+        surge > 0 && surge * 2 >= span
     }
 
     /// Checks if the given inputs form a diagonal direction.
@@ -1547,6 +1615,10 @@ mod tests {
             stick_zones: [0; 8],
             run_thr,
             run_tap_last: std::array::from_fn(|_| std::time::Instant::now()),
+run_gap_ms: [0; 8],
+axis_hist: [[0; 8]; 32],
+axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
+axis_hist_len: 0,
         }
     }
 
@@ -1607,6 +1679,120 @@ mod tests {
             XInputHandler::detect_run_taps(&mut ds, &m, None);
             assert_eq!(ds.stick_zones[0], expect[i], "step {i}");
         }
+    }
+
+    /// mock 事件池: 记录派发的事件供断言
+    struct MockPool {
+        events: std::sync::Mutex<Vec<crate::state::InputEvent>>,
+    }
+    impl crate::state::EventDispatcher for MockPool {
+        fn dispatch(&self, event: crate::state::InputEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+        fn clear_cache(&self) {}
+    }
+
+    /// 构造急推判定测试态: 方向 0 配奔跑 (阈值 80%, 间隔 gap_ms), 其余无
+    fn make_surge_state(gap_ms: u16) -> XInputDeviceState {
+        let thr = ((32767i32 * 80) / 100) as i16;
+        let mut ds = make_device_state([thr, 0, 0, 0, 0, 0, 0, 0]);
+        ds.run_gap_ms = [gap_ms, 0, 0, 0, 0, 0, 0, 0];
+        ds.run_tap_last[0] = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        ds
+    }
+
+    fn feed_hist(ds: &mut XInputDeviceState, ages_ms: &[u64], vals: &[i16]) {
+        let now = std::time::Instant::now();
+        for (k, (&age, &v)) in ages_ms.iter().zip(vals.iter()).enumerate() {
+            ds.axis_hist[k][0] = v;
+            ds.axis_hist_t[k] = now - std::time::Duration::from_millis(age);
+        }
+        ds.axis_hist_len = ages_ms.len() as u8;
+    }
+
+    #[test]
+    fn test_is_sudden_surge_threshold() {
+        let thr = 26213i16;
+        let span = (thr as i32 - STICK_DEADZONE as i32) as i32; // 18364
+        // 窗口内推进 ≥ 区间一半 → 急推
+        assert!(XInputHandler::is_sudden_surge(27000, 27000 - (span / 2) as i16, thr));
+        // 差一点 → 缓推 (surge = span/2 - 1)
+        assert!(!XInputHandler::is_sudden_surge(
+            27000,
+            27000 - ((span / 2) as i16 - 1),
+            thr
+        ));
+        // 负增量 (回摇) 永不触发
+        assert!(!XInputHandler::is_sudden_surge(10000, 20000, thr));
+    }
+
+    #[test]
+    fn test_slow_push_crossing_does_not_trigger() {
+        // 缓推: 真实帧距 (~8ms) 下轴值缓慢爬升 (17000→27000 用了 ~72ms),
+        // 越线帧 (zone 1→2) 的 50ms 窗口内推进量 6000 < 区间一半 → 走路, 不派发
+        let mut ds = make_surge_state(50);
+        feed_hist(&mut ds, &[80, 72, 64, 56, 48, 40, 32, 24, 16, 8],
+                  &[14000, 17000, 18000, 21000, 22000, 23000, 24000, 25000, 26000, 26200]);
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        // 帧1: 轻推区深处 (zone 0→1)
+        let mag1 = [26200i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &mag1, Some(&pool));
+        // 帧2: 越线 (zone 1→2 → 急推判定)
+        let mag2 = [27000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &mag2, Some(&pool));
+        assert_eq!(ds.stick_zones[0], 2, "缓推也进入重推区 (走路)");
+        assert!(
+            mock.events.lock().unwrap().is_empty(),
+            "缓推过线不得派发 RunTap"
+        );
+    }
+
+    #[test]
+    fn test_sudden_push_crossing_triggers() {
+        // 急推: 玩家一直轻推 (9000 ≈ 27%), 最后 8ms 内猛冲到 27000 —— 50ms 窗口内
+        // 推进量 18000 ≥ 区间一半 → 派发 RunTap (双击 → 奔跑)
+        let mut ds = make_surge_state(50);
+        feed_hist(&mut ds, &[40, 32, 24, 16, 8], &[9000, 9000, 9000, 9000, 9000]);
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        // 帧1: 轻推 (zone 0→1, 正常按下)
+        let mag1 = [9000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &mag1, Some(&pool));
+        // 帧2: 猛冲越线 (zone 1→2 → 急推判定)
+        let mag2 = [27000i16; 8];
+        XInputHandler::detect_run_taps(&mut ds, &mag2, Some(&pool));
+        assert_eq!(ds.stick_zones[0], 2);
+        let events = mock.events.lock().unwrap();
+        assert_eq!(events.len(), 1, "急推过线应派发一次 RunTap");
+        match &events[0] {
+            crate::state::InputEvent::RunTap(crate::state::InputDevice::XInputCombo {
+                button_ids,
+                ..
+            }) => assert_eq!(button_ids, &[0x10], "应派发给左摇杆右方向"),
+            other => panic!("unexpected event: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_zero_gap_direction_never_triggers() {
+        // 无奔跑映射的方向 (run_gap_ms=0): 过线只进区, 永不派发
+        let mut ds = make_surge_state(50);
+        ds.run_gap_ms = [0; 8];
+        ds.run_tap_last[1] = std::time::Instant::now() - std::time::Duration::from_secs(1);
+        feed_hist(&mut ds, &[60], &[9000]);
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut mag = [0i16; 8];
+        mag[1] = 30000; // 方向 1 无映射 (run_thr=0)
+        XInputHandler::detect_run_taps(&mut ds, &mag, Some(&pool));
+        assert!(mock.events.lock().unwrap().is_empty());
     }
 
     #[test]

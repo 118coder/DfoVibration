@@ -512,7 +512,7 @@ impl SorahkGui {
                         turbo,
                         &note,
                         &mut |ui| {
-                            /* 方向/滚动/连发/1×双击 全部收在「编辑」面板内 (v20.4 用户定稿:
+                            /* 方向/滚动/连发/简易奔跑 全部收在「编辑」面板内 (v20.4 用户定稿:
                              * 不往静态行塞按钮); 点编辑即可配齐 */
                             if ui.add(th.secondary_button("编辑")).clicked() {
                                 self.begin_mapping_edit(idx);
@@ -627,8 +627,10 @@ impl SorahkGui {
         let mut interval = mapping.interval.unwrap_or(default_interval) as f64;
         let mut duration = mapping.event_duration.unwrap_or(default_duration) as f64;
         let mut turbo = mapping.turbo_enabled;
-        let mut double_tap = mapping.double_tap_enabled;
-        /* ★v21.0 奔跑行局部副本 (二次敲击间隔与 1×双击共用 double_tap_gap_ms) */
+        /* ★v21.5 简易奔跑 ↔ 重推奔跑互斥: 数据双真时重推奔跑优先 (引擎侧本就压制
+         * 简易奔跑), 局部副本先按互斥取, 避免两项同时勾选后 UI 双双灰死 */
+        let mut double_tap = mapping.double_tap_enabled && !mapping.run_enabled;
+        /* ★v21.0 奔跑行局部副本 (二次敲击间隔与 简易奔跑共用 double_tap_gap_ms) */
         let mut run_enabled = mapping.run_enabled;
         let mut run_recheck = mapping.run_recheck;
         let mut run_threshold = mapping.run_threshold as f32;
@@ -641,6 +643,10 @@ impl SorahkGui {
             100.0
         };
         let mut note = mapping.note.clone();
+        /* ★v21.5 互斥自愈: 历史数据双真时清掉简易奔跑 (重推奔跑优先), 防灰死锁 */
+        if mapping.double_tap_enabled && mapping.run_enabled {
+            self.config.mappings[idx].double_tap_enabled = false;
+        }
         let mut remove_target: Option<usize> = None;
         let mut request_delete = false;
 
@@ -658,11 +664,6 @@ impl SorahkGui {
                             .strong()
                             .color(th.heading),
                     );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.add(th.danger_button("删除该映射")).clicked() {
-                            request_delete = true;
-                        }
-                    });
                 });
                 ui.add_space(theme::SP_S);
 
@@ -746,16 +747,21 @@ impl SorahkGui {
                         self.config.mappings[idx].turbo_enabled = turbo;
                     }
                     ui.add_space(theme::SP_L);
-                    /* ★v20.3: 1×双击补齐到连发页 (原只在设置弹窗有) */
-                    if ui
-                        .checkbox(&mut double_tap, "1× 双击")
-                        .on_hover_text(
-                            "首按自动补一次双击 (DNF 跑步用); 与设置弹窗里的「1×双击」是同一开关",
-                        )
-                        .changed()
-                    {
-                        self.config.mappings[idx].double_tap_enabled = double_tap;
-                    }
+                    /* ★v20.3: 简易奔跑补齐到连发页 (原只在设置弹窗有)
+                     * ★v21.5: 与重推奔跑互斥 —— 重推奔跑勾选时此项灰掉 (不允许勾选) */
+                    ui.add_enabled_ui(!run_enabled, |ui| {
+                        let resp = ui
+                            .checkbox(&mut double_tap, "简易奔跑")
+                            .on_hover_text(if run_enabled {
+                                "已勾选「重推奔跑」, 两者互斥 —— 取消重推奔跑后可勾选"
+                            } else {
+                                "按一次自动补一次敲击 (DNF 简易双击跑, 键盘/手柄键均可); \
+                                 与设置弹窗里的「简易奔跑」是同一开关"
+                            });
+                        if resp.changed() {
+                            self.config.mappings[idx].double_tap_enabled = double_tap;
+                        }
+                    });
                 });
                 ui.add_space(theme::SP_S);
 
@@ -795,22 +801,26 @@ impl SorahkGui {
                 });
                 ui.add_space(theme::SP_S);
 
-                /* ★v21.0 摇杆三区奔跑: 轻推=走(方向键按住) / 推过重推阈值=自动补一次
-                 * 松开再按下 (游戏判定双击→奔跑)。勾选后本条的 连发/1×双击 不生效。 */
+                /* ★v21.0 重推奔跑: 轻推=走(方向键按住) / 推过重推阈值=自动补一次
+                 * 松开再按下 (游戏判定双击→奔跑)。勾选后本条的 连发/简易奔跑 不生效。 */
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(th.weak("奔跑"));
-                    if ui
-                        .checkbox(&mut run_enabled, "")
-                        .on_hover_text(
-                            "摇杆三区奔跑 (仅摇杆方向映射有效):\n\
-                             轻推摇杆 = 方向键按住 (走路)\n\
-                             推过「重推阈值」= 自动补一次松开再按下 → 游戏判定双击 → 奔跑\n\
-                             勾选后本条映射的 连发/1×双击 不生效 (奔跑改写按键节奏)",
-                        )
-                        .changed()
-                    {
-                        self.config.mappings[idx].run_enabled = run_enabled;
-                    }
+                    ui.label(th.weak("重推奔跑"));
+                    /* ★v21.5: 与简易奔跑互斥 —— 简易奔跑勾选时此项灰掉 (不允许勾选) */
+                    ui.add_enabled_ui(!double_tap, |ui| {
+                        let resp = ui
+                            .checkbox(&mut run_enabled, "")
+                            .on_hover_text(if double_tap {
+                                "已勾选「简易奔跑」, 两者互斥 —— 取消简易奔跑后可勾选"
+                            } else {
+                                "重推奔跑 (仅摇杆方向映射有效):\n\
+                                 轻推摇杆 = 方向键按住 (走路)\n\
+                                 推过「重推阈值」= 自动补一次松开再按下 → 游戏判定双击 → 奔跑\n\
+                                 勾选后本条映射的 连发/简易奔跑 不生效 (奔跑改写按键节奏)"
+                            });
+                        if resp.changed() {
+                            self.config.mappings[idx].run_enabled = run_enabled;
+                        }
+                    });
                     if run_enabled {
                         ui.add_space(theme::SP_L);
                         ui.label(th.weak("重推阈值"));
@@ -840,8 +850,9 @@ impl SorahkGui {
                                     .speed(1.0),
                             )
                             .on_hover_text(
-                                "走→跑 切换时两次敲击之间的等待 (与 1×双击 的间隔是同一个值)\n\
-                                 视觉顿挫感明显 → 调小; 游戏没判定成双击 → 调大",
+                                "双重作用: ① 急推判定窗口 (在这么短时间内推过重推线才算「瞬间推入」)\n\
+                                 ② 走→跑 切换时两次敲击之间的等待 (与 简易奔跑 共用)\n\
+                                 缓推被误判成奔跑 → 调小; 游戏判定不出双击 → 调大",
                             )
                             .changed()
                         {
@@ -853,11 +864,11 @@ impl SorahkGui {
                         if ui
                             .checkbox(&mut run_recheck, "再检测")
                             .on_hover_text(
-                                "重推阈值再检测 (推荐开启):
-                                 DNF 里「一直按住方向键」不算敲击 —— 走路中推过重推线,
-                                 只补一次松开再按下游戏仍然判定走路
-                                 开启后重推时模拟完整双击: 松开 → 敲一下 → 再敲一下并保持 → 奔跑
-                                 个别双击判定宽松的游戏可关闭 (退回单次松按模式)",
+                                "重推阈值再检测 (推荐开启) —— 只认「瞬间推入」:\n\
+                                 缓慢推进越过重推线 = 继续走路 (只是想走深一点, 不触发)\n\
+                                 在二次敲击间隔内从轻推区猛冲过线 = 明确的奔跑意图 → 模拟完整双击\n\
+                                 (松开 → 敲一下 → 再敲一下并保持) → 游戏判定双击 → 奔跑\n\
+                                 判定窗口 = 「二次敲击间隔」; 关闭则退回「推过线就补一次松按」的旧行为",
                             )
                             .changed()
                         {
@@ -878,7 +889,7 @@ impl SorahkGui {
                 });
                 ui.add_space(theme::SP_M);
 
-                // 保存/取消
+                // 保存/取消 + 删除 (★v21.4: 删除从标题行右端移到底部最右端, 防误触)
                 ui.horizontal(|ui| {
                     if ui.add(th.primary_button("保存修改")).clicked() {
                         self.config.mappings[idx].note = note.clone();
@@ -902,6 +913,17 @@ impl SorahkGui {
                         self.edit_mapping_idx = None;
                         self.edit_mapping_is_new = false;
                     }
+                    /* 删除推到操作行最右端: 与保存/取消拉开距离,
+                     * 消除"点完编辑按钮后同位置再点即误删"的隐患 */
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui
+                            .add(th.danger_button("删除该映射"))
+                            .on_hover_text("删除这条映射 (不可恢复)")
+                            .clicked()
+                        {
+                            request_delete = true;
+                        }
+                    });
                 });
             });
 

@@ -801,7 +801,7 @@ impl SorahkGui {
     /// 右侧槽位详情面板。
     fn render_gamepad_slot_panel(&mut self, ui: &mut egui::Ui, th: &Theme) {
         /* 待确认捕获条: 捕获结果不再立即生效, 防止误操作 (确认应用 / 取消)
-         * ★v20.3: 确认时可勾选【连发】【1×双击】(与连发映射区/设置弹窗同字段) */
+         * ★v20.3: 确认时可勾选【连发】【简易奔跑】(与连发映射区/设置弹窗同字段) */
         if let Some(pending) = self.quick_gamepad_pending.clone() {
             let (slot_id, is_trigger, captured) =
                 (pending.slot_id, pending.is_trigger, pending.input.clone());
@@ -824,7 +824,7 @@ impl SorahkGui {
                     )));
                 });
                 ui.add_space(theme::SP_XS);
-                /* ★v20.3: 连发 / 1×双击 勾选 (写的是该槽位整条映射的开关) */
+                /* ★v20.3: 连发 / 简易奔跑 勾选 (写的是该槽位整条映射的开关) */
                 ui.horizontal(|ui| {
                     let mut turbo = pending.turbo;
                     if ui
@@ -840,33 +840,42 @@ impl SorahkGui {
                     }
                     ui.add_space(theme::SP_M);
                     let mut dtap = pending.double_tap;
-                    if ui
-                        .checkbox(&mut dtap, "1× 双击")
-                        .on_hover_text(
-                            "首按自动补一次双击 (DNF 跑步用)。\n与连发映射区里的「1×双击」是同一开关",
-                        )
-                        .changed()
-                    {
-                        if let Some(p) = &mut self.quick_gamepad_pending {
-                            p.double_tap = dtap;
+                    /* ★v21.5: 与重推奔跑互斥 —— 勾选重推奔跑时此项灰掉 */
+                    ui.add_enabled_ui(!pending.run, |ui| {
+                        let resp = ui
+                            .checkbox(&mut dtap, "简易奔跑")
+                            .on_hover_text(if pending.run {
+                                "已勾选「重推奔跑」, 两者互斥 —— 取消重推奔跑后可勾选"
+                            } else {
+                                "按一次自动补一次敲击 (DNF 简易双击跑)。\n\
+                                 与连发映射区里的「简易奔跑」是同一开关"
+                            });
+                        if resp.changed() {
+                            if let Some(p) = &mut self.quick_gamepad_pending {
+                                p.double_tap = dtap;
+                            }
                         }
-                    }
+                    });
                     ui.add_space(theme::SP_M);
-                    /* ★v21.0 摇杆三区奔跑勾选 (摇杆方向槽位的主用途) */
+                    /* ★v21.0 重推奔跑勾选 (摇杆方向槽位的主用途)
+                     * ★v21.5: 与简易奔跑互斥 —— 勾选简易奔跑时此项灰掉 */
                     let mut run = pending.run;
-                    if ui
-                        .checkbox(&mut run, "🏃 奔跑")
-                        .on_hover_text(
-                            "摇杆三区奔跑: 轻推=方向键按住 (走路), 推过重推阈值=自动补一次\
-                             松开再按下 (游戏判定双击→奔跑)\n\
-                             勾选后此槽位的 连发/1×双击 不生效; 重推阈值在连发页编辑面板调",
-                        )
-                        .changed()
-                    {
-                        if let Some(p) = &mut self.quick_gamepad_pending {
-                            p.run = run;
+                    ui.add_enabled_ui(!pending.double_tap, |ui| {
+                        let resp = ui
+                            .checkbox(&mut run, "🏃 重推奔跑")
+                            .on_hover_text(if pending.double_tap {
+                                "已勾选「简易奔跑」, 两者互斥 —— 取消简易奔跑后可勾选"
+                            } else {
+                                "重推奔跑: 轻推=方向键按住 (走路), 推过重推阈值=自动补一次\
+                                 松开再按下 (游戏判定双击→奔跑)\n\
+                                 勾选后此槽位的 连发/简易奔跑 不生效; 重推阈值在连发页编辑面板调"
+                            });
+                        if resp.changed() {
+                            if let Some(p) = &mut self.quick_gamepad_pending {
+                                p.run = run;
+                            }
                         }
-                    }
+                    });
                 });
                 ui.add_space(theme::SP_XS);
                 ui.horizontal(|ui| {
@@ -886,13 +895,15 @@ impl SorahkGui {
                                     captured,
                                 );
                             }
-                            /* ★v20.3: 应用确认条上勾选的 连发/1×双击 到该槽位映射
-                             * ★v21.0: 奔跑勾选同步 (勾选后引擎侧压制 连发/双击) */
+                            /* ★v20.3: 应用确认条上勾选的 连发/简易奔跑 到该槽位映射
+                             * ★v21.0: 重推奔跑勾选同步 (勾选后引擎侧压制 连发/简易奔跑)
+                             * ★v21.5: 互斥保险 —— 重推奔跑勾选时简易奔跑强制关 */
                             if let Some(mi) =
                                 crate::gui::gamepad_mapping::find_slot_mapping_index(&self.config, sl)
                             {
                                 self.config.mappings[mi].turbo_enabled = pending.turbo;
-                                self.config.mappings[mi].double_tap_enabled = pending.double_tap;
+                                self.config.mappings[mi].double_tap_enabled =
+                                    pending.double_tap && !pending.run;
                                 self.config.mappings[mi].run_enabled = pending.run;
                             }
                             let _ = self.config.save_to_file("Config.toml");

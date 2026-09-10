@@ -53,7 +53,7 @@ enum ParsedSwitchKey {
 }
 
 /// ★v20.3: 手柄快速捕获待确认项 (升级自 `(usize, bool, String)` 元组)。
-/// 确认条上可直接勾选【连发】【1×双击】, 与连发映射区的同名开关写同一字段。
+/// 确认条上可直接勾选【连发】【简易奔跑】, 与连发映射区的同名开关写同一字段。
 #[derive(Debug, Clone, PartialEq)]
 pub struct QuickGamepadPending {
     /// 手柄槽位 id (SLOTS 下标)
@@ -64,7 +64,7 @@ pub struct QuickGamepadPending {
     pub input: String,
     /// 确认时写入该槽位映射的 连发 开关 (新建默认 true = 沿用旧行为)
     pub turbo: bool,
-    /// 确认时写入该槽位映射的 1×双击 开关 (默认 false)
+    /// 确认时写入该槽位映射的 简易奔跑 开关 (默认 false)
     pub double_tap: bool,
     /// ★v21.0 确认时写入该槽位映射的 奔跑 开关 (默认 false; 勾选后连发/双击失效)
     pub run: bool,
@@ -137,7 +137,7 @@ pub struct SorahkGui {
     whitelist_error: Option<String>,
     /// 手柄快速捕获待确认项。
     /// 捕获不再立即写映射, 需用户在槽位面板点「确认应用」(防误操作)。
-    /// ★v20.3: 升级为结构体 —— 确认条上可直接勾选【连发】【1×双击】(与连发映射区同字段)。
+    /// ★v20.3: 升级为结构体 —— 确认条上可直接勾选【连发】【简易奔跑】(与连发映射区同字段)。
     pub quick_gamepad_pending: Option<QuickGamepadPending>,
     /// ★v20.3: 连发页「新增映射」置顶后滚动到编辑面板 (一次性标志)
     pub scroll_to_edit_row: bool,

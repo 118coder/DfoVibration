@@ -51,10 +51,13 @@ impl SorahkGui {
             |ui| {
                 /* 添加行: 输入 + 添加 + 浏览 */
                 ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.new_whitelist_name)
-                            .hint_text("进程名, 如 dnf.exe")
-                            .desired_width(220.0),
+                    /* ★v20.6: 显性输入框 (描边清晰, 一眼可见可输入) */
+                    th.text_input(
+                        ui,
+                        &mut self.new_whitelist_name,
+                        "进程名, 如 dnf.exe",
+                        220.0,
+                        egui::Id::new("new_whitelist_name"),
                     );
                     if ui.add(th.primary_button("＋ 添加")).clicked() {
                         let name = self.new_whitelist_name.trim().to_string();

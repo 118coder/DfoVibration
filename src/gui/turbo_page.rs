@@ -75,10 +75,13 @@ impl SorahkGui {
             /* 行2: 保存预设 (留空名称 = 覆盖当前预设) */
             ui.horizontal(|ui| {
                 ui.label(th.weak("保存预设:"));
-                ui.add(
-                    egui::TextEdit::singleline(&mut self.page_preset_name_input)
-                        .hint_text("名称 (留空 = 覆盖当前预设)")
-                        .desired_width(170.0),
+                /* ★v20.6: 显性输入框 (描边清晰, 一眼可见可输入) */
+                th.text_input(
+                    ui,
+                    &mut self.page_preset_name_input,
+                    "名称 (留空 = 覆盖当前预设)",
+                    170.0,
+                    egui::Id::new("page_preset_name_input"),
                 );
                 if ui
                     .add(egui::Button::new(
@@ -165,10 +168,13 @@ impl SorahkGui {
                     ui.add_space(theme::SP_XS);
                     ui.horizontal(|ui| {
                         ui.label(th.weak("新名称:"));
-                        ui.add(
-                            egui::TextEdit::singleline(&mut self.page_preset_rename_input)
-                                .hint_text("输入新名称")
-                                .desired_width(170.0),
+                        /* ★v20.6: 显性输入框 */
+                        th.text_input(
+                            ui,
+                            &mut self.page_preset_rename_input,
+                            "输入新名称",
+                            170.0,
+                            egui::Id::new("page_preset_rename_input"),
                         );
                         if ui
                             .add(egui::Button::new(
@@ -241,12 +247,8 @@ impl SorahkGui {
                         self.preset_key_input = self.config.presets[next_idx].switch_key.clone();
                         self.preset_key_error = None;
                     }
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.preset_key_input)
-                            .id_salt(input_id)
-                            .hint_text("如 F6 或 CTRL+F6")
-                            .desired_width(120.0),
-                    );
+                    /* ★v20.6: 显性输入框 (描边清晰, 一眼可见可输入) */
+                    th.text_input(ui, &mut self.preset_key_input, "如 F6 或 CTRL+F6", 120.0, input_id);
                     if ui.add(th.secondary_button("✓ 保存")).clicked() {
                         self.save_preset_switch_key();
                     }

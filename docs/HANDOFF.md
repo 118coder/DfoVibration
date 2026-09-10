@@ -3,7 +3,7 @@
 > 更新: 2026-09-10 08:00 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
 > 配套: `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
 >
-> **═══ 本会话收官快照 (09-10 深夜 · HEAD 未提交 · 541 测试全绿 · exe 已交付 v20.6, md5 55508f5f) ═══**
+> **═══ 本会话收官快照 (09-10 深夜 · HEAD = 本提交 · 541 测试全绿 · exe 已交付 v20.7, md5 6ee0a27b) ═══**
 >
 > **⚠ v20.6 = 设置弹窗经典窗截断修复 (最新)**: ①弹窗 default/min 随视口收紧 (900×600 里
 > 不再顶满截断); ②中部滚动区 max_height 写死 500 改为随弹窗高度走 (截断的真正根因);
@@ -915,4 +915,18 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
       Config.toml** (用户配置的窗口位置在屏内) + 需交互态时往临时构建里塞无条件的
       show_settings_dialog/temp_config (注意成对, 只开弹窗不给快照 = 复现崩溃)。
     - exe 已交付 (v20.6, md5 55508f5f...)。
+
+39. **v20.7 显性输入框 (2026-09-10 深夜, 用户截图反馈"不知道这里可以输入")**:
+    - theme.rs 新增 `Theme::text_input(ui, text, hint, width, id_salt)` —— 白底/深底 +
+      accent_soft 描边 1.3 + 圆角 8 的显性输入框 (内部 TextEdit frame(false))。
+    - 替换四处裸 TextEdit: 预设卡「保存预设」名称、「切换键」键名、「重命名预设」新名称、
+      白名单页「添加进程名」。焦点查询沿用 id_salt (`ui.memory.has_focus`) 不变。
+    - 验证: 541/0; 离屏截图 `work/_uicheck/r_inputs.png` (两个输入框描边清晰可辨)。
+    - exe 已交付 (v20.7, md5 6ee0a27b...)。
+    - **打包与衔接 (本会话收官)**: git 已提交 (18 文件, +2126/-180, 单提交覆盖 v20.0-v20.7);
+      源码包 `E:\网页小工具\DfoVibration-V3-主程序-20260910.zip` 已按 `work/_pack_source.py`
+      重打 (105 跟踪文件 + 运行时 Config.toml, 含 classic_mode.rs/HANDOFF/方案文档);
+      分发包 `V3版本\（适配A1手柄震动+映射）DfoVibration-Sorahk1.0-测试版.zip` 已原结构刷新
+      (仅替换 DfoVibration-Sorahk.exe= v20.7 / Config.toml / Vibration.toml 三项, 其余条目
+      字节不动; 双 DLL+研究资料保持用户原样)。
 

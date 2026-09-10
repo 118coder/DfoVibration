@@ -355,6 +355,34 @@ impl Theme {
         self.badge(ui, text, self.trigger_fg, self.trigger_bg)
     }
 
+    /// ★v20.6: 显性文本输入框 —— 描边清晰可辨, 让"这里可以输入"一眼可见。
+    /// (原 TextEdit 默认样式与卡片底色几乎融为一体, 用户不知道能点能输。)
+    /// id_salt: 稳定控件 id (调用方可用 `ui.memory(|m| m.has_focus(id))` 查焦点)。
+    pub fn text_input(
+        &self,
+        ui: &mut egui::Ui,
+        text: &mut String,
+        hint: &str,
+        width: f32,
+        id_salt: egui::Id,
+    ) -> egui::Response {
+        egui::Frame::NONE
+            .fill(self.extreme)
+            .stroke(egui::Stroke::new(1.3, self.accent_soft))
+            .corner_radius(egui::CornerRadius::same(8))
+            .inner_margin(egui::Margin::symmetric(8, 5))
+            .show(ui, |ui| {
+                ui.add(
+                    egui::TextEdit::singleline(text)
+                        .hint_text(hint)
+                        .desired_width(width)
+                        .frame(false)
+                        .id_salt(id_salt),
+                )
+            })
+            .inner
+    }
+
     /// 目标键徽章 (天蓝)。
     pub fn target_badge(&self, ui: &mut egui::Ui, text: &str) -> egui::Response {
         self.badge(ui, text, self.target_fg, self.target_bg)

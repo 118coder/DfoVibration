@@ -157,8 +157,6 @@ pub struct SorahkGui {
     pub gamepad_warn_until: Option<std::time::Instant>,
     /// ★v21.9: 「鼠标映射」小菜单是否展开 (滚动 / 点击)
     pub gamepad_mouse_menu: bool,
-    /// ★v21.8: 新手引导条是否已关闭 (会话内)
-    pub gamepad_tip_dismissed: bool,
     /// ★v21.7: 手柄类预设切换键绑定表的签名 (变化时才推送到 AppState, 避免逐帧加锁)
     pub preset_switch_bindings_sig: u64,
     /// ★v21.7 方案A: 原始 HID 手柄 (标准布局一键生成) —— 设备缓存/时刻/选中/提示
@@ -341,7 +339,6 @@ impl SorahkGui {
             gamepad_warn: None,
             gamepad_warn_until: None,
             gamepad_mouse_menu: false,
-            gamepad_tip_dismissed: false,
             preset_switch_bindings_sig: 0,
             raw_hid_pads: Vec::new(),
             raw_hid_pads_fetched: None,

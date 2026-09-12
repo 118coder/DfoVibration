@@ -352,13 +352,26 @@ impl Theme {
         fg: egui::Color32,
         bg: egui::Color32,
     ) -> egui::Response {
+        self.badge_clickable_sized(ui, text, fg, bg, 12.0)
+    }
+
+    /// ★v24.9: 可指定字号的点击徽章 —— 手柄页映射总览用 11px 更紧凑。
+    /// (手动分行时测量字号必须与实际渲染一致, 否则估算偏大 → 白白多出一行)
+    pub fn badge_clickable_sized(
+        &self,
+        ui: &mut egui::Ui,
+        text: &str,
+        fg: egui::Color32,
+        bg: egui::Color32,
+        size: f32,
+    ) -> egui::Response {
         let rect = egui::Frame::NONE
             .fill(bg)
             .corner_radius(egui::CornerRadius::same(100))
             .inner_margin(egui::Margin::symmetric(9, 3))
             .show(ui, |ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(text).size(12.0).strong().color(fg))
+                    egui::Label::new(egui::RichText::new(text).size(size).strong().color(fg))
                         .wrap_mode(egui::TextWrapMode::Extend),
                 );
             })

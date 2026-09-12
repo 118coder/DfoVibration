@@ -945,8 +945,8 @@ impl SorahkGui {
                         egui::ScrollArea::vertical()
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
+                                /* ★v24.9: 手柄页不追加尾部空距 —— 一屏放下 (实测内容刚好贴底) */
                                 self.render_gamepad_page(ui, ctx);
-                                ui.add_space(12.0);
                             });
                     }
                     Page::Turbo => {

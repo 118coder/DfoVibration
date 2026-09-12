@@ -1674,10 +1674,10 @@ fn get_raw_translation(lang: Language, key: RawKey) -> &'static str {
         }
 
         // About Dialog
-        (Language::English, RawKey::AboutInspired) => "🌸 Inspired by Kasugano Sora",
-        (Language::SimplifiedChinese, RawKey::AboutInspired) => "🌸 灵感来源: 春日野穹",
-        (Language::TraditionalChinese, RawKey::AboutInspired) => "🌸 靈感來源: 春日野穹",
-        (Language::Japanese, RawKey::AboutInspired) => "🌸 インスパイア: かすがのそら",
+        (Language::English, RawKey::AboutInspired) => "A DOF-specialized build, also general-purpose",
+        (Language::SimplifiedChinese, RawKey::AboutInspired) => "DOF特化版本，同时也泛用",
+        (Language::TraditionalChinese, RawKey::AboutInspired) => "DOF 特化版本，同時也泛用",
+        (Language::Japanese, RawKey::AboutInspired) => "DOF特化版、汎用にも対応",
 
         // Turbo toggle tooltips
         (Language::English, RawKey::TurboOnHover) => "Turbo ON - Auto-repeat enabled",

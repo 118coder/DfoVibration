@@ -36,7 +36,7 @@ pub fn render_about_dialog(
 
                 // 主标题: 18px strong + 紫色强调
                 ui.label(
-                    egui::RichText::new("🌸 Sorahk 🌸")
+                    egui::RichText::new("DfoVibration-Sorahk")
                         .size(18.0)
                         .strong()
                         .color(accent_color),

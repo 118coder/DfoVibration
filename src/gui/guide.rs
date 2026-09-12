@@ -55,13 +55,20 @@ impl SorahkGui {
                             if yes.clicked() || no.clicked() {
                                 self.config.dfo_player = yes.clicked();
                                 self.dfo_ask_answered = true;
-                                if !self.config.dfo_player
-                                    && matches!(
+                                /* ★v24.10: 选「仅用连发」→ 震动功能一并默认关闭 (用户要求),
+                                 * 而不是只藏入口却让震动仍在后台驱动 */
+                                if !self.config.dfo_player {
+                                    self.app_state.vibration_enabled.store(
+                                        false,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                    self.config.vibration.enabled = false;
+                                    if matches!(
                                         self.active_page,
                                         Page::Vibration | Page::JobPresets
-                                    )
-                                {
-                                    self.active_page = Page::Gamepad;
+                                    ) {
+                                        self.active_page = Page::Gamepad;
+                                    }
                                 }
                                 let _ = self.config.save_to_file("Config.toml");
                                 /* DFO 玩家 → 第 1.5 弹问客户端版本 (S1 ACT / S4+ 新版);

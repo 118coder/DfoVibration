@@ -1068,7 +1068,8 @@ impl AppState {
             hid_activation_data_receiver: Mutex::new(hid_activation_data_receiver),
             activating_device_handle: std::sync::atomic::AtomicIsize::new(-1),
             xinput_cache_invalid: AtomicBool::new(false),
-            vibration_enabled: AtomicBool::new(config.vibration.enabled),
+            /* ★v24.10: 「仅用连发」(dfo_player=false) 时震动一律关闭 —— 入口已隐藏就不该在后台驱动 */
+            vibration_enabled: AtomicBool::new(config.vibration.enabled && config.dfo_player),
             vibration_font_hits: AtomicBool::new(true),
             vibration_connected: AtomicBool::new(false),
             vibration_events_received: std::sync::atomic::AtomicU64::new(0),

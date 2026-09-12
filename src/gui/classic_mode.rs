@@ -202,11 +202,14 @@ impl SorahkGui {
                 ui.add_space(theme::SP_XS);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                ui.label(
-                    egui::RichText::new("震动参数实时生效, 进图自动驱动")
-                        .size(11.0)
-                        .color(th.hint),
-                );
+                /* ★v24.10: 「仅用连发」不显示震动相关文案 */
+                if self.config.dfo_player {
+                    ui.label(
+                        egui::RichText::new("震动参数实时生效, 进图自动驱动")
+                            .size(11.0)
+                            .color(th.hint),
+                    );
+                }
             });
         });
     }
@@ -217,6 +220,11 @@ impl SorahkGui {
     /// 预设数据与应用逻辑复用震动页那一套 (`apply_general_vibration_preset`), 两处永远一致。
     pub(super) fn render_classic_vib_quickbar(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
+        /* ★v24.10: 「仅用连发」(dfo_player=false) 时整条隐藏 —— 用户要求:
+         * 不用震动功能的人不该看到这块, 功能也默认关闭。 */
+        if !self.config.dfo_player {
+            return;
+        }
         let entries = crate::config::visible_preset_entries(
             &self.config.vibration_presets,
             self.config.vib_legacy_client,

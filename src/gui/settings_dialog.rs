@@ -2201,13 +2201,22 @@ impl SorahkGui {
                     self.config = temp_config.clone();
 
                     // DFO 震动关闭时震动页不可达: 当前页落在其上则回手柄映射
-                    if !self.config.dfo_player
-                        && matches!(
+                    if !self.config.dfo_player {
+                        /* ★v24.10: 「仅用连发」时震动一并默认关闭 (与首次选择口径一致) */
+                        self.app_state
+                            .vibration_enabled
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        if self.config.vibration.enabled {
+                            self.config.vibration.enabled = false;
+                            let _ = self.config.save_to_file("Config.toml");
+                            let _ = self.app_state.reload_config(self.config.clone());
+                        }
+                        if matches!(
                             self.active_page,
                             crate::gui::types::Page::Vibration | crate::gui::types::Page::JobPresets
-                        )
-                    {
-                        self.active_page = crate::gui::types::Page::Gamepad;
+                        ) {
+                            self.active_page = crate::gui::types::Page::Gamepad;
+                        }
                     }
 
                     // Re-parse switch key after configuration update

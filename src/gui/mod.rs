@@ -276,7 +276,13 @@ pub struct SorahkGui {
 
 impl SorahkGui {
     /// Creates a new GUI instance with the given state and configuration.
-    pub fn new(app_state: Arc<AppState>, config: AppConfig) -> Self {
+    pub fn new(app_state: Arc<AppState>, mut config: AppConfig) -> Self {
+        /* ★v24.10: 「仅用连发」(dfo_player=false) → 震动关闭并落盘, 与入口隐藏口径一致。
+         * 同时修历史数据: Vibration.toml 里 enabled=true 但用户已选仅用连发的情况。 */
+        if !config.dfo_player && config.vibration.enabled {
+            config.vibration.enabled = false;
+            let _ = config.save_vibration_to_file("Vibration.toml");
+        }
         let dark_mode = config.dark_mode;
         let translations = CachedTranslations::new(config.language);
         let cached_dark_style = Self::create_dark_style();

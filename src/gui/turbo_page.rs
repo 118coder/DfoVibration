@@ -611,27 +611,30 @@ impl SorahkGui {
                         );
                     });
                     ui.add_space(theme::SP_XS);
-                    ui.horizontal(|ui| {
-                        let vib_on = self
-                            .app_state
-                            .vibration_enabled
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        let (vtext, vcolor, vbg) = if vib_on {
-                            ("震动: 开", th.good, th.good_soft)
-                        } else {
-                            ("震动: 关", th.bad, th.bad_soft)
-                        };
-                        if ui.add(th.status_pill(vtext, vcolor, vbg)).clicked() {
-                            let v = self
+                    /* ★v24.10: 「仅用连发」不显示震动开关 (入口/开关一起收掉, 口径统一) */
+                    if self.config.dfo_player {
+                        ui.horizontal(|ui| {
+                            let vib_on = self
                                 .app_state
                                 .vibration_enabled
                                 .load(std::sync::atomic::Ordering::Relaxed);
-                            self.app_state
-                                .vibration_enabled
-                                .store(!v, std::sync::atomic::Ordering::Relaxed);
-                        }
-                        ui.label(th.hint_text("由 DfoVibration.dll 战斗事件驱动 (进图后自动)"));
-                    });
+                            let (vtext, vcolor, vbg) = if vib_on {
+                                ("震动: 开", th.good, th.good_soft)
+                            } else {
+                                ("震动: 关", th.bad, th.bad_soft)
+                            };
+                            if ui.add(th.status_pill(vtext, vcolor, vbg)).clicked() {
+                                let v = self
+                                    .app_state
+                                    .vibration_enabled
+                                    .load(std::sync::atomic::Ordering::Relaxed);
+                                self.app_state
+                                    .vibration_enabled
+                                    .store(!v, std::sync::atomic::Ordering::Relaxed);
+                            }
+                            ui.label(th.hint_text("由 DfoVibration.dll 战斗事件驱动 (进图后自动)"));
+                        });
+                    }
                 });
 
                 // 右: 主操作按钮

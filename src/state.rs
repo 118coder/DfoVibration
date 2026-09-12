@@ -269,6 +269,31 @@ impl std::fmt::Display for InputDevice {
                 };
 
                 // Format with VID/PID/Serial or VID/PID/DEV
+                let dev_tag = crate::hid_layout::device_tag(
+                    display_info.serial_number.as_deref(),
+                    stable_device_id,
+                );
+                /* ★v21.7 语义按键/轴方向: HidP 路线 (第三方 HID 手柄一键标准布局) */
+                if let Some(usage) = crate::hid_layout::semantic_button_usage(position) {
+                    return write!(
+                        f,
+                        "{}_{:04X}_{:04X}_{}_H{}",
+                        prefix, display_info.vendor_id, display_info.product_id, dev_tag, usage
+                    );
+                }
+                if let Some((axis_usage, dir)) = crate::hid_layout::semantic_axis_decode(position) {
+                    let d = match dir {
+                        0 => 'L',
+                        1 => 'R',
+                        2 => 'U',
+                        _ => 'D',
+                    };
+                    return write!(
+                        f,
+                        "{}_{:04X}_{:04X}_{}_A{}{}",
+                        prefix, display_info.vendor_id, display_info.product_id, dev_tag, axis_usage, d
+                    );
+                }
                 if let Some(ref serial) = display_info.serial_number {
                     // Has serial number: format with serial
                     if position & 0x80000000 != 0 {
@@ -494,9 +519,41 @@ pub struct InputMappingInfo {
     pub run_recheck: bool,
 }
 
+/// ★v21.7b 第三方手柄实时状态 —— 供手柄映射页 SVG 热点"按下即亮"。
+///
+/// 由 RawInput 语义通道 (HidP) 每帧发布; GUI 只读。方向位用位掩码:
+/// `ls`/`rs`: bit0=左 bit1=右 bit2=上 bit3=下; `dpad`: 1..8 顺时针从"上"起, 0=中。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveHidState {
+    pub vid: u16,
+    pub pid: u16,
+    /// 标准按钮 usage 位图 (usage 1..31 → bit[usage])。
+    pub buttons: u32,
+    pub dpad: u8,
+    pub ls: u8,
+    pub rs: u8,
+    /// ★v22.1: 左右扳机 (模拟轴 Z/Rz 超阈值) —— 非标准手柄的 LT/RT 多为轴而非按钮
+    pub lt: bool,
+    pub rt: bool,
+    /// ★v22.3: 当前"原始报文位组合"的哈希低 32 位 (0 = 无按键)。
+    /// 与连发映射同一套编码 —— 非标准手柄的按键/扳机用它识别最可靠 (白名单通道外)。
+    pub raw_position: u32,
+}
+
+/// ★v21.7: 预设切换键绑定 —— GUI 在配置变化时写入, 输入线程 (XInput/RawInput) 每帧检测。
+///
+/// 键盘切换键仍由 GUI 侧 `GetAsyncKeyState` 轮询 (见 gui/main_window.rs), 这里只承载
+/// **手柄**类绑定 (XInput 组合 / 原始 HID 设备), 因为它们的状态只有输入线程实时掌握。
+#[derive(Debug, Clone)]
+pub struct PresetSwitchBinding {
+    /// 目标预设名 (切换时按名查找)
+    pub preset_name: String,
+    /// 触发设备 (XInputCombo 或 GenericDevice; 键盘绑定不入此表)
+    pub device: InputDevice,
+}
+
 /// Cache for switch key detection with lock-free fast paths
-pub struct SwitchKeyCache {
-    pub keyboard_vk: AtomicU32,
+pub struct SwitchKeyCache {    pub keyboard_vk: AtomicU32,
     pub xinput_button_mask: AtomicU32,
     pub xinput_device_hash: AtomicU32,
     pub generic_button_id: AtomicU64,
@@ -538,10 +595,29 @@ pub struct AppState {
     show_notifications: AtomicBool,
     /// Switch key cache for fast combo key detection
     pub switch_key_cache: SwitchKeyCache,
+    /// ★v21.7 预设切换键 (手柄类) 绑定表 —— 输入线程检测用
+    preset_switch_bindings: RwLock<Vec<PresetSwitchBinding>>,
+    /// ★v21.7 已触发的预设切换请求队列 (输入线程写, GUI 每帧取走并真正切换)
+    pending_preset_switches: Mutex<Vec<String>>,
+    /// ★v21.7 方案A: 配置中是否存在语义 HID 触发键 (RawInput 语义翻译热路径开关)
+    semantic_hid_mappings: AtomicBool,
+    /// ★v21.7b 正在"实时识别"的第三方手柄 (GUI 选中的 vid:pid; None = 不识别)
+    live_hid_pad: RwLock<Option<(u16, u16)>>,
+    /// ★v21.7b 该手柄的最新实时状态 (RawInput 写, GUI 读)
+    live_hid_state: RwLock<Option<LiveHidState>>,
+    /// ★v24.6: 该手柄的最新 XInput 实时输入位图 (XInput 线程写, GUI 读)。
+    ///
+    /// 供手柄页「按手柄键 → 选中槽位」使用, **不启用捕获模式** ——
+    /// 捕获模式会跳过 `handle_normal_mode_xinput`(阈值注册/映射派发), 实机表现为
+    /// 进游戏后摇杆方向与奔跑全部失效。
+    live_xinput: RwLock<Option<(u16, u32)>>,
     /// Application exit flag
     pub should_exit: Arc<AtomicBool>,
     /// Key repeat pause state
     is_paused: AtomicBool,
+    /// ★v22.7: 手柄校准向导进行中 —— 输入线程仍发布实时状态 (供方向步/SVG), 但**不派发**任何映射,
+    /// 避免校对时按键被注入游戏、或被其它映射/流程干扰。
+    gp_calibrating: AtomicBool,
     /// Window show request flag
     show_window_requested: AtomicBool,
     /// About dialog request flag
@@ -950,8 +1026,15 @@ impl AppState {
             show_tray_icon: AtomicBool::new(config.show_tray_icon),
             show_notifications: AtomicBool::new(config.show_notifications),
             switch_key_cache,
+            preset_switch_bindings: RwLock::new(Vec::new()),
+            pending_preset_switches: Mutex::new(Vec::new()),
+            semantic_hid_mappings: AtomicBool::new(Self::config_has_semantic_mappings(&config)),
+            live_hid_pad: RwLock::new(None),
+            live_hid_state: RwLock::new(None),
+            live_xinput: RwLock::new(None),
             should_exit: Arc::new(AtomicBool::new(false)),
             is_paused: AtomicBool::new(false),
+            gp_calibrating: AtomicBool::new(false),
             show_window_requested: AtomicBool::new(false),
             show_about_requested: AtomicBool::new(false),
             input_timeout: AtomicU64::new(config.input_timeout.clamp(1, 2000)),
@@ -1220,6 +1303,11 @@ impl AppState {
             let _ = self.input_mappings.insert_sync(k, v);
         }
 
+        /* ★v21.7 方案A: 是否存在"语义 HID" 触发键 (..._H<n> / ..._A<n>_<dir>);
+         * 有才在 RawInput 热路径调用 HidP_GetUsages 做语义翻译, 否则零开销。 */
+        self.semantic_hid_mappings
+            .store(Self::config_has_semantic_mappings(&config), Ordering::Relaxed);
+
         // Update cached data structures
         self.cached_turbo_other.clear_sync();
         self.cached_combo_index.clear_sync();
@@ -1361,6 +1449,8 @@ impl AppState {
 
             // Reset HID device states to baseline for clean button detection
             crate::rawinput::reset_hid_device_states();
+            /* ★v24.6: 捕获模式不走 XInput 正常派发 → 清掉实时位图, 免得 GUI 拿到过期状态 */
+            *util::write_guard(&self.live_xinput) = None;
         }
     }
 
@@ -1373,6 +1463,135 @@ impl AppState {
     /// Checks if Raw Input capture mode is active.
     pub fn is_raw_input_capture_active(&self) -> bool {
         self.is_capturing_raw_input.load(Ordering::Relaxed)
+    }
+
+    /* ───────── ★v21.7 预设切换键 (手柄) 绑定与请求 ───────── */
+
+    /// GUI 侧在预设/切换键变化时刷新绑定表 (仅手柄类绑定; 键盘由 GUI 自己轮询)。
+    pub fn set_preset_switch_bindings(&self, bindings: Vec<PresetSwitchBinding>) {
+        *util::write_guard(&self.preset_switch_bindings) = bindings;
+    }
+
+    /// 输入线程检测到预设切换键按下时调用 (边缘已由调用方保证)。
+    /// 入队后由 GUI 主循环取走并执行真正的切换 (配置/落盘/热重载都在 UI 线程)。
+    pub fn request_preset_switch(&self, preset_name: &str) {
+        if let Ok(mut q) = self.pending_preset_switches.lock() {
+            /* 防连发堆积: 同名只留一个 */
+            if !q.iter().any(|n| n == preset_name) {
+                q.push(preset_name.to_string());
+            }
+        }
+    }
+
+    /// GUI 每帧取走全部待切换请求 (FIFO)。
+    pub fn take_pending_preset_switches(&self) -> Vec<String> {
+        self.pending_preset_switches
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
+    }
+
+    /// 取当前绑定表的快照 (输入线程借用期间不做长锁)。
+    pub fn preset_switch_bindings_snapshot(&self) -> Vec<PresetSwitchBinding> {
+        (*util::read_guard(&self.preset_switch_bindings)).clone()
+    }
+
+    /// 绑定表是否为空 (输入热路径零拷贝快速判断)。
+    #[inline(always)]
+    pub fn preset_switch_bindings_is_empty(&self) -> bool {
+        util::read_guard(&self.preset_switch_bindings).is_empty()
+    }
+
+    /// 校验一个输入名是否合法 (键盘键名 / 手柄组合 / 原始 HID 设备名 / 鼠标键)。
+    /// ★v21.7: 预设切换键保存时用它替代仅支持键盘的 `parse_switch_key`。
+    pub fn is_valid_input_name(name: &str) -> bool {
+        let n = name.trim();
+        !n.is_empty() && Self::input_name_to_device(n).is_some()
+    }
+
+    /// ★v21.7 方案A: 配置里是否有任一"语义 HID"触发键 (..._H<n> / ..._A<n>_<dir>)。
+    pub fn config_has_semantic_mappings(config: &AppConfig) -> bool {
+        config.mappings.iter().any(|m| {
+            match Self::input_name_to_device(&m.trigger_key) {
+                Some(InputDevice::GenericDevice { button_id, .. }) => {
+                    let pos = (button_id & 0xFFFF_FFFF) as u32;
+                    crate::hid_layout::semantic_button_usage(pos).is_some()
+                        || crate::hid_layout::semantic_axis_decode(pos).is_some()
+                }
+                _ => false,
+            }
+        })
+    }
+
+    /// ★v21.7 方案A: RawInput 热路径是否需要做语义翻译 (无则零开销跳过)。
+    #[inline(always)]
+    pub fn has_semantic_hid_mappings(&self) -> bool {
+        self.semantic_hid_mappings.load(Ordering::Relaxed)
+    }
+
+    /* ───────── ★v21.7b 第三方手柄实时状态 (SVG 按下即亮) ───────── */
+
+    /// GUI 选择"实时识别"的第三方手柄 (None = 停止)。
+    pub fn set_live_hid_pad(&self, pad: Option<(u16, u16)>) {
+        *util::write_guard(&self.live_hid_pad) = pad;
+        if pad.is_none() {
+            *util::write_guard(&self.live_hid_state) = None;
+            *util::write_guard(&self.live_xinput) = None;
+        }
+    }
+
+    /// 当前正在实时识别的手柄 vid:pid。
+    pub fn live_hid_pad(&self) -> Option<(u16, u16)> {
+        *util::read_guard(&self.live_hid_pad)
+    }
+
+    /// RawInput 线程发布一帧实时状态 (仅当设备是当前识别对象时记录)。
+    pub fn publish_live_hid(&self, state: LiveHidState) {
+        let target = *util::read_guard(&self.live_hid_pad);
+        if target == Some((state.vid, state.pid)) {
+            *util::write_guard(&self.live_hid_state) = Some(state);
+        }
+    }
+
+    /// ★v22.4: 局部更新"原始位组合哈希" —— 当语义通道没在跑 (无语义映射) 时也能让
+    /// 已校准槽位点亮。仅当是该识别目标手柄时生效。
+    pub fn publish_live_raw(&self, vid: u16, pid: u16, pos: u32) {
+        if *util::read_guard(&self.live_hid_pad) != Some((vid, pid)) {
+            return;
+        }
+        let mut guard = util::write_guard(&self.live_hid_state);
+        match guard.as_mut() {
+            Some(s) => s.raw_position = pos,
+            None => {
+                *guard = Some(LiveHidState {
+                    vid,
+                    pid,
+                    raw_position: pos,
+                    ..Default::default()
+                });
+            }
+        }
+    }
+
+    /// GUI 读取最新实时状态 (None = 未识别/设备已断开)。
+    pub fn live_hid_state(&self) -> Option<LiveHidState> {
+        *util::read_guard(&self.live_hid_state)
+    }
+
+    /// ★v24.6: XInput 线程发布一帧实时输入位图 (input id 0x01..0x1F → bit[id])。
+    ///
+    /// 仅"识别中"时记录 (手柄页一次只识别一台); 无输入 → 置空。
+    /// 走这条路而非捕获模式, 避免抑制正常映射派发 (奔跑/方向失效的根因)。
+    pub fn publish_live_xinput(&self, vid: u16, mask: u32) {
+        if util::read_guard(&self.live_hid_pad).is_none() {
+            return;
+        }
+        *util::write_guard(&self.live_xinput) = if mask == 0 { None } else { Some((vid, mask)) };
+    }
+
+    /// GUI 读取最新 XInput 实时输入 (vid, 位图)。
+    pub fn live_xinput_state(&self) -> Option<(u16, u32)> {
+        *util::read_guard(&self.live_xinput)
     }
 
     /// Sends HID device activation request.
@@ -1470,6 +1689,17 @@ impl AppState {
     /// Sets the pause state.
     pub fn set_paused(&self, paused: bool) {
         self.is_paused.store(paused, Ordering::Relaxed);
+    }
+
+    /// ★v22.7: 手柄校准向导是否进行中 (热路径, 内联)。
+    #[inline(always)]
+    pub fn is_gp_calibrating(&self) -> bool {
+        self.gp_calibrating.load(Ordering::Relaxed)
+    }
+
+    /// ★v22.7: 设置手柄校准向导进行中标志 (进行中时输入线程不派发任何映射)。
+    pub fn set_gp_calibrating(&self, on: bool) {
+        self.gp_calibrating.store(on, Ordering::Relaxed);
     }
 
     /// Returns whether the tray icon should be shown.
@@ -2680,13 +2910,20 @@ impl AppState {
         let mut input_mappings = HashMap::new();
 
         for mapping in &config.mappings {
-            let trigger_device = Self::input_name_to_device(&mapping.trigger_key)
-                .ok_or_else(|| anyhow::anyhow!("Invalid trigger input: {}", mapping.trigger_key))?;
-
+            /* ★v23.1: 无目标键的映射本就跳过 —— 必须在解析触发键**之前**判断。
+             * (此前先解析, 遇到历史遗留的坏触发键会直接报错导致**程序起不来**。) */
             let target_keys = mapping.get_target_keys();
             if target_keys.is_empty() {
                 continue; // Skip mappings without target keys
             }
+            /* ★v23.1: 坏触发键降级为"跳过 + 日志", 绝不让单条脏数据阻断启动。 */
+            let Some(trigger_device) = Self::input_name_to_device(&mapping.trigger_key) else {
+                eprintln!(
+                    "[config] 跳过触发键无效的映射: trigger={:?} note={:?} (可在连发页删掉该条)",
+                    mapping.trigger_key, mapping.note
+                );
+                continue;
+            };
 
             let interval = mapping.interval.unwrap_or(config.interval).max(5);
             let event_duration = mapping
@@ -2904,7 +3141,8 @@ impl AppState {
     }
 
     /// Parse input name to InputDevice (supports keyboard, mouse, gamepad, joystick, and custom devices)
-    fn input_name_to_device(name: &str) -> Option<InputDevice> {
+    /// ★v21.7: 改为 pub —— GUI 用它校验预设切换键 (含手柄原始设备名)。
+    pub fn input_name_to_device(name: &str) -> Option<InputDevice> {
         let name_upper = name.to_uppercase();
 
         // Check for XInput combo format first (e.g., "GAMEPAD_045E_A" or "GAMEPAD_045E_LS_RightUp+A")
@@ -3089,21 +3327,43 @@ impl AppState {
         // Parse position (button location)
         let pos_idx = serial_idx + 1;
         let button_id = if let Some(pos) = parts.get(pos_idx) {
-            let pos_str = pos.strip_prefix('B')?;
-
-            if pos_str.contains('.') {
-                // Bit-level: "2.0" -> byte 2, bit 0
-                let bit_parts: Vec<&str> = pos_str.split('.').collect();
-                if bit_parts.len() != 2 {
-                    return None;
-                }
-                let byte_idx = bit_parts[0].parse::<u64>().ok()?;
-                let bit_idx = bit_parts[1].parse::<u64>().ok()?;
-                (stable_device_id << 32) | (byte_idx << 16) | bit_idx
+            if let Some(hex) = pos.strip_prefix('H') {
+                /* ★v21.7 语义按键 (HidP_GetUsages 路线): ..._H<usage> */
+                let usage = hex.parse::<u32>().ok()?;
+                (stable_device_id << 32)
+                    | crate::hid_layout::semantic_button_position(usage) as u64
+            } else if let Some(rest) = pos.strip_prefix('A') {
+                /* ★v21.7 语义轴方向: ..._A<usage><L|R|U|D> (无下划线, 避免与名分隔符冲突) */
+                let mut chars = rest.chars();
+                let dir_ch = chars.next_back()?;
+                let usage_str = chars.as_str();
+                let axis_usage = usage_str.parse::<u16>().ok()?;
+                let dir = match dir_ch {
+                    'L' => 0u8,
+                    'R' => 1,
+                    'U' => 2,
+                    'D' => 3,
+                    _ => return None,
+                };
+                (stable_device_id << 32)
+                    | crate::hid_layout::semantic_axis_position(axis_usage, dir) as u64
             } else {
-                // Byte-level: "4" -> byte 4 (analog)
-                let byte_idx = pos_str.parse::<u64>().ok()?;
-                (stable_device_id << 32) | 0x80000000u64 | byte_idx
+                let pos_str = pos.strip_prefix('B')?;
+
+                if pos_str.contains('.') {
+                    // Bit-level: "2.0" -> byte 2, bit 0
+                    let bit_parts: Vec<&str> = pos_str.split('.').collect();
+                    if bit_parts.len() != 2 {
+                        return None;
+                    }
+                    let byte_idx = bit_parts[0].parse::<u64>().ok()?;
+                    let bit_idx = bit_parts[1].parse::<u64>().ok()?;
+                    (stable_device_id << 32) | (byte_idx << 16) | bit_idx
+                } else {
+                    // Byte-level: "4" -> byte 4 (analog)
+                    let byte_idx = pos_str.parse::<u64>().ok()?;
+                    (stable_device_id << 32) | 0x80000000u64 | byte_idx
+                }
             }
         } else {
             // No position (HID device without button info)
@@ -3523,25 +3783,45 @@ mod tests {
 
     #[test]
     fn test_create_input_mappings_invalid_trigger() {
+        /* ★v23.1: 坏触发键从"致命错误"改为"跳过 + 日志" —— 单条脏数据不得阻断启动
+         * (用户实测: 历史遗留坏触发键曾让程序完全起不来)。 */
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
-            trigger_key: "INVALID_KEY".to_string(),
-            target_keys: SmallVec::from_vec(vec!["A".to_string()]),
-            interval: None,
-            event_duration: None,
-            turbo_enabled: true,
-                move_speed: 10,                double_tap_enabled: false,
+                trigger_key: "INVALID_KEY".to_string(),
+                target_keys: SmallVec::from_vec(vec!["A".to_string()]),
+                interval: None,
+                event_duration: None,
+                turbo_enabled: true,
+                move_speed: 10,
+                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
-
                 note: String::new(),
-        }];
+            },
+            KeyMapping {
+                trigger_key: "B".to_string(),
+                target_keys: SmallVec::from_vec(vec!["C".to_string()]),
+                interval: None,
+                event_duration: None,
+                turbo_enabled: true,
+                move_speed: 10,
+                double_tap_enabled: false,
+                double_tap_gap_ms: default_double_tap_gap_ms(),
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
+                note: String::new(),
+            },
+        ];
 
-        let result = AppState::create_input_mappings(&config);
-        assert!(result.is_err());
+        let map = AppState::create_input_mappings(&config)
+            .expect("坏触发键不应让映射构建失败");
+        // 坏的那条被跳过, 好的那条照常加载
+        assert!(map.contains_key(&AppState::input_name_to_device("B").unwrap()));
+        assert_eq!(map.len(), 1);
     }
 
     #[test]
@@ -4562,5 +4842,46 @@ mod tests {
         } else {
             panic!("Expected MultipleActions variant");
         }
+    }
+
+    /// ★v23.1 回归: 历史遗留的**坏触发键**不得阻断启动。
+    /// 用户实测: `GAMEPAD_045E_LS_Left+GAMEPAD_045E_LS_LS_Up` (双前缀/无法解析) 曾导致
+    /// "Failed to initialize application state" → 程序完全起不来。
+    #[test]
+    fn invalid_trigger_mapping_is_skipped_not_fatal() {
+        let mk = |trigger: &str, targets: &[&str], note: &str| KeyMapping {
+            trigger_key: trigger.to_string(),
+            target_keys: targets.iter().map(|s| s.to_string()).collect(),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: true,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: default_double_tap_gap_ms(),
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            note: note.to_string(),
+        };
+        let config = AppConfig {
+            mappings: vec![
+                // 用户实测的坏条目: 空目标键 + 双前缀坏触发键
+                mk(
+                    "GAMEPAD_045E_LS_Left+GAMEPAD_045E_LS_LS_Up",
+                    &[],
+                    "手柄·十字键·右",
+                ),
+                // 坏触发键但**有**目标键 → 也应跳过而非报错
+                mk("GAMEPAD_045E_LS_LS_Up", &["Q"], "坏键"),
+                // 正常映射 → 必须照常加载
+                mk("A", &["B"], "有效"),
+            ],
+            ..Default::default()
+        };
+
+        let map = AppState::create_input_mappings(&config)
+            .expect("坏触发键不得让映射构建失败");
+        let dev_a = AppState::input_name_to_device("A").expect("A 可解析");
+        assert!(map.contains_key(&dev_a), "有效映射应被加载");
     }
 }

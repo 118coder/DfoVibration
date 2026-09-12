@@ -27,7 +27,7 @@ pub(crate) mod utils;
 
 use crate::config::AppConfig;
 use crate::gui::theme::Theme;
-use crate::gui::types::{KeyCaptureMode, Page};
+use crate::gui::types::{GpFlow, KeyCaptureMode, Page};
 use crate::i18n::CachedTranslations;
 use crate::state::AppState;
 use eframe::egui;
@@ -52,24 +52,6 @@ enum ParsedSwitchKey {
     },
 }
 
-/// ★v20.3: 手柄快速捕获待确认项 (升级自 `(usize, bool, String)` 元组)。
-/// 确认条上可直接勾选【连发】【简易奔跑】, 与连发映射区的同名开关写同一字段。
-#[derive(Debug, Clone, PartialEq)]
-pub struct QuickGamepadPending {
-    /// 手柄槽位 id (SLOTS 下标)
-    pub slot_id: usize,
-    /// true = 本次捕获的是槽位触发键, false = 目标键
-    pub is_trigger: bool,
-    /// 捕获到的输入名 (如 "GAMEPAD_045E_A" / "F" / "LBUTTON")
-    pub input: String,
-    /// 确认时写入该槽位映射的 连发 开关 (新建默认 true = 沿用旧行为)
-    pub turbo: bool,
-    /// 确认时写入该槽位映射的 简易奔跑 开关 (默认 false)
-    pub double_tap: bool,
-    /// ★v21.0 确认时写入该槽位映射的 奔跑 开关 (默认 false; 勾选后连发/双击失效)
-    pub run: bool,
-}
-
 /// Main GUI application structure.
 ///
 /// Manages the application window state, dialogs, and user interactions.
@@ -86,8 +68,10 @@ pub struct SorahkGui {
     pub gamepad_texture: Option<egui::TextureHandle>,
     /// gamepad_texture 对应的主题 (false=亮色变体, true=深色变体)
     pub gamepad_texture_dark: bool,
-    /// 当前选中的手柄槽位
-    pub gamepad_selected_slot: Option<usize>,
+    /// ★v22.0: 手柄映射页交互状态机 (唯一真相; 取代旧的 selected_slot/pending/delete_arm 散落字段)
+    pub gp_flow: GpFlow,
+    /// ★v23.1: 本次会话是否已跑过手柄映射清理 (进页面时一次, 清掉历史坏/重复条目)
+    pub gp_cleanup_done: bool,
     pub vib_preset_idx: usize,
     pub vib_preset_name: String,
     /// 全职业预设 (v21): 基础职业/转职选择索引
@@ -135,10 +119,6 @@ pub struct SorahkGui {
     /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
     new_whitelist_name: String,
     whitelist_error: Option<String>,
-    /// 手柄快速捕获待确认项。
-    /// 捕获不再立即写映射, 需用户在槽位面板点「确认应用」(防误操作)。
-    /// ★v20.3: 升级为结构体 —— 确认条上可直接勾选【连发】【简易奔跑】(与连发映射区同字段)。
-    pub quick_gamepad_pending: Option<QuickGamepadPending>,
     /// ★v20.3: 连发页「新增映射」置顶后滚动到编辑面板 (一次性标志)
     pub scroll_to_edit_row: bool,
     /// ★v20.3: 经典模式页当前子页签 (0=连发映射 1=通用型震动设定 2=全职业预设)
@@ -151,10 +131,41 @@ pub struct SorahkGui {
     pub classic_pos_latch: u8,
     /// ★v20.3: 预设切换键的逐键按压状态 (与 config.presets 下标一一对应, 边缘检测用)
     pub preset_switch_key_states: Vec<bool>,
-    /// ★v20.3: 预设切换键编辑 — 目标预设下标 / 键名输入 / 冲突错误
+    /// ★v20.3: 预设切换键编辑 — 目标预设下标 / 键位标签 / 冲突错误
     pub preset_key_target: usize,
-    pub preset_key_input: String,
+    /// ★v21.7c: 切换键构建器 —— 按顺序保存的键位标签 (可追加成组合键; 只捕获不手输, 天然禁汉字)
+    pub preset_key_parts: Vec<String>,
+    /// 标签对应的已存切换键原文 (用于切换 preset/外部改动时重新分解标签)
+    pub preset_key_parts_signature: String,
     pub preset_key_error: Option<String>,
+    /// ★v21.7d: 上一帧第三方手柄实时状态 (识别态下检测"新按下"的槽位, 自动选中/打开编辑)
+    pub gamepad_live_prev: crate::state::LiveHidState,
+    /// ★v24.2: 手柄页捕获合并器 —— 一次物理按压可能被原始通道与 XInput 通道各上报一次,
+    /// 校准向导/校键必须折叠成一步 (否则一次按压连吞两个槽位)。
+    pub gp_pad_capture: crate::gui::gamepad_mapping::PadCaptureReconciler,
+    /// ★v24.2: 「手柄按键快速映射」监听态 —— 按一个已校对的手柄键就直接选中槽位并开始键盘捕获。
+    pub gp_quick_listen: bool,
+    /// ★v24.6: 上一帧 XInput 实时输入位图 (识别态下检测"新按下"的 XInput 命名槽位)。
+    pub gp_prev_xinput: Option<(u16, u32)>,
+    /// ★v21.8: 手柄页轻提示 (一条成功/引导文案, 数秒后自动消失)
+    pub gamepad_toast: Option<String>,
+    /// 轻提示过期时刻
+    pub gamepad_toast_until: Option<std::time::Instant>,
+    /// ★v22.0: 手柄页就近警告 (如"先识别手柄"), 与成功提示分开配色
+    pub gamepad_warn: Option<String>,
+    /// 就近警告过期时刻
+    pub gamepad_warn_until: Option<std::time::Instant>,
+    /// ★v21.9: 「鼠标映射」小菜单是否展开 (滚动 / 点击)
+    pub gamepad_mouse_menu: bool,
+    /// ★v21.8: 新手引导条是否已关闭 (会话内)
+    pub gamepad_tip_dismissed: bool,
+    /// ★v21.7: 手柄类预设切换键绑定表的签名 (变化时才推送到 AppState, 避免逐帧加锁)
+    pub preset_switch_bindings_sig: u64,
+    /// ★v21.7 方案A: 原始 HID 手柄 (标准布局一键生成) —— 设备缓存/时刻/选中/提示
+    pub raw_hid_pads: Vec<crate::rawinput::RawHidGamepad>,
+    pub raw_hid_pads_fetched: Option<std::time::Instant>,
+    pub raw_hid_selected: usize,
+    pub raw_hid_status: Option<String>,
     /// Device manager dialog visibility
     show_device_manager: bool,
     /// Device manager dialog
@@ -276,7 +287,6 @@ impl SorahkGui {
         let minimal_mode = config.minimal_mode;
         /* 经典模式默认开, 但显式设置的极简模式优先 (双标记同真时极简赢) */
         let classic_mode = config.classic_mode && !config.minimal_mode;
-        let classic_mode = config.classic_mode;
         let minimal_vib_preset_job = config.minimal_vib_preset_job;
 
         Self {
@@ -286,7 +296,8 @@ impl SorahkGui {
             active_page: Page::Gamepad,
             gamepad_texture: None,
             gamepad_texture_dark: false,
-            gamepad_selected_slot: None,
+            gp_flow: GpFlow::Idle,
+            gp_cleanup_done: false,
             vib_preset_idx: 0,
             vib_preset_name: String::new(),
             vib_job_base: 0,
@@ -311,7 +322,6 @@ impl SorahkGui {
             modal_defer: 0,
             new_whitelist_name: String::new(),
             whitelist_error: None,
-            quick_gamepad_pending: None,
             scroll_to_edit_row: false,
             classic_tab: 0,
             classic_mode,
@@ -319,8 +329,24 @@ impl SorahkGui {
             classic_pos_latch: 0,
             preset_switch_key_states: Vec::new(),
             preset_key_target: 0,
-            preset_key_input: String::new(),
+            preset_key_parts: Vec::new(),
+            preset_key_parts_signature: String::new(),
             preset_key_error: None,
+            gamepad_live_prev: crate::state::LiveHidState::default(),
+            gp_pad_capture: crate::gui::gamepad_mapping::PadCaptureReconciler::default(),
+            gp_quick_listen: false,
+            gp_prev_xinput: None,
+            gamepad_toast: None,
+            gamepad_toast_until: None,
+            gamepad_warn: None,
+            gamepad_warn_until: None,
+            gamepad_mouse_menu: false,
+            gamepad_tip_dismissed: false,
+            preset_switch_bindings_sig: 0,
+            raw_hid_pads: Vec::new(),
+            raw_hid_pads_fetched: None,
+            raw_hid_selected: 0,
+            raw_hid_status: None,
             show_device_manager: false,
             device_manager_dialog: None,
             hid_activation_dialog: None,

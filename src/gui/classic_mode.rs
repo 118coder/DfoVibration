@@ -169,7 +169,11 @@ impl SorahkGui {
         let tabs: Vec<(usize, &str)> = TAB_NAMES
             .iter()
             .enumerate()
-            .filter(|&(i, _)| self.config.dfo_player || (i != 1 && i != 2))
+            .filter(|&(i, _)| {
+                /* ★v24.4: 「手柄映射」(i=3) 已从经典模式移除 (用户要求: 经典就应该经典);
+                 * 手柄映射仍在完整模式侧边栏可用。1/2 为震动页, 非 DFO 玩家隐藏。 */
+                i != 3 && (self.config.dfo_player || (i != 1 && i != 2))
+            })
             .map(|(i, n)| (i, *n))
             .collect();
         if !tabs.iter().any(|(i, _)| *i == self.classic_tab) {
@@ -205,6 +209,84 @@ impl SorahkGui {
                 );
             });
         });
+    }
+
+    /// ★v24.4: 经典模式 · 连发映射页的震动快捷条 (置于「预设管理」上方, 用户要求)。
+    ///
+    /// 震动 开/关 + 震动预设切换/应用 + 一键跳到「通用型震动设定」—— 不用切页就能调震动。
+    /// 预设数据与应用逻辑复用震动页那一套 (`apply_general_vibration_preset`), 两处永远一致。
+    pub(super) fn render_classic_vib_quickbar(&mut self, ui: &mut egui::Ui) {
+        let th = self.theme();
+        let entries = crate::config::visible_preset_entries(
+            &self.config.vibration_presets,
+            self.config.vib_legacy_client,
+        );
+        if entries.is_empty() {
+            return;
+        }
+        /* 选择始终落在可见条目上 (与震动页同一约定: 过滤后真实下标) */
+        let sel_pos = entries
+            .iter()
+            .position(|(real, _)| *real == self.vib_preset_idx)
+            .unwrap_or(0);
+        if let Some((real, _)) = entries.get(sel_pos) {
+            self.vib_preset_idx = *real;
+        }
+        let cur_name = entries[sel_pos].1.clone();
+        let mut next_pos = sel_pos;
+        let mut apply_name: Option<String> = None;
+        let mut goto_tune = false;
+        th.card(ui, None, |ui| {
+            ui.horizontal(|ui| {
+                let vib_on = self
+                    .app_state
+                    .vibration_enabled
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let (vtext, vcolor, vbg) = if vib_on {
+                    ("震动: 开", th.good, th.good_soft)
+                } else {
+                    ("震动: 关", th.bad, th.bad_soft)
+                };
+                if ui.add(th.status_pill(vtext, vcolor, vbg)).clicked() {
+                    let v = self
+                        .app_state
+                        .vibration_enabled
+                        .load(std::sync::atomic::Ordering::Relaxed);
+                    self.app_state
+                        .vibration_enabled
+                        .store(!v, std::sync::atomic::Ordering::Relaxed);
+                }
+                ui.add_space(theme::SP_S);
+                ui.label(th.weak("震动预设"));
+                egui::ComboBox::from_id_salt("classic_vib_quick_preset")
+                    .selected_text(cur_name.clone())
+                    .width(150.0)
+                    .show_ui(ui, |ui| {
+                        for (pos, (_, n)) in entries.iter().enumerate() {
+                            if ui.selectable_label(pos == sel_pos, n).clicked() {
+                                next_pos = pos;
+                            }
+                        }
+                    });
+                if ui.add(th.secondary_button("应用")).clicked() {
+                    apply_name = Some(entries[next_pos].1.clone());
+                }
+                ui.add_space(theme::SP_S);
+                if ui.add(th.secondary_button("震动调校 →")).clicked() {
+                    goto_tune = true;
+                }
+                ui.label(th.hint_text("与「通用型震动设定」同一套预设, 应用后实时生效"));
+            });
+        });
+        if let Some((real, _)) = entries.get(next_pos) {
+            self.vib_preset_idx = *real;
+        }
+        if let Some(name) = apply_name {
+            self.apply_general_vibration_preset(&name);
+        }
+        if goto_tune {
+            self.classic_tab = 1;
+        }
     }
 
     /// 经典模式内容区 (按页签分发; 全部复用现有页面渲染器 —— 与完整版互通)。

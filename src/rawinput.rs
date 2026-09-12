@@ -613,6 +613,20 @@ impl DeviceHidState {
     }
 }
 
+/// ★v21.7 方案A: 语义翻译状态 (每设备) —— preparsed 数据 + 上一帧按钮 + 轴规格。
+struct SemanticDeviceState {
+    /// `RIDI_PREPARSEDDATA` 拷贝 (HidP_* 直接吃这块内存; 保持存活即可, 无需设备句柄)。
+    preparsed: Vec<u8>,
+    /// 上一帧按下的 HidP usage 列表 (边缘检测用)。
+    last_usages: SmallVec<[u16; 16]>,
+    /// page 0x01 轴规格: (usage, 位宽)。用于判定摇杆方向 (与空闲基线比较)。
+    axis_specs: Vec<(u16, u8)>,
+    /// 上一帧方向位: (十字键4位, 左摇杆4位, 右摇杆4位) —— 边缘检测用。
+    prev_dirs: (u8, u8, u8),
+    /// ★v22.1: 上一帧扳机态 (LT=Z 轴超阈值, RT=Rz 轴超阈值)。
+    prev_triggers: (bool, bool),
+}
+
 /// Handler for Raw Input API messages from HID devices.
 pub struct RawInputHandler {
     state: Arc<AppState>,
@@ -624,6 +638,8 @@ pub struct RawInputHandler {
     device_states: scc::HashMap<isize, DeviceHidState>,
     /// Config baselines keyed by stable device ID (hash of VID:PID:Serial).
     config_baselines: scc::HashMap<u64, Vec<u8>>,
+    /// ★v21.7 方案A: 语义翻译状态 (存在语义触发键或正在实时识别时建立)。
+    semantic_states: scc::HashMap<isize, SemanticDeviceState>,
     /// Device ownership manager.
     ownership: crate::input_ownership::DeviceOwnership,
 }
@@ -645,6 +661,7 @@ impl RawInputHandler {
         self.device_cache.remove_sync(&handle_key);
         self.device_states.remove_sync(&handle_key);
         self.capture_states.remove_sync(&handle_key);
+        self.semantic_states.remove_sync(&handle_key);
 
         // Clear thread-local cache if it references this device
         LAST_DEVICE_CACHE.with(|cache| unsafe {
@@ -722,6 +739,7 @@ impl RawInputHandler {
             capture_states: scc::HashMap::new(),
             device_states: scc::HashMap::new(),
             config_baselines,
+            semantic_states: scc::HashMap::new(),
             ownership,
         })
     }
@@ -1164,15 +1182,35 @@ impl RawInputHandler {
             }
 
             // Detect button changes using baseline comparison
-            let changes = self.detect_hid_changes(
+            let mut changes = self.detect_hid_changes(
                 handle_key,
                 data_slice,
                 stable_device_id,
                 device_info.device_type,
             );
 
+            /* ★v22.4: 发布原始位组合哈希 (与连发同编码) —— 即使语义通道没在跑,
+             * 已校准的槽位也能点亮。仅对识别目标手柄生效 (内部已过滤)。 */
+            if self.state.live_hid_pad().is_some() {
+                let pos = self
+                    .device_states
+                    .read_sync(&handle_key, |_, s| s.last_button_id)
+                    .flatten()
+                    .map(|id| id as u32)
+                    .unwrap_or(0);
+                self.state.publish_live_raw(
+                    device_info.vendor_id,
+                    device_info.product_id,
+                    pos,
+                );
+            }
+
+            /* ★v22.7: 校准向导进行中 → 只保留实时状态 (上面已发布), 不响应切换键/预设切换,
+             * 也不派发任何映射 —— 否则校对按键会被注入游戏或被别的功能抢走。 */
+            let calibrating = self.state.is_gp_calibrating();
+
             // Check switch key first (before paused check)
-            if likely(!changes.is_empty()) {
+            if likely(!changes.is_empty()) && !calibrating {
                 let switch_button_id = self
                     .state
                     .switch_key_cache
@@ -1188,6 +1226,28 @@ impl RawInputHandler {
                         }
                     }
                 }
+
+                /* ★v21.7 预设切换键 (原始 HID 手柄): button_id 高 32 位即设备指纹,
+                 * 精确比对即可定位"同一只设备的同一个按键组合"。命中即请求切换
+                 * (GUI 线程执行落盘+热重载); 同时把该按键从映射派发里剔除, 保证
+                 * 切换键优先 —— 即使用户把它同时绑成了普通映射也不会双触发。 */
+                let mut switched_ids: SmallVec<[u64; 4]> = SmallVec::new();
+                if unlikely(!self.state.preset_switch_bindings_is_empty()) {
+                    let bindings = self.state.preset_switch_bindings_snapshot();
+                    for b in &bindings {
+                        if let InputDevice::GenericDevice { button_id, .. } = &b.device {
+                            for (changed_id, is_pressed) in &changes {
+                                if *is_pressed && *changed_id == *button_id {
+                                    self.state.request_preset_switch(&b.preset_name);
+                                    switched_ids.push(*changed_id);
+                                }
+                            }
+                        }
+                    }
+                }
+                if !switched_ids.is_empty() {
+                    changes.retain(|(id, _)| !switched_ids.contains(id));
+                }
             }
 
             // Fast paused check (only for activated devices)
@@ -1195,8 +1255,21 @@ impl RawInputHandler {
                 return false;
             }
 
+            /* ★v21.7 方案A: 语义翻译 —— 配置含语义 HID 触发键, 或 GUI 正在实时识别某手柄
+             * (SVG 按下即亮) 时启用。两条通道命名空间独立, 各匹配各的映射, 互不干扰。 */
+            if self.state.has_semantic_hid_mappings() || self.state.live_hid_pad().is_some() {
+                self.dispatch_semantic_inputs(
+                    device_handle,
+                    handle_key,
+                    &device_info,
+                    stable_device_id,
+                    data_slice,
+                );
+            }
+
             // Dispatch events for each button change
             if likely(!changes.is_empty())
+                && !calibrating
                 && let Some(pool) = self.state.get_worker_pool()
             {
                 for (button_id, is_pressed) in changes {
@@ -1730,6 +1803,266 @@ impl RawInputHandler {
         // Only use lower 32 bits to match button_id format (device_id is stored in high 32 bits of button_id)
         let _ = cache.upsert_sync(stable_device_id & 0xFFFFFFFF, display_info);
     }
+
+    /// ★v21.7 方案A: 用 `HidP_GetUsages` 把当前原始报文翻译成**语义按键**事件并派发。
+    ///
+    /// 只在配置里存在语义触发键时才调用 (调用方已判 `has_semantic_hid_mappings`), 因此
+    /// 普通用户零开销。语义 button_id 与既有 bit-hash / 手动捕获命名空间不重叠, 两套映射
+    /// 可共存: 每个事件只在存在对应映射时才派发, 不会互相干扰或双触发。
+    fn dispatch_semantic_inputs(
+        &self,
+        device_handle: HANDLE,
+        handle_key: isize,
+        device_info: &CachedDeviceInfo,
+        stable_device_id: u64,
+        data: &[u8],
+    ) {
+        use windows::Win32::Devices::HumanInterfaceDevice as hid;
+
+        /* 首次见到该设备: 取 preparsed 数据并缓存 + 轴规格 */
+        if self.semantic_states.read_sync(&handle_key, |_, _| ()).is_none() {
+            let Some(mut blob) = read_preparsed_blob(device_handle) else {
+                return;
+            };
+            let axis_specs = axis_specs_from_preparsed(&mut blob);
+            let _ = self.semantic_states.insert_sync(
+                handle_key,
+                SemanticDeviceState {
+                    preparsed: blob,
+                    last_usages: SmallVec::new(),
+                    axis_specs,
+                    prev_dirs: (0, 0, 0),
+                    prev_triggers: (false, false),
+                },
+            );
+        }
+
+        /* HidP_GetUsages 需要 &mut 报文 —— 拷贝一份小的栈缓冲 (报文 ≤128 字节足够) */
+        let mut report = [0u8; 128];
+        let rlen = data.len().min(report.len());
+        report[..rlen].copy_from_slice(&data[..rlen]);
+        /* 空闲基线 (用于摇杆方向判定; 缺失则本帧不判方向) */
+        let baseline: Vec<u8> = self
+            .device_states
+            .read_sync(&handle_key, |_, s| s.baseline_data.clone())
+            .unwrap_or_default();
+
+        let mut changes: SmallVec<[(u32, bool); 24]> = SmallVec::new();
+        let mut live = crate::state::LiveHidState {
+            vid: device_info.vendor_id,
+            pid: device_info.product_id,
+            ..Default::default()
+        };
+        let _ = self.semantic_states.update_sync(&handle_key, |_, st| {
+            let mut button_mask: u32 = 0;
+            let now: SmallVec<[u16; 16]> = unsafe {
+                let pp = hid::PHIDP_PREPARSED_DATA(st.preparsed.as_mut_ptr() as isize);
+                let mut list = [0u16; 32];
+                let mut len = list.len() as u32;
+                let status = hid::HidP_GetUsages(
+                    hid::HidP_Input,
+                    0x09, // Button usage page
+                    None,
+                    list.as_mut_ptr(),
+                    &mut len,
+                    pp,
+                    &mut report[..rlen],
+                );
+                /* ⚠ 全松开时 HidP_GetUsages 返回 USAGE_NOT_FOUND —— 这是"空集"而非错误;
+                 * 若当错误提前 return, last_usages 永不更新 → 注入键永久悬空 (卡键)。 */
+                if status == hid::HIDP_STATUS_USAGE_NOT_FOUND {
+                    SmallVec::new()
+                } else if status.0 < 0 {
+                    return;
+                } else {
+                    list[..(len as usize).min(list.len())]
+                        .iter()
+                        .copied()
+                        .collect()
+                }
+            };
+            for &u in &now {
+                if (u as u32) < 32 {
+                    button_mask |= 1u32 << u;
+                }
+                if !st.last_usages.contains(&u) {
+                    changes.push((crate::hid_layout::semantic_button_position(u as u32), true));
+                }
+            }
+            for &u in &st.last_usages {
+                if !now.contains(&u) {
+                    changes.push((crate::hid_layout::semantic_button_position(u as u32), false));
+                }
+            }
+            st.last_usages = now;
+            live.buttons = button_mask;
+
+            /* 十字键 (Hat switch): 绝对方向值 1..8 (顺时针自"上"), 0/失败 = 中 */
+            let specs = st.axis_specs.clone();
+            unsafe {
+                let pp = hid::PHIDP_PREPARSED_DATA(st.preparsed.as_mut_ptr() as isize);
+                let mut hat_v: u32 = 0;
+                let hat_ok = hid::HidP_GetUsageValue(
+                    hid::HidP_Input,
+                    0x01,
+                    None,
+                    crate::hid_layout::USAGE_HAT_SWITCH,
+                    &mut hat_v,
+                    pp,
+                    &report[..rlen],
+                );
+                if hat_ok.0 >= 0 && (1..=8).contains(&hat_v) {
+                    live.dpad = hat_v as u8;
+                }
+
+                let read_axis = |usage: u16, buf: &[u8]| -> Option<u32> {
+                    let mut v: u32 = 0;
+                    let stt = hid::HidP_GetUsageValue(
+                        hid::HidP_Input,
+                        0x01,
+                        None,
+                        usage,
+                        &mut v,
+                        pp,
+                        buf,
+                    );
+                    (stt.0 >= 0).then_some(v)
+                };
+                let base: &[u8] = if baseline.len() == rlen { &baseline } else { &[] };
+                let mut ls_bits = 0u8;
+                let mut rs_bits = 0u8;
+                let mut ls_size = 16u8;
+                let mut rs_size = 16u8;
+                for (usage, size) in &specs {
+                    match *usage {
+                        crate::hid_layout::USAGE_X => ls_size = *size,
+                        crate::hid_layout::USAGE_RX => rs_size = *size,
+                        _ => {}
+                    }
+                }
+                let x = read_axis(crate::hid_layout::USAGE_X, &report[..rlen]);
+                let y = read_axis(crate::hid_layout::USAGE_Y, &report[..rlen]);
+                let rx = read_axis(crate::hid_layout::USAGE_RX, &report[..rlen]);
+                let ry = read_axis(crate::hid_layout::USAGE_RY, &report[..rlen]);
+                if !base.is_empty() {
+                    let bx = read_axis(crate::hid_layout::USAGE_X, base);
+                    let by = read_axis(crate::hid_layout::USAGE_Y, base);
+                    let brx = read_axis(crate::hid_layout::USAGE_RX, base);
+                    let bry = read_axis(crate::hid_layout::USAGE_RY, base);
+                    ls_bits = stick_dirs_from_delta(x, bx, y, by, ls_size);
+                    rs_bits = stick_dirs_from_delta(rx, brx, ry, bry, rs_size);
+                }
+                live.ls = ls_bits;
+                live.rs = rs_bits;
+
+                /* ★v22.1 扳机 (Z/Rz 模拟轴) → 超阈值按压事件。
+                 * 非标准第三方手柄的 LT/RT 常是模拟轴而非按钮; 这里统一转成
+                 * `semantic_axis_position(Z/Rz, 2)` 的 Pressed/Released, 与方向键同通道,
+                 * 因此 LT/RT 既能点亮也能映射 (触发名 `..._A50U` / `..._A53U`)。 */
+                let z_bits = specs
+                    .iter()
+                    .find(|(u, _)| *u == crate::hid_layout::USAGE_Z)
+                    .map(|(_, s)| *s);
+                let rz_bits = specs
+                    .iter()
+                    .find(|(u, _)| *u == crate::hid_layout::USAGE_RZ)
+                    .map(|(_, s)| *s);
+                let lt_now = z_bits.is_some_and(|b| {
+                    let base = if base.is_empty() {
+                        None
+                    } else {
+                        read_axis(crate::hid_layout::USAGE_Z, base)
+                    };
+                    crate::hid_layout::trigger_pressed(
+                        read_axis(crate::hid_layout::USAGE_Z, &report[..rlen]),
+                        base,
+                        b,
+                    )
+                });
+                let rt_now = rz_bits.is_some_and(|b| {
+                    let base = if base.is_empty() {
+                        None
+                    } else {
+                        read_axis(crate::hid_layout::USAGE_RZ, base)
+                    };
+                    crate::hid_layout::trigger_pressed(
+                        read_axis(crate::hid_layout::USAGE_RZ, &report[..rlen]),
+                        base,
+                        b,
+                    )
+                });
+                if lt_now != st.prev_triggers.0 {
+                    changes.push((
+                        crate::hid_layout::semantic_axis_position(
+                            crate::hid_layout::USAGE_Z,
+                            2,
+                        ),
+                        lt_now,
+                    ));
+                }
+                if rt_now != st.prev_triggers.1 {
+                    changes.push((
+                        crate::hid_layout::semantic_axis_position(
+                            crate::hid_layout::USAGE_RZ,
+                            2,
+                        ),
+                        rt_now,
+                    ));
+                }
+                st.prev_triggers = (lt_now, rt_now);
+                live.lt = lt_now;
+                live.rt = rt_now;
+            }
+
+            /* ★v21.7b 方向键 → 语义轴事件 (与按钮同通道; 简单方向映射即可用) */
+            let now_dirs = (dpad_bits_from_hat(live.dpad), live.ls, live.rs);
+            for (usage, dir, pressed) in axis_dir_transitions(st.prev_dirs, now_dirs) {
+                changes.push((
+                    crate::hid_layout::semantic_axis_position(usage, dir),
+                    pressed,
+                ));
+            }
+            st.prev_dirs = now_dirs;
+        });
+
+        /* ★v22.3: 发布"原始位组合哈希" —— 与连发映射同一编码, 供 SVG 高亮识别非标准手柄按键。
+         * `detect_hid_changes` 已在同一帧先跑完, last_button_id 就是当前按下的组合 (松开为 None)。 */
+        live.raw_position = self
+            .device_states
+            .read_sync(&handle_key, |_, s| s.last_button_id)
+            .flatten()
+            .map(|id| id as u32)
+            .unwrap_or(0);
+
+        /* 发布实时状态 (无论有无映射: SVG 热点"按下即亮"依赖它) */
+        self.state.publish_live_hid(live);
+
+        if changes.is_empty() {
+            return;
+        }
+        /* ★v22.7: 校准向导进行中 → 实时状态已发布, 但语义映射一律不派发 (防校对键被注入游戏) */
+        if self.state.is_gp_calibrating() {
+            return;
+        }
+        let Some(pool) = self.state.get_worker_pool() else {
+            return;
+        };
+        for (position, pressed) in changes {
+            let button_id = (stable_device_id << 32) | position as u64;
+            let device = InputDevice::GenericDevice {
+                device_type: device_info.device_type,
+                button_id,
+            };
+            if self.state.get_input_mapping(&device).is_some() {
+                let event = if pressed {
+                    InputEvent::Pressed(device)
+                } else {
+                    InputEvent::Released(device)
+                };
+                pool.dispatch(event);
+            }
+        }
+    }
 }
 
 /// Activates a HID device with the given baseline data.
@@ -1964,6 +2297,433 @@ fn extract_device_name(path: &str) -> String {
     }
 }
 
+/* ═══════════ ★v21.7 方案A: 第三方 HID 手柄 → 标准布局 (HidP 语义路线) ═══════════
+ *
+ * 第三方 HID 手柄只能经 RawInput 拿到原始报文, button_id 无语义, 用户必须逐个按键
+ * 手动捕获。本功能把它"翻译"成标准布局, 支持一键生成整套映射。
+ *
+ * ⚠ 路线选择 (本机实测, 2026-09-11):
+ *   目标设备 20BC:5159 (A1 手柄) **不支持** IOCTL_HID_GET_REPORT_DESCRIPTOR ——
+ *   CreateFile 成功但 DeviceIoControl 恒返回 ERROR_INVALID_FUNCTION(1), 两种访问权限
+ *   都试过。因此放弃"读描述符字节 + 自己算 bit 偏移"的方案, 改用 Windows 自带
+ *   `HidP_*` 语义 API:
+ *     · GetRawInputDeviceInfoW(RIDI_PREPARSEDDATA) 拿 preparsed 数据 (无需保持句柄)
+ *     · HidP_GetButtonCaps  → 按钮 usage 列表 (+ 标准布局名)
+ *     · HidP_GetValueCaps   → 轴 usage / 量程 (能力展示)
+ *     · HidP_GetUsages      → 从每帧原始报文直接读出"当前按下的按钮 usage"(语义)
+ *   好处: 由 Windows 解析描述符 → 天然处理 Report ID / bit 打包 / 厂商怪癖, 且可现场
+ *   验证。触发键名 = `GAMEPAD_<VID>_<PID>_<SER|DEV%08X>_H<usage>` (见 hid_layout)。
+ */
+
+/// 一个原始 HID 手柄的能力 (HidP 语义, 用于 UI 展示与一键生成)。
+#[derive(Debug, Clone)]
+pub struct RawHidGamepad {
+    pub vid: u16,
+    pub pid: u16,
+    pub device_name: String,
+    pub serial: Option<String>,
+    /// 稳定设备指纹低 32 位 (button_id 高 32 位; 触发键名里 DEV 段的来源)。
+    pub stable_id_low32: u32,
+    /// 按钮: (HID usage, 标准布局名 Option)
+    pub buttons: Vec<(u32, Option<&'static str>)>,
+    /// 轴展示名 (左摇杆·X / 十字键 …)
+    pub axes: Vec<String>,
+    /// 轴的 HID usage (page 0x01), 用于方向槽位绑定 (X/Y/Rx/Ry/Hat)
+    pub axis_usages: Vec<u16>,
+    /// 输入报文字节长度 (HidP caps)
+    pub report_bytes: u16,
+    /// preparsed 数据是否成功解析
+    pub preparsed_ok: bool,
+}
+
+/// 生成的一条标准布局映射 (展示名, 触发键名)。
+#[derive(Debug, Clone)]
+pub struct StandardLayoutEntry {
+    pub std_name: String,
+    pub trigger_name: String,
+}
+
+/// 取设备的 preparsed 数据拷贝 (`RIDI_PREPARSEDDATA`; 无需 CreateFile/保持句柄)。
+fn read_preparsed_blob(handle: HANDLE) -> Option<Vec<u8>> {
+    unsafe {
+        let mut size = 0u32;
+        let probe = GetRawInputDeviceInfoW(Some(handle), RIDI_PREPARSEDDATA, None, &mut size);
+        /* 注意: 首次查询返回 0 且 size 被填入 (与 RIDI_DEVICEINFO 的语义不同) */
+        if probe != 0 || size == 0 || size > 64 * 1024 {
+            return None;
+        }
+        let mut blob = vec![0u8; size as usize];
+        let got = GetRawInputDeviceInfoW(
+            Some(handle),
+            RIDI_PREPARSEDDATA,
+            Some(blob.as_mut_ptr() as *mut _),
+            &mut size,
+        );
+        if got == u32::MAX {
+            return None;
+        }
+        blob.truncate(size as usize);
+        Some(blob)
+    }
+}
+
+/// 摇杆方向判定的死区: 相对轴位宽的 30%。
+const STICK_DIR_THRESHOLD_RATIO: i64 = 3; // /10
+
+/// 提取 page 0x01 轴规格 (usage, 位宽) —— 仅 X/Y/Rx/Ry/Hat。
+fn axis_specs_from_preparsed(blob: &mut [u8]) -> Vec<(u16, u8)> {
+    use windows::Win32::Devices::HumanInterfaceDevice as hid;
+    let mut specs = Vec::new();
+    unsafe {
+        let pp = hid::PHIDP_PREPARSED_DATA(blob.as_mut_ptr() as isize);
+        let mut caps = hid::HIDP_CAPS::default();
+        if hid::HidP_GetCaps(pp, &mut caps).0 < 0 {
+            return specs;
+        }
+        let nv = caps.NumberInputValueCaps as usize;
+        if nv == 0 {
+            return specs;
+        }
+        let mut arr = vec![hid::HIDP_VALUE_CAPS::default(); nv];
+        let mut len = nv as u16;
+        if hid::HidP_GetValueCaps(hid::HidP_Input, arr.as_mut_ptr(), &mut len, pp).0 < 0 {
+            return specs;
+        }
+        for v in arr.iter().take(len as usize) {
+            if v.UsagePage != 0x01 {
+                continue;
+            }
+            let usage = if v.IsRange {
+                v.Anonymous.Range.UsageMin
+            } else {
+                v.Anonymous.NotRange.Usage
+            };
+            if matches!(
+                usage,
+                crate::hid_layout::USAGE_X
+                    | crate::hid_layout::USAGE_Y
+                    | crate::hid_layout::USAGE_RX
+                    | crate::hid_layout::USAGE_RY
+                    | crate::hid_layout::USAGE_Z
+                    | crate::hid_layout::USAGE_RZ
+                    | crate::hid_layout::USAGE_HAT_SWITCH
+            ) {
+                specs.push((usage, v.BitSize.min(32) as u8));
+            }
+        }
+    }
+    specs
+}
+
+/// 由两根轴的**当前原始值与空闲基线之差**判定四方向位 (bit0=左 bit1=右 bit2=上 bit3=下)。
+///
+/// 用"与基线之差"而非逻辑量程, 好处: 不需要知道轴的符号约定/量程上下限, 对手柄断电前后
+/// 也不会误判。`bit_size` 决定死区 (30% 半量程)。纯函数, 可单测。
+fn stick_dirs_from_delta(
+    x_cur: Option<u32>,
+    x_base: Option<u32>,
+    y_cur: Option<u32>,
+    y_base: Option<u32>,
+    bit_size: u8,
+) -> u8 {
+    let thr = (1i64 << (bit_size.saturating_sub(1)).min(30)) * STICK_DIR_THRESHOLD_RATIO / 10;
+    let mut bits = 0u8;
+    if let (Some(c), Some(b)) = (x_cur, x_base) {
+        let d = c as i64 - b as i64;
+        if d <= -thr {
+            bits |= 0b0001; // 左
+        } else if d >= thr {
+            bits |= 0b0010; // 右
+        }
+    }
+    if let (Some(c), Some(b)) = (y_cur, y_base) {
+        let d = c as i64 - b as i64;
+        /* HID 惯例: Y 正值朝下 → 基线之上 (d<0) = 上 */
+        if d <= -thr {
+            bits |= 0b0100; // 上
+        } else if d >= thr {
+            bits |= 0b1000; // 下
+        }
+    }
+    bits
+}
+
+/// hat 值 (1..8, 顺时针自"上"; 0=中) → 4 位掩码 (bit0=上 bit1=右 bit2=下 bit3=左)。
+fn dpad_bits_from_hat(hat: u8) -> u8 {
+    match hat {
+        1 => 0b0001,
+        2 => 0b0011,
+        3 => 0b0010,
+        4 => 0b0110,
+        5 => 0b0100,
+        6 => 0b1100,
+        7 => 0b1000,
+        8 => 0b1001,
+        _ => 0,
+    }
+}
+
+/// 方向位变化 → 需要派发的 (轴 usage, 方向, 是否按下) 列表。
+/// `prev`/`now` = (十字键4位, 左摇杆4位, 右摇杆4位); 摇杆位序 bit0=左 bit1=右 bit2=上 bit3=下。
+/// 纯函数, 可单测。
+fn axis_dir_transitions(
+    prev: (u8, u8, u8),
+    now: (u8, u8, u8),
+) -> SmallVec<[(u16, u8, bool); 8]> {
+    use crate::hid_layout::{USAGE_HAT_SWITCH, USAGE_RX, USAGE_RY, USAGE_X, USAGE_Y};
+    let mut out = SmallVec::new();
+    /* 左摇杆: 左右→X, 上下→Y */
+    for (bit, usage, dir) in [
+        (0b0001u8, USAGE_X, 0u8),
+        (0b0010, USAGE_X, 1),
+        (0b0100, USAGE_Y, 2),
+        (0b1000, USAGE_Y, 3),
+    ] {
+        let was = prev.1 & bit != 0;
+        let is = now.1 & bit != 0;
+        if was != is {
+            out.push((usage, dir, is));
+        }
+    }
+    /* 右摇杆: 左右→Rx, 上下→Ry */
+    for (bit, usage, dir) in [
+        (0b0001u8, USAGE_RX, 0u8),
+        (0b0010, USAGE_RX, 1),
+        (0b0100, USAGE_RY, 2),
+        (0b1000, USAGE_RY, 3),
+    ] {
+        let was = prev.2 & bit != 0;
+        let is = now.2 & bit != 0;
+        if was != is {
+            out.push((usage, dir, is));
+        }
+    }
+    /* 十字键: bit0=上(U) bit1=右(R) bit2=下(D) bit3=左(L) */
+    for (bit, dir) in [(0b0001u8, 2u8), (0b0010, 1), (0b0100, 3), (0b1000, 0)] {
+        let was = prev.0 & bit != 0;
+        let is = now.0 & bit != 0;
+        if was != is {
+            out.push((USAGE_HAT_SWITCH, dir, is));
+        }
+    }
+    out
+}
+
+/// 从 preparsed 数据提取 (按钮 usage+标准名, 轴展示名, 报文字节长度)。
+fn capability_from_preparsed(blob: &mut [u8]) -> Option<(Vec<(u32, Option<&'static str>)>, Vec<String>, u16)> {
+    use windows::Win32::Devices::HumanInterfaceDevice as hid;
+    unsafe {
+        let pp = hid::PHIDP_PREPARSED_DATA(blob.as_mut_ptr() as isize);
+        let mut caps = hid::HIDP_CAPS::default();
+        if hid::HidP_GetCaps(pp, &mut caps).0 < 0 {
+            return None;
+        }
+
+        let mut buttons: Vec<(u32, Option<&'static str>)> = Vec::new();
+        let n = caps.NumberInputButtonCaps as usize;
+        if n > 0 {
+            let mut arr = vec![hid::HIDP_BUTTON_CAPS::default(); n];
+            let mut len = n as u16;
+            if hid::HidP_GetButtonCaps(hid::HidP_Input, arr.as_mut_ptr(), &mut len, pp).0 >= 0 {
+                for b in arr.iter().take(len as usize) {
+                    if b.UsagePage != 0x09 {
+                        continue;
+                    }
+                    let (umin, umax) = if b.IsRange {
+                        let r = b.Anonymous.Range;
+                        (r.UsageMin, r.UsageMax)
+                    } else {
+                        let r = b.Anonymous.NotRange;
+                        (r.Usage, r.Usage)
+                    };
+                    /* 防御: 个别描述符给出荒谬的 range, 限幅 256 个 */
+                    let hi = umax.min(umin.saturating_add(255));
+                    for u in umin..=hi {
+                        buttons.push((u as u32, crate::hid_layout::standard_button_name(u as u32)));
+                    }
+                }
+            }
+        }
+        buttons.sort_by_key(|b| b.0);
+        buttons.dedup_by_key(|b| b.0);
+
+        let mut axes = Vec::new();
+        let nv = caps.NumberInputValueCaps as usize;
+        if nv > 0 {
+            let mut arr = vec![hid::HIDP_VALUE_CAPS::default(); nv];
+            let mut len = nv as u16;
+            if hid::HidP_GetValueCaps(hid::HidP_Input, arr.as_mut_ptr(), &mut len, pp).0 >= 0 {
+                for v in arr.iter().take(len as usize) {
+                    if v.UsagePage != 0x01 {
+                        continue;
+                    }
+                    let usage = if v.IsRange {
+                        v.Anonymous.Range.UsageMin
+                    } else {
+                        v.Anonymous.NotRange.Usage
+                    };
+                    if let Some(kind) = crate::hid_layout::HidAxisKind::from_usage(usage) {
+                        axes.push(kind.label().to_string());
+                    }
+                }
+            }
+        }
+        axes.dedup();
+
+        Some((buttons, axes, caps.InputReportByteLength))
+    }
+}
+
+/// 稳定设备指纹低 32 位 (与 [`RawInputHandler::generate_stable_device_id`] 同规则)。
+fn stable_id_low32_for(vid: u16, pid: u16, serial: Option<&str>) -> u32 {
+    let real = serial
+        .map(|s| !s.contains('&') && s.len() > 4)
+        .unwrap_or(false);
+    let full = if real {
+        RawInputHandler::hash_vid_pid_serial(vid, pid, serial.unwrap_or(""))
+    } else {
+        RawInputHandler::hash_vid_pid(vid, pid)
+    };
+    full as u32
+}
+
+/// 枚举当前连接的 **原始 HID 手柄** (Gamepad/Joystick usage), 尽力解析其标准布局。
+///
+/// 只读探测; 任何一步失败都不会 panic, 对应字段留空/None。
+pub fn enumerate_raw_hid_gamepads() -> Vec<RawHidGamepad> {
+    let mut out: Vec<RawHidGamepad> = Vec::new();
+    unsafe {
+        let mut count: u32 = 0;
+        if GetRawInputDeviceList(None, &mut count, std::mem::size_of::<RAWINPUTDEVICELIST>() as u32)
+            == u32::MAX
+            || count == 0
+        {
+            return out;
+        }
+        let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
+        if GetRawInputDeviceList(
+            Some(list.as_mut_ptr()),
+            &mut count,
+            std::mem::size_of::<RAWINPUTDEVICELIST>() as u32,
+        ) == u32::MAX
+        {
+            return out;
+        }
+
+        for dev in list.iter().take(count as usize) {
+            if dev.dwType != RIM_TYPEHID {
+                continue;
+            }
+            let handle = dev.hDevice;
+
+            // 设备信息 (usage/VID/PID)
+            let mut size = 0u32;
+            if GetRawInputDeviceInfoW(Some(handle), RIDI_DEVICEINFO, None, &mut size) != 0 {
+                continue;
+            }
+            let mut info_buf = vec![0u8; size as usize];
+            if GetRawInputDeviceInfoW(
+                Some(handle),
+                RIDI_DEVICEINFO,
+                Some(info_buf.as_mut_ptr() as *mut _),
+                &mut size,
+            ) == u32::MAX
+            {
+                continue;
+            }
+            let info = &*(info_buf.as_ptr() as *const RID_DEVICE_INFO);
+            let hid = info.Anonymous.hid;
+            let is_pad = matches!(
+                (hid.usUsagePage, hid.usUsage),
+                (0x01, 0x05) | (0x01, 0x04) | (0x01, 0x08) | (0x05, 0x05) | (0x05, 0x04) | (0x05, 0x01)
+            );
+            if !is_pad {
+                continue;
+            }
+
+            // 设备路径 (用于打开并读描述符) + 名称
+            let mut name_size = 0u32;
+            if GetRawInputDeviceInfoW(Some(handle), RIDI_DEVICENAME, None, &mut name_size) != 0 {
+                continue;
+            }
+            let mut name_buf = vec![0u16; name_size as usize];
+            if GetRawInputDeviceInfoW(
+                Some(handle),
+                RIDI_DEVICENAME,
+                Some(name_buf.as_mut_ptr() as *mut _),
+                &mut name_size,
+            ) == u32::MAX
+            {
+                continue;
+            }
+            let path = String::from_utf16_lossy(&name_buf);
+            let path = path.trim_end_matches('\0').to_string();
+
+            let vid = hid.dwVendorId as u16;
+            let pid = hid.dwProductId as u16;
+            let serial = RawInputHandler::get_device_serial_number(handle);
+            let stable = stable_id_low32_for(vid, pid, serial.as_deref());
+
+            /* HidP 语义能力 (RIDI_PREPARSEDDATA 拷贝 → HidP_GetCaps/GetButtonCaps/GetValueCaps) */
+            let (buttons, axes, axis_usages, report_bytes, preparsed_ok) =
+                match read_preparsed_blob(handle) {
+                    Some(mut blob) => {
+                        let axis_usages: Vec<u16> =
+                            axis_specs_from_preparsed(&mut blob).iter().map(|(u, _)| *u).collect();
+                        match capability_from_preparsed(&mut blob) {
+                            Some((b, a, n)) => (b, a, axis_usages, n, true),
+                            None => (Vec::new(), Vec::new(), axis_usages, 0, false),
+                        }
+                    }
+                    None => (Vec::new(), Vec::new(), Vec::new(), 0, false),
+                };
+
+            /* 同 VID:PID 只保留一台 (多接口设备会重复出现) */
+            if out.iter().any(|d| d.vid == vid && d.pid == pid) {
+                continue;
+            }
+            out.push(RawHidGamepad {
+                vid,
+                pid,
+                device_name: extract_device_name(&path),
+                serial,
+                stable_id_low32: stable,
+                buttons,
+                axes,
+                axis_usages,
+                report_bytes,
+                preparsed_ok,
+            });
+        }
+    }
+    out
+}
+
+/// 按标准布局约定, 为一个已解析能力的手柄生成按钮映射触发键 (语义名 `..._H<usage>`)。
+/// 只生成能被标准约定命名的按钮 (A/B/X/Y/LB/RB/LT/RT/Back/Start/L3/R3/Guide)。
+pub fn build_standard_layout_entries(pad: &RawHidGamepad) -> Vec<StandardLayoutEntry> {
+    use crate::hid_layout::{device_prefix, format_semantic_button_name};
+    let prefix = device_prefix(&crate::state::DeviceType::Gamepad(pad.vid));
+    let mut entries = Vec::new();
+    for (usage, std_name) in &pad.buttons {
+        let Some(std_name) = std_name else {
+            continue;
+        };
+        entries.push(StandardLayoutEntry {
+            std_name: std_name.to_string(),
+            trigger_name: format_semantic_button_name(
+                prefix,
+                pad.vid,
+                pad.pid,
+                pad.serial.as_deref(),
+                pad.stable_id_low32,
+                *usage,
+            ),
+        });
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2130,5 +2890,147 @@ mod tests {
         assert!(RawInputHandler::parse_device_id("invalid").is_none());
         assert!(RawInputHandler::parse_device_id("").is_none());
         assert!(RawInputHandler::parse_device_id("ZZZZ:0B05").is_none());
+    }
+
+    /* ── ★v21.7 方案A: 语义标准布局生成 ── */
+
+    /// 真实环境冒烟: 枚举 + HidP 语义能力解析全链路不得 panic (设备依硬件)。
+    /// `cargo test -- --nocapture` 可看到本机实际结果, 用于现场核对。
+    #[test]
+    fn smoke_enumerate_and_parse_raw_hid_gamepads() {
+        let pads = enumerate_raw_hid_gamepads();
+        println!("[smoke] 检测到 {} 台原始 HID 手柄", pads.len());
+        for p in &pads {
+            let std_names: Vec<&str> = p.buttons.iter().filter_map(|(_, n)| *n).collect();
+            println!(
+                "[smoke] {:04X}:{:04X} {} -> preparsed={} 按钮={} 标准名={:?} 轴={:?} 报文={}字节",
+                p.vid,
+                p.pid,
+                p.device_name,
+                p.preparsed_ok,
+                p.buttons.len(),
+                std_names,
+                p.axes,
+                p.report_bytes
+            );
+        }
+        // 无断言 (依硬件); 只要不 panic/OOB 即通过
+    }
+
+    /// 语义触发键名必须能被 `input_name_to_device` 解析回同一 button_id (生成的映射真能命中)。
+    #[test]
+    fn semantic_entries_round_trip_through_name_parser() {
+        let low = 0x1234_5678u32;
+        let pad = RawHidGamepad {
+            vid: 0x20BC,
+            pid: 0x5159,
+            device_name: "Test Pad".into(),
+            serial: None,
+            stable_id_low32: low,
+            buttons: vec![(1, Some("A")), (2, Some("B")), (3, Some("X")), (4, Some("Y"))],
+            axes: vec!["左摇杆·X".into(), "左摇杆·Y".into()],
+            axis_usages: vec![crate::hid_layout::USAGE_X, crate::hid_layout::USAGE_Y],
+            report_bytes: 15,
+            preparsed_ok: true,
+        };
+        let entries = build_standard_layout_entries(&pad);
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0].std_name, "A");
+        let dev = crate::state::AppState::input_name_to_device(&entries[0].trigger_name).unwrap();
+        match dev {
+            crate::state::InputDevice::GenericDevice { button_id, .. } => {
+                assert_eq!((button_id >> 32) as u32, low);
+                let pos = (button_id & 0xFFFF_FFFF) as u32;
+                assert_eq!(crate::hid_layout::semantic_button_usage(pos), Some(1));
+            }
+            other => panic!("期望 GenericDevice, 得到 {other:?}"),
+        }
+        // 非标准按钮 (usage 20 无标准名) 不生成
+        let pad2 = RawHidGamepad {
+            buttons: vec![(20, None)],
+            ..pad
+        };
+        assert!(build_standard_layout_entries(&pad2).is_empty());
+    }
+
+    /* ── ★v21.7b 摇杆方向判定 (纯函数) ── */
+
+    #[test]
+    fn stick_dirs_from_delta_ignores_center_and_detects_four_ways() {
+        let base = 32768u32;
+        let thr = 32768i64 * 3 / 10; // 位宽 16 → 30% 半量程 ≈ 9830
+        // 居中不动
+        assert_eq!(stick_dirs_from_delta(Some(base), Some(base), Some(base), Some(base), 16), 0);
+        // 右 (X 正向偏移)
+        assert_eq!(
+            stick_dirs_from_delta(Some((base as i64 + thr) as u32), Some(base), Some(base), Some(base), 16),
+            0b0010
+        );
+        // 左
+        assert_eq!(
+            stick_dirs_from_delta(Some((base as i64 - thr) as u32), Some(base), Some(base), Some(base), 16),
+            0b0001
+        );
+        // 下 (HID 惯例 Y 正 = 下)
+        assert_eq!(
+            stick_dirs_from_delta(Some(base), Some(base), Some((base as i64 + thr) as u32), Some(base), 16),
+            0b1000
+        );
+        // 上
+        assert_eq!(
+            stick_dirs_from_delta(Some(base), Some(base), Some((base as i64 - thr) as u32), Some(base), 16),
+            0b0100
+        );
+        // 左下同时亮
+        assert_eq!(
+            stick_dirs_from_delta(
+                Some((base as i64 - thr * 2) as u32),
+                Some(base),
+                Some((base as i64 + thr * 2) as u32),
+                Some(base),
+                16
+            ),
+            0b1001
+        );
+        // 死区内不亮
+        assert_eq!(
+            stick_dirs_from_delta(Some(base + 100), Some(base), Some(base - 100), Some(base), 16),
+            0
+        );
+        // 缺少基线 → 不判方向
+        assert_eq!(stick_dirs_from_delta(Some(base + 20000), None, Some(base), None, 16), 0);
+    }
+
+    #[test]
+    fn dpad_hat_maps_to_four_direction_bits() {
+        use crate::hid_layout::USAGE_HAT_SWITCH;
+        assert_eq!(dpad_bits_from_hat(0), 0); // 中
+        assert_eq!(dpad_bits_from_hat(1), 0b0001); // 上
+        assert_eq!(dpad_bits_from_hat(3), 0b0010); // 右
+        assert_eq!(dpad_bits_from_hat(5), 0b0100); // 下
+        assert_eq!(dpad_bits_from_hat(7), 0b1000); // 左
+        assert_eq!(dpad_bits_from_hat(2), 0b0011); // 右上
+        let t = axis_dir_transitions((0, 0, 0), (0b0001, 0, 0));
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0], (USAGE_HAT_SWITCH, 2, true)); // 十字·上 按下
+    }
+
+    #[test]
+    fn axis_dir_transitions_reports_press_and_release() {
+        use crate::hid_layout::{USAGE_RX, USAGE_RY, USAGE_X, USAGE_Y};
+        // 左摇杆向右按下: bit1
+        let t = axis_dir_transitions((0, 0, 0), (0, 0b0010, 0));
+        assert_eq!(t.as_slice(), &[(USAGE_X, 1, true)]);
+        // 再松开
+        let t = axis_dir_transitions((0, 0b0010, 0), (0, 0, 0));
+        assert_eq!(t.as_slice(), &[(USAGE_X, 1, false)]);
+        // 同时左下
+        let t = axis_dir_transitions((0, 0, 0), (0, 0b1001, 0));
+        assert_eq!(t.len(), 2);
+        assert!(t.contains(&(USAGE_X, 0, true))); // 左
+        assert!(t.contains(&(USAGE_Y, 3, true))); // 下
+        // 右摇杆: bit2=上 → Ry 上
+        let t = axis_dir_transitions((0, 0, 0), (0, 0, 0b0100));
+        assert_eq!(t.as_slice(), &[(USAGE_RY, 2, true)]);
     }
 }

@@ -228,6 +228,160 @@ pub fn write_guard<T>(rw: &std::sync::RwLock<T>) -> std::sync::RwLockWriteGuard<
     }
 }
 
+/* ═══════════ ★v21.7d 组合键规范化 (去重 + 规范排序) ═══════════
+ *
+ * 用户要求: 同一按键不得重复 (上+上+空格 不允许); 顺序必须规范 (下+上+空格 → 上+下+空格)。
+ * 规则: 修饰键 → 方向键 (上/下/左/右) → 手柄按键 → 手柄轴方向 → XInput 按键 → 其余按名。
+ * 手柄多键 `GAMEPAD_<VID>_A+B` 会展开成带前缀的独立标签, 规范化后再合并回去。
+ */
+
+/// 组合键字符串 → 独立按键标签 (展开同一手柄的多键写法)。
+pub fn key_combo_parts(combo: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut carry: Option<String> = None;
+    for raw in combo.split('+') {
+        let p = raw.trim();
+        if p.is_empty() {
+            continue;
+        }
+        let up = p.to_uppercase();
+        let is_pad = up.starts_with("GAMEPAD_")
+            || up.starts_with("JOYSTICK_")
+            || up.starts_with("HID_");
+        if is_pad {
+            if let Some(idx) = p.rfind('_') {
+                carry = Some(p[..idx].to_string());
+            }
+            out.push(p.to_string());
+        } else if let Some(c) = &carry {
+            out.push(format!("{c}_{p}"));
+        } else {
+            out.push(p.to_string());
+        }
+    }
+    out
+}
+
+/// 标签列表 → 组合键字符串 (同一手柄多键合并回 `GAMEPAD_<VID>_A+B`)。
+/// **保持输入顺序** (输入若已规范排序, 输出即规范序); 同手柄的按键就地并入同一组。
+pub fn compact_key_combo(parts: &[String]) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut pad_pos: Vec<(String, usize)> = Vec::new();
+    for p in parts {
+        let up = p.to_uppercase();
+        let is_pad =
+            up.starts_with("GAMEPAD_") || up.starts_with("JOYSTICK_") || up.starts_with("HID_");
+        if is_pad && let Some(idx) = p.rfind('_') {
+            let (pref, btn) = (&p[..idx], &p[idx + 1..]);
+            if let Some((_, oi)) = pad_pos.iter().find(|(x, _)| x.eq_ignore_ascii_case(pref)) {
+                out[*oi].push('+');
+                out[*oi].push_str(btn);
+            } else {
+                pad_pos.push((pref.to_string(), out.len()));
+                out.push(format!("{pref}_{btn}"));
+            }
+            continue;
+        }
+        out.push(p.clone());
+    }
+    out.join("+")
+}
+
+/// 单个标签的规范排序键 (tier, 序号, 原名)。
+fn combo_part_rank(part: &str) -> (u8, u32, String) {
+    let u = part.to_uppercase();
+    let m = match u.as_str() {
+        "CTRL" | "LCTRL" | "RCTRL" => 0,
+        "SHIFT" | "LSHIFT" | "RSHIFT" => 1,
+        "ALT" | "LALT" | "RALT" => 2,
+        "WIN" | "LWIN" | "RWIN" => 3,
+        _ => 255,
+    };
+    if m != 255 {
+        return (0, m, u);
+    }
+    let d = match u.as_str() {
+        "UP" => 0,
+        "DOWN" => 1,
+        "LEFT" => 2,
+        "RIGHT" => 3,
+        _ => 255,
+    };
+    if d != 255 {
+        return (1, d, u);
+    }
+    /* 语义手柄按键 ..._H<usage> */
+    if let Some(pos) = u.rfind("_H")
+        && let Ok(n) = u[pos + 2..].parse::<u32>()
+    {
+        return (2, n, u);
+    }
+    /* 语义手柄轴方向 ..._A<usage><L|R|U|D> */
+    if let Some(pos) = u.rfind("_A") {
+        let rest = &u[pos + 2..];
+        if rest.len() >= 2 {
+            let dir = rest.chars().next_back().unwrap_or('?');
+            if let Ok(usage) = rest[..rest.len() - 1].parse::<u32>() {
+                let dord = match dir {
+                    'U' => 0,
+                    'D' => 1,
+                    'L' => 2,
+                    'R' => 3,
+                    _ => 9,
+                };
+                return (3, usage * 10 + dord, u);
+            }
+        }
+    }
+    /* XInput 名 ..._<BUTTON> */
+    if let Some(pos) = u.rfind('_') {
+        let rank = match &u[pos + 1..] {
+            "A" => 0,
+            "B" => 1,
+            "X" => 2,
+            "Y" => 3,
+            "LB" => 4,
+            "RB" => 5,
+            "LT" => 6,
+            "RT" => 7,
+            "BACK" => 8,
+            "START" => 9,
+            "LS_CLICK" => 10,
+            "RS_CLICK" => 11,
+            "DPAD_UP" => 12,
+            "DPAD_DOWN" => 13,
+            "DPAD_LEFT" => 14,
+            "DPAD_RIGHT" => 15,
+            _ => 255,
+        };
+        if rank != 255 {
+            return (4, rank, u);
+        }
+    }
+    (9, 0, u)
+}
+
+/// 去重 (忽略大小写) + 规范排序。
+pub fn normalize_combo_parts(parts: &[String]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for p in parts {
+        let p = p.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if !seen.iter().any(|e| e.eq_ignore_ascii_case(p)) {
+            seen.push(p.to_string());
+        }
+    }
+    seen.sort_by_key(|p| combo_part_rank(p));
+    seen
+}
+
+/// 组合键字符串 → 去重 + 规范排序后的组合键字符串 (用户要求的"严格顺序+不重复")。
+pub fn normalize_key_combo(combo: &str) -> String {
+    compact_key_combo(&normalize_combo_parts(&key_combo_parts(combo)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +433,45 @@ mod tests {
         // Verify different inputs produce different outputs
         let hash3 = fnv1a_hash_bytes(fnv64::OFFSET_BASIS, b"other data");
         assert_ne!(hash1, hash3);
+    }
+
+    /* ── ★v21.7d 组合键规范化 (用户实测要求) ── */
+
+    #[test]
+    fn combo_dedupes_identical_keys() {
+        // 上+上+空格 → 上+空格 (重复的上被丢弃)
+        assert_eq!(normalize_key_combo("UP+UP+SPACE"), "UP+SPACE");
+        assert_eq!(normalize_key_combo("UP+up+SPACE"), "UP+SPACE");
+    }
+
+    #[test]
+    fn combo_sorts_directions_and_modifiers() {
+        // 下+上+空格 → 上+下+空格 (方向键按 上/下/左/右 规范序)
+        assert_eq!(normalize_key_combo("DOWN+UP+SPACE"), "UP+DOWN+SPACE");
+        // 修饰键最前
+        assert_eq!(normalize_key_combo("F6+CTRL"), "CTRL+F6");
+        assert_eq!(normalize_key_combo("RIGHT+LEFT+ALT"), "ALT+LEFT+RIGHT");
+    }
+
+    #[test]
+    fn combo_expands_and_recompacts_gamepad_multi_button() {
+        let parts = key_combo_parts("GAMEPAD_045E_A+B");
+        assert_eq!(parts, vec!["GAMEPAD_045E_A", "GAMEPAD_045E_B"]);
+        assert_eq!(compact_key_combo(&parts), "GAMEPAD_045E_A+B");
+        // 手柄按键在键盘键之前 (tier 2/4 < 9)
+        assert_eq!(
+            normalize_key_combo("SPACE+GAMEPAD_045E_A"),
+            "GAMEPAD_045E_A+SPACE"
+        );
+    }
+
+    #[test]
+    fn combo_normalization_is_idempotent_and_safe() {
+        for s in ["UP+DOWN+SPACE", "CTRL+F6", "GAMEPAD_045E_A+B", "SPACE", ""] {
+            let once = normalize_key_combo(s);
+            assert_eq!(normalize_key_combo(&once), once, "幂等: {s}");
+        }
+        assert_eq!(normalize_key_combo(""), "");
+        assert_eq!(normalize_key_combo("   "), "");
     }
 }

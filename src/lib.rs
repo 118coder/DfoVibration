@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod gui;
+pub mod hid_layout;
 pub mod i18n;
 pub mod input_manager;
 pub mod input_ownership;

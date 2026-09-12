@@ -578,6 +578,10 @@ axis_hist_len: 0,
 
         let current_bits = Self::inputs_to_bitset(current_inputs);
 
+        /* ★v24.6: 发布实时输入位图 —— 手柄页靠它"按手柄键选中槽位", 不需要捕获模式
+         * (捕获模式会跳过本函数 → 奔跑阈值不注册 / 方向不派发, 实机回归的根因)。 */
+        state.publish_live_xinput(vid_pid.0, current_bits);
+
         let xinput_mask = state
             .switch_key_cache
             .xinput_button_mask
@@ -595,6 +599,35 @@ axis_hist_len: 0,
 
                 if unlikely(!was_active && switch_active) {
                     state.handle_switch_key_toggle();
+                }
+            }
+        }
+
+        /* ★v21.7 预设切换键 (手柄): 与全局连发切换键同层检测 —— 绑定表由 GUI 每帧刷新,
+         * 命中即请求切换 (真正切换在 GUI 线程执行: 要落盘 + 热重载)。
+         * 冲突已在保存时拦截 (切换键不得与任何预设的映射触发键重名/同组件),
+         * 因此这里无需再做派发抑制, 不会与连发/组合键映射互抢。 */
+        if unlikely(!state.preset_switch_bindings_is_empty()) {
+            let bindings = state.preset_switch_bindings_snapshot();
+            let bound_hash = AppState::hash_device_type(&device_type);
+            for b in &bindings {
+                if let InputDevice::XInputCombo {
+                    device_type: bound_dt,
+                    button_ids,
+                } = &b.device
+                {
+                    if AppState::hash_device_type(bound_dt) != bound_hash {
+                        continue;
+                    }
+                    let mask = Self::inputs_to_bitset(button_ids);
+                    if mask == 0 {
+                        continue;
+                    }
+                    let now_active = (current_bits & mask) == mask;
+                    let was_active = (device_state.last_input_bits & mask) == mask;
+                    if now_active && !was_active {
+                        state.request_preset_switch(&b.preset_name);
+                    }
                 }
             }
         }

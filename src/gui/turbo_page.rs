@@ -1,12 +1,10 @@
 //! Main window implementation and rendering logic.
 
 use crate::gui::SorahkGui;
-use crate::gui::about_dialog::render_about_dialog;
 use crate::gui::theme::{self, Theme, truncate_chars};
 use crate::gui::utils;
 use crate::gui::widgets;
-use crate::gui::types::{KeyCaptureMode, Page};
-use crate::state::NotificationEvent;
+use crate::gui::types::KeyCaptureMode;
 
 use eframe::egui;
 use super::main_window::FrameState;
@@ -15,6 +13,10 @@ impl SorahkGui {
     /// 连发页: 状态 hero + 映射列表 + 全局参数。
     pub(super) fn render_turbo_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, frame_state: &FrameState) {
         self.render_turbo_hero(ui, frame_state);
+        /* ★v24.4: 经典模式在「预设管理」上方补一条震动快捷条 (用户要求; 完整模式 hero 已含震动开关) */
+        if self.classic_mode {
+            self.render_classic_vib_quickbar(ui);
+        }
         self.render_turbo_preset_manager(ui);
         self.render_turbo_mappings(ui);
         self.render_turbo_params(ui, ctx);
@@ -220,11 +222,10 @@ impl SorahkGui {
                     self.preset_key_target = self.config.presets.len() - 1;
                 }
                 let cur_key = self.config.presets[self.preset_key_target].switch_key.clone();
-                /* 输入框未聚焦时跟随所选预设回显 (聚焦时保留用户正在输入的内容) */
-                let input_id = egui::Id::new("preset_switch_key_input");
-                let editing = ui.memory(|m| m.has_focus(input_id));
-                if !editing && self.preset_key_input != cur_key {
-                    self.preset_key_input = cur_key;
+                /* ★v21.7c: 标签列表跟随所选预设 (只捕获不手输 → 无法输入汉字等非法内容) */
+                if self.preset_key_parts_signature != cur_key {
+                    self.preset_key_parts = Self::decombo_switch_key(&cur_key);
+                    self.preset_key_parts_signature = cur_key.clone();
                 }
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("切换键:"));
@@ -245,26 +246,92 @@ impl SorahkGui {
                         });
                     if next_idx != self.preset_key_target {
                         self.preset_key_target = next_idx;
-                        self.preset_key_input = self.config.presets[next_idx].switch_key.clone();
+                        let k = self.config.presets[next_idx].switch_key.clone();
+                        self.preset_key_parts = Self::decombo_switch_key(&k);
+                        self.preset_key_parts_signature = k;
                         self.preset_key_error = None;
                     }
-                    /* ★v20.6: 显性输入框 (描边清晰, 一眼可见可输入) */
-                    th.text_input(ui, &mut self.preset_key_input, "如 F6 或 CTRL+F6", 120.0, input_id);
+
+                    /* 键位标签 (点 × 移除该键); 空 = 未设置 */
+                    let mut remove_idx: Option<usize> = None;
+                    if self.preset_key_parts.is_empty() {
+                        ui.label(th.hint_text("(未设置)"));
+                    }
+                    for (i, part) in self.preset_key_parts.iter().enumerate() {
+                        if ui
+                            .add(th.secondary_button(&format!("{part} ×")))
+                            .on_hover_text("点击移除这个键")
+                            .clicked()
+                        {
+                            remove_idx = Some(i);
+                        }
+                        if i + 1 < self.preset_key_parts.len() {
+                            ui.label(th.weak("+"));
+                        }
+                    }
+                    if let Some(i) = remove_idx {
+                        self.preset_key_parts.remove(i);
+                        self.preset_key_error = None;
+                    }
+
+                    /* 捕获 (连续捕获可追加成组合键) */
+                    let capturing = self.key_capture_mode == KeyCaptureMode::PresetSwitchKey;
+                    let cap_label = if capturing { "⌨ 请按键…" } else { "🎮 捕获" };
+                    if ui
+                        .add(th.secondary_button(cap_label))
+                        .on_hover_text(
+                            "点一下再按一个键 —— 可连续点多次追加, 拼成组合键 (如先 CTRL 再 F6); Esc 取消",
+                        )
+                        .clicked()
+                    {
+                        if capturing {
+                            self.cancel_preset_switch_capture();
+                        } else {
+                            self.start_preset_switch_capture();
+                        }
+                    }
+                    if ui
+                        .add_enabled(
+                            !self.preset_key_parts.is_empty(),
+                            egui::Button::new(
+                                egui::RichText::new("⌫ 删除末键")
+                                    .size(13.0)
+                                    .color(th.btn_secondary_text),
+                            )
+                            .fill(th.faint)
+                            .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL)),
+                        )
+                        .clicked()
+                    {
+                        self.preset_key_parts.pop();
+                        self.preset_key_error = None;
+                    }
                     if ui.add(th.secondary_button("✓ 保存")).clicked() {
                         self.save_preset_switch_key();
                     }
                     if ui.add(th.secondary_button("清除")).clicked() {
-                        self.preset_key_input.clear();
+                        self.preset_key_parts.clear();
+                        self.preset_key_error = None;
                         self.save_preset_switch_key();
                     }
-                    if let Some(err) = &self.preset_key_error {
+                    if capturing {
+                        ui.label(
+                            egui::RichText::new(
+                                "● 等待输入: 按键盘或手柄任意键 (可继续点「捕获」追加; Esc 取消)",
+                            )
+                            .size(11.0)
+                            .color(th.accent),
+                        );
+                    } else if let Some(err) = &self.preset_key_error {
                         ui.label(
                             egui::RichText::new(format!("❌ {}", err))
                                 .size(11.0)
                                 .color(th.bad),
                         );
                     } else {
-                        ui.label(th.hint_text("游戏内/任意界面按该键即切到此预设; 各预设键不得重复"));
+                        ui.label(th.hint_text(
+                            "只能捕获不能手输; 可连续捕获多个键组成组合键 (如 CTRL + F6)",
+                        ));
                     }
                 });
             }
@@ -272,22 +339,32 @@ impl SorahkGui {
     }
 
     /// ★v20.3: 保存所选预设的切换键。
-    /// 校验: ①键名可被解析 ②不与其他预设的切换键重复 ③不与「连发切换键」重复。
+    /// 校验: ①键名可被解析 (键盘键名 / 手柄组合 / 原始 HID 设备名) ②不与其他预设的
+    /// 切换键重复 ③不与「连发切换键」重复 ④**不与任何预设的任何映射触发键重名或同组件**
+    /// —— 见下方 `find_preset_switch_conflict` (v21.7 用户提出的"连发/组合键冲突"以此根治)。
     pub(super) fn save_preset_switch_key(&mut self) {
         if self.preset_key_target >= self.config.presets.len() {
             return;
         }
         let target_name = self.config.presets[self.preset_key_target].name.clone();
-        let key = self.preset_key_input.trim().to_uppercase();
+        /* ★v21.7d: 组合键先去重+规范排序 (用户要求 相同键不重复 / 顺序严格) */
+        let key = crate::util::normalize_key_combo(&Self::compact_switch_key_parts(
+            &self.preset_key_parts,
+        ));
         if key.is_empty() {
             self.config.presets[self.preset_key_target].switch_key.clear();
+            self.preset_key_parts_signature.clear();
             self.preset_key_error = None;
-        } else if matches!(
-            Self::parse_switch_key(&key),
-            crate::gui::ParsedSwitchKey::None
-        ) {
-            self.preset_key_error =
-                Some("无法识别的按键名 (示例: F6 / CTRL+F6 / ALT+1)".to_string());
+        } else if Self::combo_is_modifier_only(&key) {
+            self.preset_key_error = Some(
+                "组合键需要至少一个非修饰键 (如 CTRL+F6, 不能只有 CTRL+SHIFT)".to_string(),
+            );
+            return;
+        } else if !crate::state::AppState::is_valid_input_name(&key) {
+            self.preset_key_error = Some(
+                "无法识别的组合 (手柄的多个按键暂不能合成一个切换键; 键盘组合如 CTRL+F6 可以)"
+                    .to_string(),
+            );
             return;
         } else if let Some(other) = self.config.presets.iter().find(|p| {
             p.name != target_name
@@ -301,11 +378,206 @@ impl SorahkGui {
         {
             self.preset_key_error = Some("与「连发切换键」冲突, 请换一个键".to_string());
             return;
+        } else if let Some((preset, trigger, turbo_combo)) = self.find_preset_switch_conflict(&key)
+        {
+            self.preset_key_error = Some(if turbo_combo {
+                format!(
+                    "与预设「{}」的映射「{}」冲突 (该映射带连发/组合性质, 同时触发会互相干扰); 切换键必须独占, 请换一个键",
+                    preset, trigger
+                )
+            } else {
+                format!(
+                    "与预设「{}」的映射「{}」重名 (切换键独占: 按下时该映射不会触发); 建议换一个键",
+                    preset, trigger
+                )
+            });
+            return;
         } else {
-            self.config.presets[self.preset_key_target].switch_key = key;
+            self.config.presets[self.preset_key_target].switch_key = key.clone();
+            self.preset_key_parts_signature = key.clone();
+            /* 回显规范顺序 (去重/排序后的标签) */
+            self.preset_key_parts = Self::decombo_switch_key(&key);
             self.preset_key_error = None;
         }
         let _ = self.config.save_to_file("Config.toml");
+    }
+
+    /// ★v21.7c: 已存切换键 → 标签列表 (反向分解, 供 UI 显示 chips)。
+    /// `GAMEPAD_045E_A+B` → ["GAMEPAD_045E_A", "GAMEPAD_045E_B"]; `CTRL+F6` → ["CTRL","F6"]。
+    pub(super) fn decombo_switch_key(key: &str) -> Vec<String> {
+        crate::util::key_combo_parts(key)
+    }
+
+    /// ★v21.7c: 标签列表 → 已存切换键字符串 (正向着色)。
+    /// 同一手柄的多个按键合并成 `GAMEPAD_<VID>_A+B`; 修饰键 (CTRL/SHIFT/ALT) 前置。
+    pub(super) fn compact_switch_key_parts(parts: &[String]) -> String {
+        crate::util::compact_key_combo(parts)
+    }
+
+    /// ★v21.7: 在全部预设的全部映射里查与 `key` 冲突的触发键。
+    /// 判定 = 完全相同 **或** 作为 `+` 组合键的任一组件 (如映射 CTRL+F6 与切换键 F6 也冲突)。
+    /// 返回 (预设名, 触发键原文, 是否带连发/组合性质)。
+    fn find_preset_switch_conflict(&self, key: &str) -> Option<(String, String, bool)> {
+        Self::find_preset_switch_conflict_in(&self.config.presets, key)
+    }
+
+    /// 纯函数版 (可单测): 冲突查找规则见上。
+    pub(super) fn find_preset_switch_conflict_in(
+        presets: &[crate::config::Preset],
+        key: &str,
+    ) -> Option<(String, String, bool)> {
+        let key_u = key.trim().to_uppercase();
+        if key_u.is_empty() {
+            return None;
+        }
+        let key_is_pad = Self::looks_like_gamepad_input(&key_u);
+        for p in presets {
+            for m in &p.mappings {
+                let trig_u = m.trigger_key.trim().to_uppercase();
+                if trig_u.is_empty() {
+                    continue;
+                }
+                let exact = trig_u == key_u;
+                /* 组件匹配只对 '+' 组合键有意义, 且**必须同类输入**:
+                 * 键盘切换键 "B" 不得与手柄组合 "GAMEPAD_x_A+B" 的 "B" 组件相撞
+                 * (那是两个完全不同的物理输入)。 */
+                let component = trig_u.contains('+')
+                    && Self::looks_like_gamepad_input(&trig_u) == key_is_pad
+                    && trig_u.split('+').any(|part| part.trim() == key_u);
+                if exact || component {
+                    let turbo_combo = m.turbo_enabled
+                        || m.run_enabled
+                        || m.double_tap_enabled
+                        || trig_u.contains('+');
+                    return Some((p.name.clone(), m.trigger_key.clone(), turbo_combo));
+                }
+            }
+        }
+        None
+    }
+
+    /// 是否手柄类输入名 (与 `gui::utils::key_kind` 同判定, 供冲突规则区分输入类别)。
+    fn looks_like_gamepad_input(name_upper: &str) -> bool {
+        name_upper.starts_with("GAMEPAD")
+            || name_upper.starts_with("JOYSTICK")
+            || name_upper.starts_with("HID_")
+    }
+
+    /// 组合键是否只有修饰键 (那样永远触发不了, 保存时应拦下)。
+    fn combo_is_modifier_only(key: &str) -> bool {
+        if !key.contains('+') {
+            return false;
+        }
+        key.split('+').all(|p| {
+            matches!(
+                p.trim().to_uppercase().as_str(),
+                "CTRL" | "LCTRL" | "RCTRL" | "SHIFT" | "LSHIFT" | "RSHIFT" | "ALT" | "LALT" | "RALT"
+            )
+        })
+    }
+
+    /// ★v21.7: 开始捕获预设切换键 —— 键盘任意键 **或** 手柄任意键 (此功能主要为手柄准备)。
+    pub(super) fn start_preset_switch_capture(&mut self) {
+        self.key_capture_mode = KeyCaptureMode::PresetSwitchKey;
+        self.capture_pressed_keys.clear();
+        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+        self.app_state.set_raw_input_capture_mode(true);
+        self.just_captured_input = false;
+        self.preset_key_error = None;
+    }
+
+    /// ★v21.7: 取消/结束预设切换键捕获。
+    pub(super) fn cancel_preset_switch_capture(&mut self) {
+        self.key_capture_mode = KeyCaptureMode::None;
+        self.capture_pressed_keys.clear();
+        self.app_state.set_raw_input_capture_mode(false);
+        self.just_captured_input = false;
+    }
+
+    /// ★v21.7: 预设切换键捕获轮询 (键盘: 松开即取; 手柄: RawInput/XInput 捕获通道)。
+    pub(super) fn handle_preset_switch_capture(&mut self, ctx: &egui::Context) {
+        if self.key_capture_mode != KeyCaptureMode::PresetSwitchKey {
+            return;
+        }
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.cancel_preset_switch_capture();
+            return;
+        }
+
+        let mut captured: Option<String> = None;
+
+        /* 键盘: 记录新按下的键, 任一松开即视为完成 (与映射捕获同语义) */
+        let current_pressed = Self::poll_all_pressed_keys();
+        current_pressed
+            .iter()
+            .filter(|&&vk| !self.capture_initial_pressed.contains(&vk))
+            .for_each(|&vk| {
+                self.capture_pressed_keys.insert(vk);
+            });
+        if self
+            .capture_pressed_keys
+            .iter()
+            .any(|vk| !current_pressed.contains(vk))
+        {
+            captured = Self::format_captured_keys(&self.capture_pressed_keys);
+        }
+
+        /* 手柄: 原始输入捕获通道 (RawInput 原始报文 / XInput 标准按键) */
+        if captured.is_none()
+            && let Some(device) = self.app_state.try_recv_raw_input_capture()
+        {
+            captured = Some(device.to_string());
+        }
+
+        if let Some(name) = captured {
+            self.cancel_preset_switch_capture();
+            /* ★v21.7c: 追加到标签列表 (可连续捕获组成组合键), 不自动保存 */
+            self.append_captured_switch_key(&name);
+        }
+    }
+
+    /// ★v21.7c: 把一次捕获结果追加进切换键标签列表。
+    /// 支持一次捕获多个键 (同时按住的组合会一次给出 "CTRL+F6" / "GAMEPAD_045E_A+B")。
+    /// 已有的重复键不重复添加; 手柄多键合成暂不支持 → 明确报错。
+    pub(super) fn append_captured_switch_key(&mut self, captured: &str) {
+        let new_parts = Self::decombo_switch_key(captured);
+        if new_parts.is_empty() {
+            return;
+        }
+        let semantic = |s: &str| {
+            match crate::state::AppState::input_name_to_device(s) {
+                Some(crate::state::InputDevice::GenericDevice { button_id, .. }) => {
+                    let pos = (button_id & 0xFFFF_FFFF) as u32;
+                    crate::hid_layout::semantic_button_usage(pos).is_some()
+                        || crate::hid_layout::semantic_axis_decode(pos).is_some()
+                }
+                _ => false,
+            }
+        };
+        /* 手柄语义键一次只能一个 (多个合成暂不支持) */
+        if new_parts.iter().any(|p| semantic(p))
+            && self.preset_key_parts.iter().any(|p| semantic(p))
+        {
+            self.preset_key_error = Some(
+                "该手柄的多个按键暂不能合成一个切换键; 请只保留一个手柄键, 或改用键盘组合"
+                    .to_string(),
+            );
+            return;
+        }
+        let mut changed = false;
+        for p in new_parts {
+            if !self
+                .preset_key_parts
+                .iter()
+                .any(|e| e.eq_ignore_ascii_case(&p))
+            {
+                self.preset_key_parts.push(p);
+                changed = true;
+            }
+        }
+        if changed {
+            self.preset_key_error = None;
+        }
     }
 
 
@@ -535,7 +807,9 @@ impl SorahkGui {
         self.config.mappings.insert(
             0,
             crate::config::KeyMapping {
-                trigger_key: "A".to_string(),
+                /* ★v24.3: 新建映射初始**无触发键** —— UI 显示「尚未捕获触发键」,
+                 * 旧默认 "A" 会让人以为已经捕获了 A 键 (用户实测困惑点)。 */
+                trigger_key: String::new(),
                 target_keys: Default::default(),
                 interval: None,
                 event_duration: None,
@@ -622,8 +896,8 @@ impl SorahkGui {
         };
 
         // 局部可编辑副本 (变更即回写 config; 取消由快照还原)
-        let mut trigger = mapping.trigger_key.clone();
-        let mut targets: Vec<String> = mapping.target_keys.to_vec();
+        let trigger = mapping.trigger_key.clone();
+        let targets: Vec<String> = mapping.target_keys.to_vec();
         let mut interval = mapping.interval.unwrap_or(default_interval) as f64;
         let mut duration = mapping.event_duration.unwrap_or(default_duration) as f64;
         let mut turbo = mapping.turbo_enabled;
@@ -671,7 +945,12 @@ impl SorahkGui {
                 ui.horizontal(|ui| {
                     ui.label(th.weak("触发键"));
                     /* ★v20.9: 键帽按设备类型上色 (紫=手柄 / 橙=鼠标 / 键盘=中性) */
-                    widgets::keycap_typed(ui, &th, &trigger, utils::key_kind(&trigger));
+                    /* ★v24.3: 还没捕获时**不画键帽**, 显示「尚未捕获触发键」(旧默认 "A" 会误导) */
+                    if trigger.trim().is_empty() {
+                        ui.label(th.hint_text("尚未捕获触发键"));
+                    } else {
+                        widgets::keycap_typed(ui, &th, &trigger, utils::key_kind(&trigger));
+                    }
                     let capturing = matches!(
                         self.key_capture_mode,
                         KeyCaptureMode::MappingTrigger(i) if i == idx
@@ -891,7 +1170,13 @@ impl SorahkGui {
 
                 // 保存/取消 + 删除 (★v21.4: 删除从标题行右端移到底部最右端, 防误触)
                 ui.horizontal(|ui| {
-                    if ui.add(th.primary_button("保存修改")).clicked() {
+                    /* ★v24.3: 未捕获触发键时不允许保存 (避免落一条永远不触发的空映射) */
+                    let can_save = !trigger.trim().is_empty();
+                    if ui
+                        .add_enabled(can_save, th.primary_button("保存修改"))
+                        .on_disabled_hover_text("请先点「捕获触发键」设一个触发键")
+                        .clicked()
+                    {
                         self.config.mappings[idx].note = note.clone();
                         let _ = self.config.save_to_file("Config.toml");
                         if let Err(e) = self.app_state.reload_config(self.config.clone()) {
@@ -1038,7 +1323,8 @@ impl SorahkGui {
 
         if let Some(name) = captured {
             if is_trigger {
-                self.config.mappings[idx].trigger_key = name;
+                /* ★v21.7d: 触发键组合去重+规范排序 (上+上+空格 → 上+空格; 下+上+空格 → 上+下+空格) */
+                self.config.mappings[idx].trigger_key = crate::util::normalize_key_combo(&name);
             } else {
                 self.config.mappings[idx].add_target_key(name);
             }
@@ -1235,10 +1521,15 @@ fn render_mapping_row(
                 ui.horizontal(|ui| {
                     // 触发键帽 (多键拆分; ★v20.5 长名截断 20 字符防溢出, 悬停看全名 —— 老宿主口径)
                     // ★v20.9: 按设备类型上色 (紫=手柄 / 橙=鼠标 / 键盘=中性)
-                    for part in trigger.split('+') {
-                        let short = truncate_chars(part, 20);
-                        widgets::keycap_typed(ui, th, &short, utils::key_kind(part))
-                            .on_hover_text(part.to_string());
+                    /* ★v24.3: 未捕获触发键时不画空键帽 */
+                    if trigger.trim().is_empty() {
+                        ui.label(th.hint_text("尚未捕获触发键"));
+                    } else {
+                        for part in trigger.split('+') {
+                            let short = truncate_chars(part, 20);
+                            widgets::keycap_typed(ui, th, &short, utils::key_kind(part))
+                                .on_hover_text(part.to_string());
+                        }
                     }
                     // 指向箭头
                     ui.label(egui::RichText::new("→").size(12.0).color(th.hint));
@@ -1285,4 +1576,165 @@ fn render_mapping_row(
                 });
             });
     });
+}
+
+#[cfg(test)]
+mod preset_switch_conflict_tests {
+    use super::SorahkGui;
+    use crate::config::{KeyMapping, Preset};
+
+    fn mapping(trigger: &str, turbo: bool) -> KeyMapping {
+        KeyMapping {
+            trigger_key: trigger.to_string(),
+            target_keys: smallvec::SmallVec::from_vec(vec!["A".to_string()]),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: turbo,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 80,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            note: String::new(),
+        }
+    }
+
+    fn preset(name: &str, mappings: Vec<KeyMapping>) -> Preset {
+        Preset {
+            name: name.to_string(),
+            mappings,
+            switch_key: String::new(),
+        }
+    }
+
+    #[test]
+    fn exact_turbo_mapping_conflicts_and_flags_turbo() {
+        let presets = vec![preset("P1", vec![mapping("F6", true)])];
+        let hit = SorahkGui::find_preset_switch_conflict_in(&presets, "f6");
+        assert_eq!(hit, Some(("P1".into(), "F6".into(), true)));
+    }
+
+    #[test]
+    fn exact_plain_mapping_conflicts_without_turbo_flag() {
+        let presets = vec![preset("P1", vec![mapping("F6", false)])];
+        let hit = SorahkGui::find_preset_switch_conflict_in(&presets, "F6");
+        assert_eq!(hit, Some(("P1".into(), "F6".into(), false)));
+    }
+
+    #[test]
+    fn component_of_keyboard_combo_conflicts() {
+        // 映射 CTRL+F6 与切换键 F6: 单按 F6 也会切预设 → 必须视为冲突
+        let presets = vec![preset("P1", vec![mapping("CTRL+F6", false)])];
+        let hit = SorahkGui::find_preset_switch_conflict_in(&presets, "F6");
+        assert_eq!(hit, Some(("P1".into(), "CTRL+F6".into(), true)));
+    }
+
+    #[test]
+    fn gamepad_combo_component_conflicts() {
+        let presets = vec![preset("P1", vec![mapping("GAMEPAD_045E_A+B", false)])];
+        // 组件 = A / B? 触发键整串按 '+' 切成 ["GAMEPAD_045E_A", "B"]
+        let hit = SorahkGui::find_preset_switch_conflict_in(&presets, "GAMEPAD_045E_A");
+        assert_eq!(hit, Some(("P1".into(), "GAMEPAD_045E_A+B".into(), true)));
+    }
+
+    #[test]
+    fn gamepad_combo_does_not_falsely_match_plain_letter() {
+        // 切换键 "A"/"B" 不应与手柄组合键 "GAMEPAD_045E_A+B" 冲突
+        // (键盘 B ≠ 手柄 B; 组件匹配必须同类输入)
+        let presets = vec![preset("P1", vec![mapping("GAMEPAD_045E_A+B", false)])];
+        assert_eq!(SorahkGui::find_preset_switch_conflict_in(&presets, "A"), None);
+        assert_eq!(SorahkGui::find_preset_switch_conflict_in(&presets, "B"), None);
+        // 但手柄侧的组件 (GAMEPAD_045E_A) 必须冲突
+        assert!(SorahkGui::find_preset_switch_conflict_in(&presets, "GAMEPAD_045E_A").is_some());
+    }
+
+    #[test]
+    fn no_conflict_returns_none() {
+        let presets = vec![preset("P1", vec![mapping("Q", true), mapping("W", false)])];
+        assert_eq!(SorahkGui::find_preset_switch_conflict_in(&presets, "F6"), None);
+    }
+
+    #[test]
+    fn empty_key_never_conflicts() {
+        let presets = vec![preset("P1", vec![mapping("F6", true)])];
+        assert_eq!(SorahkGui::find_preset_switch_conflict_in(&presets, "   "), None);
+    }
+
+    #[test]
+    fn searches_all_presets_not_just_first() {
+        let presets = vec![
+            preset("P1", vec![mapping("Q", true)]),
+            preset("P2", vec![mapping("GAMEPAD_20BC_A", true)]),
+        ];
+        let hit = SorahkGui::find_preset_switch_conflict_in(&presets, "gamepad_20bc_a");
+        assert_eq!(hit, Some(("P2".into(), "GAMEPAD_20BC_A".into(), true)));
+    }
+
+    /* ── ★v21.7c 切换键标签分解/合成 (组合键构建器) ── */
+
+    #[test]
+    fn decombo_splits_keyboard_and_carries_gamepad_prefix() {
+        assert_eq!(
+            SorahkGui::decombo_switch_key("CTRL+F6"),
+            vec!["CTRL".to_string(), "F6".to_string()]
+        );
+        assert_eq!(
+            SorahkGui::decombo_switch_key("GAMEPAD_045E_A+B"),
+            vec!["GAMEPAD_045E_A".to_string(), "GAMEPAD_045E_B".to_string()]
+        );
+        // 语义名 (含 DEV 段) 本身就是一个标签
+        assert_eq!(
+            SorahkGui::decombo_switch_key("GAMEPAD_20BC_5159_DEV12345678_H1"),
+            vec!["GAMEPAD_20BC_5159_DEV12345678_H1".to_string()]
+        );
+    }
+
+    #[test]
+    fn compact_merges_gamepad_buttons_and_puts_modifiers_first() {
+        // compact 保持输入顺序 (排序职责在 normalize_*); 同手柄多键就地合并
+        assert_eq!(
+            SorahkGui::compact_switch_key_parts(&["F6".into(), "CTRL".into()]),
+            "F6+CTRL"
+        );
+        assert_eq!(
+            crate::util::normalize_key_combo("F6+CTRL"),
+            "CTRL+F6"
+        );
+        assert_eq!(
+            SorahkGui::compact_switch_key_parts(&[
+                "GAMEPAD_045E_A".into(),
+                "GAMEPAD_045E_B".into()
+            ]),
+            "GAMEPAD_045E_A+B"
+        );
+    }
+
+    #[test]
+    fn combo_parts_round_trip_through_compact_decombo() {
+        for original in [
+            "CTRL+F6",
+            "GAMEPAD_045E_A+B",
+            "GAMEPAD_20BC_5159_DEV12345678_H1",
+            "F6",
+        ] {
+            let parts = SorahkGui::decombo_switch_key(original);
+            assert_eq!(SorahkGui::compact_switch_key_parts(&parts), original, "round-trip {original}");
+            // 合成的结果必须能被解析器接受 (否则保存会被拒)
+            assert!(
+                crate::state::AppState::is_valid_input_name(&SorahkGui::compact_switch_key_parts(&parts)),
+                "compact 结果必须合法: {original}"
+            );
+        }
+    }
+
+    #[test]
+    fn decombo_rejects_garbage_but_never_panics() {
+        assert!(SorahkGui::decombo_switch_key("").is_empty());
+        assert!(SorahkGui::decombo_switch_key("++").is_empty());
+        // 汉字等非法内容不会被 compact 变成合法键 (保存时再校验)
+        let parts = SorahkGui::decombo_switch_key("测试");
+        assert_eq!(SorahkGui::compact_switch_key_parts(&parts), "测试");
+        assert!(!crate::state::AppState::is_valid_input_name("测试"));
+    }
 }

@@ -3,6 +3,7 @@
 
 mod config;
 mod gui;
+mod hid_layout;
 mod i18n;
 mod input_manager;
 mod input_ownership;

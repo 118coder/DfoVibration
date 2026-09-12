@@ -214,8 +214,7 @@ impl SorahkGui {
                                 self.new_mapping_target_keys.push(input_name);
                             }
                         }
-                        KeyCaptureMode::QuickGamepadTrigger(_)
-                        | KeyCaptureMode::QuickGamepadTarget(_)
+                        KeyCaptureMode::PresetSwitchKey
                         | KeyCaptureMode::None => {}
                     }
                 }
@@ -2283,100 +2282,8 @@ impl SorahkGui {
         }
     }
 
-    /// 处理手柄可视化页的快速捕获（在设置弹窗未打开时由主窗口调用）。
-    pub(super) fn handle_quick_gamepad_capture(&mut self, ctx: &egui::Context) {
-        // Esc 取消捕获 (提示文案承诺的行为)
-        if matches!(
-            self.key_capture_mode,
-            KeyCaptureMode::QuickGamepadTrigger(_) | KeyCaptureMode::QuickGamepadTarget(_)
-        ) && ctx.input(|i| i.key_pressed(egui::Key::Escape))
-        {
-            self.key_capture_mode = KeyCaptureMode::None;
-            self.capture_pressed_keys.clear();
-            self.app_state.set_raw_input_capture_mode(false);
-            self.quick_gamepad_pending = None;
-            return;
-        }
-
-        let mode = match self.key_capture_mode {
-            KeyCaptureMode::QuickGamepadTrigger(slot) => Some((slot, true)),
-            KeyCaptureMode::QuickGamepadTarget(slot) => Some((slot, false)),
-            _ => return,
-        };
-
-        let Some((slot_id, is_trigger)) = mode else {
-            self.key_capture_mode = KeyCaptureMode::None;
-            return;
-        };
-        let Some(_slot) = crate::gui::gamepad_mapping::get_slot(slot_id) else {
-            self.key_capture_mode = KeyCaptureMode::None;
-            return;
-        };
-
-        let mut captured_input: Option<String> = None;
-
-        // 键盘捕获（触发键与目标键都允许，触发键也兼容键盘直连）
-        let current_pressed = Self::poll_all_pressed_keys();
-        current_pressed
-            .iter()
-            .filter(|&vk| !self.capture_initial_pressed.contains(vk))
-            .for_each(|&vk| {
-                self.capture_pressed_keys.insert(vk);
-            });
-
-        let any_released = self
-            .capture_pressed_keys
-            .iter()
-            .any(|vk| !current_pressed.contains(vk));
-
-        if any_released {
-            captured_input = Self::format_captured_keys(&self.capture_pressed_keys);
-        }
-
-        // 鼠标捕获只用于目标键
-        if captured_input.is_none() && !is_trigger && !self.just_captured_input {
-            ctx.input(|i| {
-                if i.pointer.button_clicked(egui::PointerButton::Primary) {
-                    captured_input = Some("LBUTTON".to_string());
-                } else if i.pointer.button_clicked(egui::PointerButton::Secondary) {
-                    captured_input = Some("RBUTTON".to_string());
-                } else if i.pointer.button_clicked(egui::PointerButton::Middle) {
-                    captured_input = Some("MBUTTON".to_string());
-                } else if i.pointer.button_clicked(egui::PointerButton::Extra1) {
-                    captured_input = Some("XBUTTON1".to_string());
-                } else if i.pointer.button_clicked(egui::PointerButton::Extra2) {
-                    captured_input = Some("XBUTTON2".to_string());
-                }
-            });
-        }
-
-        // 手柄原始输入捕获只用于触发键
-        if captured_input.is_none() && is_trigger {
-            if let Some(device) = self.app_state.try_recv_raw_input_capture() {
-                captured_input = Some(device.to_string());
-            }
-        }
-
-        if let Some(input_name) = captured_input {
-            // 捕获完成 → 进入待确认状态 (不立即写映射, 防误操作);
-            // 用户在槽位面板点「确认应用」才落盘生效, 「取消」直接丢弃。
-            // ★v20.3: 待确认项带 连发/简易奔跑 勾选 (默认 连发开 = 沿用旧 set_slot_trigger 行为)
-            self.quick_gamepad_pending = Some(crate::gui::QuickGamepadPending {
-                slot_id,
-                is_trigger,
-                input: input_name,
-                turbo: true,
-                double_tap: false,
-                run: false,
-            });
-            self.key_capture_mode = KeyCaptureMode::None;
-            self.capture_pressed_keys.clear();
-            self.app_state.set_raw_input_capture_mode(false);
-            self.just_captured_input = false;
-        } else if self.just_captured_input {
-            self.just_captured_input = false;
-        }
-    }
+    /* ★v22.0: 手柄页捕获/确认逻辑已整体迁入 `gui/gamepad_mapping.rs::handle_gamepad_flow`
+     * (由 GpFlow 状态机驱动; 取消只回退一层, 不再退出识别)。此处不再保留手柄专属捕获代码。 */
 
     /// Polls all currently pressed keys using Windows API
     /// Returns a set of VK codes

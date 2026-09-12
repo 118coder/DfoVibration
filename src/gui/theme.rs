@@ -334,7 +334,12 @@ impl Theme {
             .corner_radius(egui::CornerRadius::same(100))
             .inner_margin(egui::Margin::symmetric(9, 3))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(text).size(12.0).strong().color(fg));
+                /* ★v21.7d: 徽章一律不换行 —— 旧写法在 horizontal_wrapped 行尾剩余宽度不足时
+                 * 会把文字逐字竖排 ("右摇杆·左" 变一列), 卡片被撑得极高 (用户实测反馈)。 */
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).size(12.0).strong().color(fg))
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
             })
             .response
     }
@@ -352,7 +357,10 @@ impl Theme {
             .corner_radius(egui::CornerRadius::same(100))
             .inner_margin(egui::Margin::symmetric(9, 3))
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(text).size(12.0).strong().color(fg));
+                ui.add(
+                    egui::Label::new(egui::RichText::new(text).size(12.0).strong().color(fg))
+                        .wrap_mode(egui::TextWrapMode::Extend),
+                );
             })
             .response
             .rect;
@@ -370,14 +378,20 @@ impl Theme {
 
     /// ★v20.6: 显性文本输入框 —— 描边清晰可辨, 让"这里可以输入"一眼可见。
     /// (原 TextEdit 默认样式与卡片底色几乎融为一体, 用户不知道能点能输。)
-    /// id_salt: 稳定控件 id (调用方可用 `ui.memory(|m| m.has_focus(id))` 查焦点)。
+    /// id: **绝对**控件 id (调用方可用 `ui.memory(|m| m.has_focus(id))` 查焦点)。
+    ///
+    /// ⚠ v21.7 修正: 旧实现用 `TextEdit::id_salt(id)` —— egui 实际 id 为
+    /// `ui.make_persistent_id(id)` (随所在 Ui 层级变化), 与调用方传入的 `Id::new(id)`
+    /// **不相等** → 调用方的 `has_focus(id)` 恒为 false。预设「切换键」输入框据此每帧把
+    /// 用户输入重置回原值, 表现为"完全无法输入任何键位"(2026-09-11 用户实测反馈)。
+    /// 改用 `.id(id)` (绝对 id) 兑现上面的文档契约; 四个调用点 id 唯一且互斥页面渲染, 无冲突。
     pub fn text_input(
         &self,
         ui: &mut egui::Ui,
         text: &mut String,
         hint: &str,
         width: f32,
-        id_salt: egui::Id,
+        id: egui::Id,
     ) -> egui::Response {
         egui::Frame::NONE
             .fill(self.extreme)
@@ -390,7 +404,7 @@ impl Theme {
                         .hint_text(hint)
                         .desired_width(width)
                         .frame(false)
-                        .id_salt(id_salt),
+                        .id(id),
                 )
             })
             .inner
@@ -625,5 +639,36 @@ mod tests {
         let l = Theme::light();
         assert!(d.dark && !l.dark);
         assert_ne!(d.bg, l.bg);
+    }
+
+    /// ★v21.7 回归: text_input 必须用调用方传入的**绝对** id。
+    /// 旧实现用 `TextEdit::id_salt(id)` → egui 实际 id = `ui.make_persistent_id(id)`
+    /// (随 Ui 层级变化), 与 `Id::new(id)` 不等 → 调用方 `has_focus(id)` 恒 false,
+    /// 预设「切换键」输入框因此每帧被重置, 表现为"无法输入任何键位"。
+    #[test]
+    fn text_input_uses_absolute_id_so_focus_query_works() {
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("preset_switch_key_input__regression");
+        let th = Theme::new(true);
+        let mut text = String::new();
+
+        // 首帧: 请求把键盘焦点给该 id, 并渲染输入框
+        ctx.memory_mut(|m| m.request_focus(id));
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                th.text_input(ui, &mut text, "如 F6", 120.0, id);
+            });
+        });
+        // 次帧: 焦点应仍在该绝对 id 上
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                th.text_input(ui, &mut text, "如 F6", 120.0, id);
+            });
+        });
+
+        assert!(
+            ctx.memory(|m| m.has_focus(id)),
+            "text_input 未使用绝对 id —— 调用方 has_focus 会失败, 输入会被逐帧重置"
+        );
     }
 }

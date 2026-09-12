@@ -346,8 +346,9 @@ impl eframe::App for SorahkGui {
 
         // 手柄可视化页快速捕获 + 连发页内联编辑捕获（均在设置弹窗关闭时生效）
         if !self.show_settings_dialog {
-            self.handle_quick_gamepad_capture(ctx);
+            self.handle_gamepad_flow(ctx);
             self.handle_turbo_edit_capture(ctx);
+            self.handle_preset_switch_capture(ctx);
         }
 
         // Render main content
@@ -587,11 +588,26 @@ impl SorahkGui {
 
 
     /// ★v20.3: 预设切换键轮询 (全局热键, 游戏内也生效)。
-    /// 冲突在保存时已校验 (预设互异 + 不撞连发切换键); 此处只做按压边缘检测 + 切换。
+    /// 冲突在保存时已校验 (预设互异 + 不撞连发切换键 + 不撞任何映射触发键); 此处只做
+    /// 按压边缘检测 + 切换。
+    ///
+    /// ★v21.7: 键盘切换键仍在本线程用 `GetAsyncKeyState` 轮询; **手柄切换键**改由
+    /// 输入线程 (XInput/RawInput) 全速检测, 经 `pending_preset_switches` 队列送回本线程
+    /// 执行真正的切换 (落盘 + 热重载只能发生在 UI 线程)。
     pub(super) fn handle_preset_switch_keys(&mut self) {
+        /* 1) 先取走输入线程排队的手柄切换请求 (FIFO) */
+        for name in self.app_state.take_pending_preset_switches() {
+            self.switch_to_turbo_preset(&name);
+        }
+
         if self.config.presets.len() != self.preset_switch_key_states.len() {
             self.preset_switch_key_states = vec![false; self.config.presets.len()];
         }
+
+        /* 2) 把"手柄类"绑定推送给输入线程 (仅签名变化时, 避免逐帧写锁) */
+        self.sync_preset_switch_bindings();
+
+        /* 3) 键盘切换键按下边缘检测 */
         /* 先拷出 (名字, 键), 避免迭代借用与 switch_to_turbo_preset 的 &mut self 冲突 */
         let entries: Vec<(String, String)> = self
             .config
@@ -604,6 +620,11 @@ impl SorahkGui {
                 self.preset_switch_key_states[i] = false;
                 continue;
             }
+            /* 手柄绑定由输入线程处理, 这里跳过 (parse 也解析不出键盘码) */
+            if crate::gui::utils::key_kind(key) == crate::gui::utils::KeyKind::Gamepad {
+                self.preset_switch_key_states[i] = false;
+                continue;
+            }
             let pressed = Self::poll_switch_key_down(key);
             let was = self.preset_switch_key_states[i];
             self.preset_switch_key_states[i] = pressed;
@@ -611,6 +632,39 @@ impl SorahkGui {
                 self.switch_to_turbo_preset(name);
             }
         }
+    }
+
+    /// ★v21.7: 预设切换键的手柄类绑定 → AppState (输入线程消费)。
+    /// 签名 = (预设名, 键名) 序列的哈希; 只在变化时推送 (配置改动/切换预设均会触发)。
+    fn sync_preset_switch_bindings(&mut self) {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for p in &self.config.presets {
+            p.name.hash(&mut hasher);
+            p.switch_key.hash(&mut hasher);
+        }
+        let sig = hasher.finish();
+        if sig == self.preset_switch_bindings_sig {
+            return;
+        }
+        self.preset_switch_bindings_sig = sig;
+
+        let mut bindings = Vec::new();
+        for p in &self.config.presets {
+            let key = p.switch_key.trim();
+            if key.is_empty()
+                || crate::gui::utils::key_kind(key) != crate::gui::utils::KeyKind::Gamepad
+            {
+                continue;
+            }
+            if let Some(device) = crate::state::AppState::input_name_to_device(key) {
+                bindings.push(crate::state::PresetSwitchBinding {
+                    preset_name: p.name.clone(),
+                    device,
+                });
+            }
+        }
+        self.app_state.set_preset_switch_bindings(bindings);
     }
 
     /// ★v20.3: 轮询一个组合键当前是否处于按下状态 (不含边缘检测)。

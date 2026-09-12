@@ -1406,6 +1406,14 @@ pub struct AppConfig {    /// Display tray icon
     /// HID device baselines for button detection
     #[serde(default)]
     pub hid_baselines: Vec<HidDeviceBaseline>,
+    /// ★v22.1 第三方手柄按键校准表 —— 每设备"槽位 → 物理按键/轴"覆盖。
+    ///
+    /// 非标准描述符的手柄 (如 20BC:5159 的 Back 报成 usage 5、LT/RT 是模拟轴) 无法用
+    /// 固定 usage 表识别; 由用户在「校对手柄键位」里按一次实体键后记住。
+    /// 格式: `"<VID>:<PID>|<slot_id>|<B|A>|<usage>"`
+    /// (B=按钮 usage 如 5; A=模拟轴 usage 如 50=Z / 53=Rz, 用于 LT/RT 扳机)。
+    #[serde(default)]
+    pub hid_slot_usages: Vec<String>,
     /// Raw Input capture mode strategy
     #[serde(default = "default_capture_mode")]
     pub rawinput_capture_mode: String,
@@ -1538,10 +1546,15 @@ impl KeyMapping {
     }
 
     /// Adds a target key
+    /// ★v21.7d: 先按 `+` 拆成独立按键 (同时按住的组合会一次给出), 忽略大小写去重, 再按规范
+    /// 顺序重排 —— 满足用户要求"相同按键不得重复 / 顺序严格规范" (下+上+空格 → 上+下+空格)。
     pub fn add_target_key(&mut self, key: String) {
-        if !self.target_keys.contains(&key) {
-            self.target_keys.push(key);
+        if key.trim().is_empty() {
+            return;
         }
+        let mut parts: Vec<String> = self.target_keys.to_vec();
+        parts.extend(crate::util::key_combo_parts(&key));
+        self.target_keys = crate::util::normalize_combo_parts(&parts).into();
     }
 
     /// Removes a target key
@@ -1651,6 +1664,7 @@ impl Default for AppConfig {
             process_whitelist: vec![], // Empty means all processes enabled
             whitelist_enabled: default_whitelist_enabled(),
             hid_baselines: Vec::new(),
+            hid_slot_usages: Vec::new(),
             rawinput_capture_mode: default_capture_mode(),
             xinput_capture_mode: default_xinput_capture_mode(),
             device_api_preferences: HashMap::new(),

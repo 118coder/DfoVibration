@@ -57,6 +57,53 @@ fn test_state_input_mapping_lookup() {
     assert!(mapping.turbo_enabled);
 }
 
+/// 回归: 用户实机的两个"奔跑"映射必须能在 XInput 查找里命中。
+/// 命中 = `create_input_mappings` 建表成功 + 触发键解析成 `Gamepad(045E)+[方向id]`;
+/// 红 = 奔跑失效 (游戏里轻推/重推都不跑)。
+#[test]
+fn test_run_mappings_lookup_for_stick_directions() {
+    let mk = |trigger: &str, target: &str, run: bool, dbl: bool| KeyMapping {
+        trigger_key: trigger.to_string(),
+        target_keys: SmallVec::from_vec(vec![target.to_string()]),
+        interval: None,
+        event_duration: None,
+        turbo_enabled: false,
+        move_speed: 5,
+        double_tap_enabled: dbl,
+        double_tap_gap_ms: 50,
+        run_enabled: run,
+        run_threshold: 80,
+        run_recheck: true,
+        note: String::new(),
+    };
+    let mut config = AppConfig::default();
+    config.mappings = vec![
+        mk("GAMEPAD_045E_LS_Left", "LEFT", false, true),  // 简易奔跑 (双击)
+        mk("GAMEPAD_045E_LS_Right", "RIGHT", true, false), // 重推奔跑
+    ];
+
+    let state = AppState::new(config).expect("Failed to create state");
+    let dt = sorahk::state::DeviceType::Gamepad(0x045E);
+
+    // 0x11 = LS_Left, 0x10 = LS_Right (与 xinput.rs 的 id 表一致)
+    let left = state
+        .get_input_mapping(&InputDevice::XInputCombo {
+            device_type: dt.clone(),
+            button_ids: vec![0x11],
+        })
+        .expect("LS_Left 映射必须存在 (否则简易奔跑失效)");
+    let right = state
+        .get_input_mapping(&InputDevice::XInputCombo {
+            device_type: dt,
+            button_ids: vec![0x10],
+        })
+        .expect("LS_Right 映射必须存在 (否则重推奔跑失效)");
+
+    assert!(left.double_tap_enabled, "LS_Left 应带简易奔跑(双击)");
+    assert!(right.run_enabled, "LS_Right 应带重推奔跑");
+    assert_eq!(right.run_threshold, 80);
+}
+
 #[test]
 fn test_state_reload_config() {
     let mut config = AppConfig::default();

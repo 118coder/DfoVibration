@@ -670,28 +670,36 @@ impl SorahkGui {
         /* ★v22.0: 顶部识别状态条 + 就近提示 + 步骤引导 (一步一步来) */
         self.render_gamepad_status_bar(ui, &th);
 
+        /* ★v24.8 排版重构: 两栏改用**显式宽度**约束。
+         * 旧版右栏 `set_min_width(ui.available_width())` 在水平布局里会把整行撑破窗口 →
+         * 整页出现横向滚动条 → 底部 chips 的 horizontal_wrapped 失去换行宽度被截断。 */
         th.card(ui, None, |ui| {
+            let total_w = ui.available_width();
+            let sp = theme::SP_L;
+            let left_w = (total_w * 0.5).clamp(320.0, 620.0);
+            let right_w = (total_w - left_w - sp).max(260.0);
             ui.horizontal_top(|ui| {
-                // 左: 手柄图 + 热点 (横版构图占主视觉)
+                // 左: 手柄图 + 热点 (横版构图; 宽度显式给定, 高度按原图比例)
                 ui.vertical(|ui| {
-                    // 宽屏下同步放大 (上限 800), 保持左右面板视觉平衡
-                    let display_w = (ui.available_width() * 0.52).min(800.0);
-                    let display_h = display_w * (SVG_SIZE.y / SVG_SIZE.x);
+                    ui.set_min_width(left_w);
+                    ui.set_max_width(left_w);
+                    let display_h = left_w * (SVG_SIZE.y / SVG_SIZE.x);
                     let clicked_slot =
-                        self.render_gamepad_svg(ui, egui::vec2(display_w, display_h), &th);
-                    if let Some(id) = clicked_slot {
-                        /* 确认/删除等待态不响应改选, 避免打断用户确认 */
-                        if !self.gp_flow.is_busy() {
-                            self.select_slot_autostep(id);
-                        }
+                        self.render_gamepad_svg(ui, egui::vec2(left_w, display_h), &th);
+                    /* 确认/删除等待态不响应改选, 避免打断用户确认 */
+                    if let Some(id) = clicked_slot
+                        && !self.gp_flow.is_busy()
+                    {
+                        self.select_slot_autostep(id);
                     }
                 });
 
-                ui.add_space(theme::SP_L);
+                ui.add_space(sp);
 
-                // 右: 分步面板 (占满剩余宽度)
-                ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                    ui.set_min_width(ui.available_width());
+                // 右: 分步面板 (宽度显式给定 → 内部长文本才会正常换行)
+                ui.vertical(|ui| {
+                    ui.set_min_width(right_w);
+                    ui.set_max_width(right_w);
                     self.render_gamepad_slot_panel(ui, &th);
                 });
             });
@@ -891,6 +899,30 @@ impl SorahkGui {
                         .color(th.warn),
                 );
             }
+            /* ★v24.8: 三步引导并入状态条 (删掉独立「怎么用」卡片 —— 与空状态卡内容重复且拉长页面)。
+             * 用 right_to_left + 内嵌 left_to_right: 按钮先占右端, 文本在剩余宽度内换行, 不会互相挤压。 */
+            if !self.gamepad_tip_dismissed {
+                ui.add_space(theme::SP_XS);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    if ui
+                        .add(th.secondary_button("不再提示"))
+                        .on_hover_text("之后不再显示这行引导")
+                        .clicked()
+                    {
+                        self.gamepad_tip_dismissed = true;
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                        ui.label(
+                            egui::RichText::new(
+                                "①「一键校对手柄按键」完整校对一次 → ②「手柄按键快速映射」设/改键位 → \
+                                 ③ 有遗漏就按同一个手柄键重设",
+                            )
+                            .size(11.5)
+                            .color(th.text_weak),
+                        );
+                    });
+                });
+            }
         });
         ui.add_space(theme::SP_XS);
 
@@ -906,38 +938,6 @@ impl SorahkGui {
             });
             ui.add_space(theme::SP_XS);
         }
-
-        /* ③ 步骤引导 (可关闭) */
-        if self.gamepad_tip_dismissed {
-            return;
-        }
-        th.panel(ui, None, |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("怎么用: 一步一步来")
-                            .size(13.0)
-                            .strong()
-                            .color(th.title),
-                    );
-                    ui.add_space(2.0);
-                    ui.label(
-                        egui::RichText::new(
-                            "① 新手请先点「一键校对手柄按键」完整校对一次  →  \
-                             ② 再点「手柄按键快速映射」设置/更改键位  →  \
-                             ③ 有遗漏就再点一次「手柄按键快速映射」重新改对应键。",
-                        )
-                        .size(11.5)
-                        .color(th.text_weak),
-                    );
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                    if ui.add(th.secondary_button("不再提示")).clicked() {
-                        self.gamepad_tip_dismissed = true;
-                    }
-                });
-            });
-        });
         ui.add_space(theme::SP_S);
     }
 
@@ -979,31 +979,75 @@ impl SorahkGui {
             |ui| {
                 if empty {
                     ui.label(th.hint_text(
-                        "还没有可用的映射 — 点左边手柄图上的按键, 再按键盘上要代替的键, 两步即可"
+                        "还没有可用的映射 — 点左边手柄图上的按键, 再按键盘上要代替的键, 两步即可",
                     ));
                     return;
                 }
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    for slot in &configured {
+                /* ★v24.8: **手动按可见宽度分行** —— `horizontal_wrapped` 在父级宽度不受限时不会换行,
+                 * 实机表现为 chips 一路向右溢出、被窗口裁掉。这里用 `clip_rect` 的有限宽度自行分行,
+                 * 保证超出的 chip 一定落到下一行。 */
+                let chips: Vec<(usize, String, String, bool)> = configured
+                    .iter()
+                    .map(|slot| {
                         let idx = find_slot_mapping_index(&self.config, slot).unwrap();
                         let m = &self.config.mappings[idx];
-                        /* ★v21.8: 用「手柄键 → 键盘键」这种一眼看懂的写法 */
-                        let label = format!("{} → {}", slot.label, m.target_keys.join("+"));
-                        let selected = self.gp_selected_slot() == Some(slot.id);
-                        let (fg, bg) = if selected {
-                            (egui::Color32::WHITE, th.accent)
-                        } else {
-                            (th.target_fg, th.target_bg)
-                        };
-                        if th.badge_clickable(ui, &label, fg, bg).clicked()
-                            && !self.gp_flow.is_busy()
-                        {
-                            /* 捕获/确认中不响应跳转, 保证流程不被带偏 */
-                            self.gp_flow = GpFlow::Selected { slot: slot.id };
-                        }
+                        let full = format!("{} → {}", slot.label, m.target_keys.join("+"));
+                        let label = theme::truncate_chars(&full, 22);
+                        (slot.id, label, full, self.gp_selected_slot() == Some(slot.id))
+                    })
+                    .collect();
+
+                let clip_w = ui.clip_rect().width();
+                let avail_w = ui.available_width();
+                let finite = |v: f32| v.is_finite() && v > 0.0;
+                let wrap_w = {
+                    let cap = if finite(clip_w) { clip_w - 56.0 } else { avail_w };
+                    if finite(avail_w) { avail_w.min(cap) } else { cap }
+                }
+                .max(160.0);
+
+                let font = egui::FontId::proportional(12.0);
+                let mut rows: Vec<Vec<usize>> = Vec::new();
+                let mut cur: Vec<usize> = Vec::new();
+                let mut cur_w = 0.0_f32;
+                for (i, c) in chips.iter().enumerate() {
+                    /* chip 宽度 ≈ 文本宽 + 左右内边距 (9×2) + 行内间距 (6) */
+                    let w = ui
+                        .painter()
+                        .layout_no_wrap(c.1.clone(), font.clone(), egui::Color32::WHITE)
+                        .size()
+                        .x
+                        + 24.0;
+                    if !cur.is_empty() && cur_w + w > wrap_w {
+                        rows.push(std::mem::take(&mut cur));
+                        cur_w = 0.0;
                     }
-                });
+                    cur.push(i);
+                    cur_w += w;
+                }
+                if !cur.is_empty() {
+                    rows.push(cur);
+                }
+
+                for row in rows {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        for &i in &row {
+                            let (slot_id, label, full, selected) = &chips[i];
+                            let (fg, bg) = if *selected {
+                                (egui::Color32::WHITE, th.accent)
+                            } else {
+                                (th.target_fg, th.target_bg)
+                            };
+                            let resp =
+                                th.badge_clickable(ui, label, fg, bg).on_hover_text(full.clone());
+                            if resp.clicked() && !self.gp_flow.is_busy() {
+                                /* 捕获/确认中不响应跳转, 保证流程不被带偏 */
+                                self.gp_flow = GpFlow::Selected { slot: *slot_id };
+                            }
+                        }
+                    });
+                }
             },
         );
     }
@@ -1227,7 +1271,7 @@ impl SorahkGui {
             .fill(lbg)
             .corner_radius(egui::CornerRadius::same(10));
             if ui
-                .add_sized([ui.available_width(), 36.0], turbo_btn)
+                .add_sized([ui.available_width(), 32.0], turbo_btn)
                 .clicked()
             {
                 self.toggle_with_notify();
@@ -1262,7 +1306,7 @@ impl SorahkGui {
                 .fill(vbg)
                 .corner_radius(egui::CornerRadius::same(10));
                 if ui
-                    .add_sized([ui.available_width(), 36.0], vib_btn)
+                    .add_sized([ui.available_width(), 32.0], vib_btn)
                     .clicked()
                 {
                     let v = self
@@ -2550,7 +2594,7 @@ enum EmptyAction {
 fn render_slot_empty_state(ui: &mut egui::Ui, th: &Theme, identified: bool) -> EmptyAction {
     let mut action = EmptyAction::None;
     th.panel(ui, None, |ui| {
-        ui.add_space(20.0);
+        ui.add_space(12.0);
         ui.vertical_centered(|ui| {
             ui.set_min_width(ui.available_width());
             if render_slot_empty_icon(ui, th, !identified) {
@@ -2605,14 +2649,11 @@ fn render_slot_empty_state(ui: &mut egui::Ui, th: &Theme, identified: bool) -> E
                 {
                     action = EmptyAction::Map;
                 }
-                ui.add_space(12.0);
-                ui.label(th.hint_text(
-                    "① 新手请点击「一键校对手柄按键」进行完整校对\n\
-                     ② 完成之后, 再点击「手柄按键快速映射」进行键位的映射或者更改 (如有遗漏可以点击一次进行修改)\n\
-                     ③ 如有遗漏或者失误, 则再次点击「手柄按键快速映射」对应的手柄按键进行重新修改。",
-                ));
+                ui.add_space(8.0);
+                /* ★v24.8: 步骤说明已并入顶部状态条 —— 这里只留一句结论, 避免重复把卡片撑高 */
+                ui.label(th.hint_text("先完整校对一次, 之后按手柄上的键即可快速设键位"));
             }
-            ui.add_space(16.0);
+            ui.add_space(12.0);
         });
     });
     action

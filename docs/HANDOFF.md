@@ -7,12 +7,16 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.7** · **674 测试通过 (0 失败)** · clippy 0 error · exe md5 **d19147cb37a895033d257f43138bf340** (9,244,672 字节)。
+**当前状态**: 基线 = **v24.8** · **674 测试通过 (0 失败)** · exe md5 **f4729fce907ae6416599379ed082325f** · v24.8 **未提交**。
 
-> **v24.7 清理**: 修掉 `SorahkGui` 构造里 `classic_mode` 被重复绑定覆盖 (极简优先守卫失效);
-> 手柄页自动选中加**窗口聚焦**条件 + 离开页面清 live 位图缓存 (防玩游戏时被误记映射);
-> 删无调用 `PadCaptureCandidates::preferred` / `find_slot_by_trigger`。**保留但无引用**:
-> `hid_layout.rs` 标准布局/报告描述符系列 + `GamepadSlot.default_trigger` (已完成未接线, 后续用)。
+> **v24.8 手柄页排版**: 修掉主卡两栏的横向溢出 (旧右栏 `set_min_width(available_width())` 撑破窗口 →
+> 整页横向滚动、底部 chips 不换行被截断) → 改显式宽度两栏; 删除重复的「怎么用」卡片 (引导并入状态条一行)
+> 与空状态里的 ①②③; 手柄图宽度上限 800→620; **底部 chips 改为按 `clip_rect` 手动分行**
+> (`horizontal_wrapped` 在宽度不受限的父级里不会换行 —— 这是"还是显示不全"的真因) + 单条 22 字截断悬停看全名。
+> **分发包已改名为 `…测试版V2.zip`** (含 DLL/研究资料, 不含 Config.toml); `work/_pack_dist.py` 已同步为
+> "存在才替换"。
+> **⚠ 上交流程**: E 盘 `1c379d0` / D 盘 `e28c99e` 已提交, 但 **push 因网络不通未完成** (github.com 连不上);
+> 网络可用时在 `D:\Program Files\Gitgub\DfoVibration` 执行 `git push origin main` 即可 (已领先 1 个提交)。
 
 > **v24.6 重要修复 — 别再启用捕获模式做监听**: 「手柄按键快速映射」的监听态曾用捕获模式,
 > 而捕获模式会跳过 `handle_normal_mode_xinput` (奔跑 `run_thr` 注册 + 摇杆方向派发) →

@@ -7,7 +7,72 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.10** · **674 测试通过 (0 失败)** · exe md5 **b2d65233e176e8cb23562999bf09bb3e** · 工作树干净 (**已推送**, 远端 main 具体哈希以 `git log --oneline origin/main` 实测为准)。
+**当前状态**: 基线 = **v24.17** · **703 测试通过 (0 失败)** · v24.11~v24.17 **未提交** (v24.10 及之前已推送)。
+
+> **📖 v24.17 参数说明全面补齐"高低后果" + 一刀多怪合并默认为开 (2026-09-13, 703 测试全绿)**:
+> 119 个可调控件中 112 个的悬浮说明末尾都有 `调高：…；调低：…`(开关类是 `开：…；关：…`)。
+> 有说明的在原文后追加; 只有名字的走新增的 `SorahkGui::param_hint(标签)` 单一说明表 + `with_hint()`
+> (接线 8 个参数表循环 / 21 个独立滑块 / 5 个开关)。自检脚本 `work/_check_coverage.py`。
+> 余 7 个是模式按钮 (调试中/正常模式/震动开关/允许高级调校/显示专家参数/马达分工), 不是参数。
+> 「一刀多怪合并」出厂默认本来就是开, 另在 `act1_preset_extras` 里写死 true (用户现场被关过)。
+> ⚠ 教训: 这类"批量改字符串"务必按**唯一前缀**定位 + 逐条校验命中数; 直接按出现次数替换会把
+> 说明追加到滑块**标签**上 (标签里的 
+ 会撑坏布局), 也可能插到字面量外面直接编不过。
+
+> **🎛️ v24.16 「ACT1 特供」预设用户调优定稿 (2026-09-13, 702 测试全绿)**: 用户实机手调值已固化进预设 ——
+> 60 槽/评分族: 连击增强 p[6] 35→**0** / 命中 0x01 p[16] 65→**36** / 评分点 20→**25** /
+> 释放技能 20→**45** / 怪物死亡 45→**40**; 附加标量 (走 `act1_preset_extras`, 应用预设时落地):
+> 降温 3→**1 秒** / 震尾切断 25→**60** / 统合衰减期 120→**40ms(并开启)** / 怪物异常 0x04 1→**3%**。
+> ⚠ **`act1_base_params()` 改为 v19.5 定稿快照** (原先是"读 ACT1 特供 预设"): 否则改这一个通用预设会连带
+> 改掉全部 **39 个职业 ACT 变体** (p[6] 等槽位不被 `act_build_params_from` 重建)。
+> 已实测校验和前后逐字节一致 (0xf96350194404a686) —— 职业预设**未动**。要让职业跟动时改那张表。
+> 细节见 `docs/震动系统开发规范_v20.md` §十二·补2 与 CHANGELOG v24.16。
+
+> **⛔ v24.15 修掉路线隔离的三个漏口 (2026-09-13, 700 测试全绿, 用探针逐个复现)**:
+> ① **职业预设跨路线生效** —— `job_presets::find_class` 是**跨路线**查找, ACT 职业名在 S4 也命中;
+> 探针实测 S4 路线被 S1 的 ACT 职业覆盖启动参数 (77→11) 并写进 S4 文件, 直接架空"互不干预"。
+> 现用 `find_class_for_route(..., legacy_client)` (只认当前路线名册), 启动兜底/震动页恢复/职业档导入
+> 全改; 换路线时清 `vib_job_*` 会话态 (JobVibration.toml 不动, 切回原路线仍恢复)。
+> ② 损坏的震动文件原来会让**程序完全起不来** → `load_vibration_tolerantly` 挪成 `.bad` 后按默认继续。
+> ③ 保存原为 `fs::write` (先截断) → `write_atomic` (tmp+rename), 杜绝半截文件。
+> ④ 老 Config.toml 残留 `[vibration]` 段曾能被读进来当该路线参数 → 字段改 `#[serde(skip)]`,
+> 且"路线文件缺失 = 出厂默认"。回归测试 `tests/route_isolation_tests.rs` (4 场景)。
+
+> **✅ v24.14 震动设定「一条路线一个文件」(用户新方案, 取代 v24.13 的快照槽)**: S1 (ACT) 路线读写
+> **`Vibration-ACT.toml`**; S4+ 路线读写 `Vibration.toml`。两条路线的**实时参数 + 预设列表**各存一份,
+> 彻底互不干预。换算集中在 `AppConfig::vibration_route_path_for`; `save_vibration_to_file` /
+> `load_vibration_from_file` 内部按 `vib_legacy_client` 自动选路 —— **70 处调用点一行未改**。
+> `vibration_saved_act/_saved_new` 两个快照槽已删。路线切换 = 旧路线文件落盘 → 换标记 → 载入新路线
+> 文件 (存在即整份覆盖); 首次使用该路线则置出厂默认, 由 GUI 套该路线内置预设 (S1→「ACT1 特供」,
+> S4→「默认」)。`AppState::apply_vibration_config` (v24.13 引入) 仍然在用, 别删。
+> **升级迁移**: 老用户仍在 S1 路线时, `load_or_create` 把现有 `Vibration.toml` 整体 rename 成
+> `Vibration-ACT.toml` (原文件消失 → S4 首次切换按出厂默认重建, ACT 特调不漏进 S4); 已有 ACT
+> 文件则不动。这是 load 路径**唯一**允许的写副作用 (见 `migrate_legacy_vibration_file`)。
+> 已用用户真实配置实测 (S1, 16 预设): 完整迁移 + 主窗口正常渲染 (见 CHANGELOG v24.14)。
+> **导出预设同步分流**: S1 导出名带 `-ACT` (`vibration_export-ACT_<ts>.toml`; 职业导出因 ACT 名册
+> 职业名自带 `-ACT` 自然带), 导出内容注明路线; 导入下拉只列**当前路线**的文件
+> (`job_presets::list_export_files_for_route`) —— 不会把 ACT 档位参数导进 S4。
+> ⚠ 副作用 (用户要的就是这个): 预设列表也按路线分家 —— 某路线下的自建预设不出现在另一路线。
+> 若用户说"我的预设切版本后不见了", 先查另一路线的 `.toml`, 不是丢失。
+
+> **v24.13 方案 B 已被 v24.14 取代**: 两个快照槽删除, 改独立文件。当时遗留的
+> "预设下拉 `vib_preset_idx` 是会话字段 (不持久化, 显示名可能与生效参数不一致)"**仍未处理**,
+> 属独立小问题。⚠ 与 JobVibration 的交互仍在: `AppState::new` 会把职业预设叠加写进
+> `config.vibration`; 换路线时该叠加值随当前这套一起落进本路线的文件, 不按新路线重算。
+
+> **v24.12 计数口径修复**: `vibration.rs` 环形缓冲消费处, S4(非 legacy) 分支原为 `counted = true`,
+> 把 `VEV_MOVE`(6ms 续期持续流) 也算进「累计 N 事件」→ 总数暴增。已抽出
+> `counts_toward_event_total(etype, legacy, last_injected)` 统一为**两种模式都不计 VEV_MOVE**;
+> 移动细分计数 `rank_type_events[11]` 不变。
+
+> **⛔ 红线 (v24.11 新增, 务必遵守)**: `vibration.rs::before(now, deadline)` 是**裸**回绕比较,
+> 对 `deadline == 0` 在"负半区"时间戳下**恒真**。任何"可能为 0"的截止时间字段
+> (rank_full_until / move_pace_until / 未来新增的 *_until) **必须**用 `rank_window_active()`
+> (未过期判定) 或 `expired_or_unset()` (需武装判定) 包一层, 否则对应分支会变成死代码。
+> 本次真凶: 评分门 `before(now_ms(), rank_full_until)` 缺守卫 → **移动分支全程未执行**
+> (战斗照震、走路不震); 同类问题在移动分支内的 `move_pace_until` 也存在 (被死代码掩盖)。
+> 判定法: `before(now,0)` 是否为真取决于 `now` 截断 u32 后的 bit31 —— 只在约 24.8 天窗口内暴露,
+> 不能靠"昨天还好"排除它。
 
 > **v24.10 「仅用连发」收口**: `dfo_player=false` 时隐藏全部震动入口 (经典模式震动快捷条 / 连发页 hero 的
 > 震动开关 / 右上震动文案), 且**震动默认关闭** —— 首次选择、设置页取消勾选、启动归一化三条路径都会关闭并落盘;
@@ -625,9 +690,9 @@ cp /e/Sorahk-build/target/release/sorahk.exe "E:\网页小工具\DfoVibration V3
 8. **ACT 预设参数可能还要迭代**: 逐职业 ACT 参数由"ACT1 基底 + 职业理念"推导
    (见 `docs/ACT全职业特调表_v19.md`), 未经逐职业实机打磨。用户反馈"某职业还震/
    太轻/太重"时, 优先调该职业的档位、密度降幅、连击上限、马达偏置, 并同步回该表。
-9. **两路线实时参数共用**: S1/S4 共用同一份 Vibration.toml 的 `[vibration]` 实时段
-   (预设列表按路线分流)。若后续要求两路线手感完全独立, 备选方案 = ACT 读独立
-   `Vibration-ACT.toml` (用户提过, 本轮未做)。
+9. ~~**两路线实时参数共用**~~ **已结案 (v24.14, 见第 68 条)**: S1 路线改读独立的
+   `Vibration-ACT.toml` (S4 仍是 `Vibration.toml`), 实时参数与预设列表各存一份,
+   互不干预; 老数据自动迁移。
 10. **S4 红线**: 本轮所有改动都 gate 在 legacy(S1); 动 S1 代码时务必确认 S4 路径
     逐字节不变 (回归测试含"新方案红线"用例)。
 
@@ -2582,3 +2647,270 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     **D. 交付**
     - 651 测试全绿; **实际运行验证**通过 (1475×950 主窗口)。
     - exe md5 **a66ff53bbae3a964ec3275d46c82b25a** (9,207,808 字节); 未 commit / 未 push。
+
+---
+
+68. **★v24.14 震动设定「一条路线一个文件」+ 导出预设按路线分流 (2026-09-13, 695 测试全绿, 用户新方案)**:
+
+    **A. 用户原话与意图**
+    "我想到了新的方案, ACT 版本那么就使用 Vibration-ACT.toml 的读取好了, 这样就可以保证互不干预。
+    然后导出预设也是, 如果检测到用户使用的 ACT 版本, 那么就导出 -ACT 的预设。"
+    → 取代 v24.13 的"两个内存快照槽"方案: 两条路线**各读写自己的文件**, 连导出档也带路线标记。
+
+    **B. 实现 (文件与入口)**
+    - `src/config.rs`
+      * `VIBRATION_FILE` / `VIBRATION_FILE_ACT` 两个常量 + `vibration_route_path_for(base, legacy)`
+        (S1 → `Vibration-ACT.toml`; S4+ → `Vibration.toml`)。只换文件名, 保留目录。
+      * `save_vibration_to_file` / `load_vibration_from_file` 变成**路由器**: 入参是基路径,
+        内部按 `self.vib_legacy_client` 选路。→ 全部 70 处调用点**一行未改** (这是本次改动的关键收益)。
+      * 新增 `save_vibration_exact_file` / `load_vibration_exact_file(path, force)`:
+        不做换算、显式指定文件; 仅路线切换与测试用。`force=true` 绕过"pristine 才覆盖"的启动保护
+        (切到空文件时必须整份覆盖, 否则会留着上一条路线的参数)。
+      * `switch_vibration_edition_to(base, from, to)`: ① 旧路线落盘 ② 换 `vib_legacy_client`
+        ③ 载入新路线文件 (存在即覆盖) / 否则置出厂默认 + 内置预设表, 返回 false 让 GUI 套预设。
+      * `migrate_legacy_vibration_file(base)`: 升级迁移 (见 C)。
+      * 删除 `vibration_saved_act` / `vibration_saved_new` 两个字段 (v24.13 引入)。
+        `AppState::apply_vibration_config` **保留** —— 仍是换路线后同步运行态的唯一入口。
+    - `src/job_presets/mod.rs`: `is_act_export_name` (文件名含 `-ACT`) +
+      `list_export_files_for_route(prefix, legacy)` (只列当前路线的导出档)。
+    - `src/gui/vibration_page.rs`: `export_prefix(base, legacy)`; 通用导出前缀
+      `vibration_export[-ACT]`; 两处导入下拉改用路线过滤; 导出文件头注明路线与对应设定文件。
+    - 职业导出无需额外处理: ACT 名册的职业名自带 `-ACT` (`builtin_jobs_act`), 文件名自然带标记。
+    - ⛔ **顺序红线**: `save_to_file` 会按 `vib_legacy_client` 选路写震动文件。凡是"先改
+      `vib_legacy_client` 再落盘、参数稍后才换"的地方 (设置页客户端版本下拉就是),
+      **必须**用 `AppConfig::save_config_only` (只写 Config.toml), 否则会用
+      "新路线标记 + 旧路线参数"的错配把新路线原有的那套覆盖掉。
+      回滚测试: `config::tests::save_config_only_does_not_touch_vibration_files`。
+
+    **C. 升级迁移 (老用户数据不能丢)**
+    `load_or_create` 里调用 `migrate_legacy_vibration_file`: 当前在 S1 路线、`Vibration-ACT.toml`
+    不存在、`Vibration.toml` 存在时, **`fs::rename` 整体搬过去** (同目录 = 原子)。
+    这样 S4 侧的 `Vibration.toml` 消失 → 用户首次切 S4 时按出厂默认重建, ACT 特调不漏进 S4。
+    已有 ACT 文件时不动 (不会被 S4 侧的文件反向覆盖)。
+    ⚠ 这是 load 路径**唯一**允许的写副作用 (第 31 条⑤ 的"load 不得写盘"红线在此有一处刻意例外,
+    已由 `migration_*` 两个单测覆盖)。
+
+    **D. 实测证据 (用户真实配置, 非仅单测)**
+    复制用户 Config.toml/Vibration.toml/JobVibration.toml 到 `E:\vib_route_check` 跑新 exe →
+    ① `Vibration.toml` 消失, `Vibration-ACT.toml` 生成 (22,902 字节 = 原文件同尺寸);
+    ② 16 个预设 (默认 / ACT1 特供 / 各 `-ACT` 变体) 与调参 (attack_gain=100 / master_gain=90 /
+    rank_duration=250) 全部保留 (python 校验 UTF-8 + 预设名列表);
+    ③ 主窗口 1475×950 正常渲染, 左栏"通用震动修改/全职业预设修改"可见、预设下拉 =「ACT1 特供」。
+    验证完删除 scratch 目录, **未动用户真实配置** (用户下次自己启动时执行迁移)。
+
+    **E. 交付前评审修复 (自审 + 双轴 review 后落地)**
+    - `migrate_legacy_vibration_file`: rename 失败 (文件被占用/第二实例) 时**退化为 copy**
+      —— 宁可原文件多留一份, 也不能让 ACT 侧读不到数据而静默回出厂默认。失败打 eprintln。
+    - `load_vibration_exact_file(force=true)` 原先把预设列表写在 `!is_empty()` 里 → 目标文件
+      无预设时会残留另一条路线的预设, 并被下一次保存写进本路线文件。现按"整份覆盖"处理:
+      无预设即回内置表 (启动路径的非 force 语义不变)。新增回归测试
+      `force_load_does_not_keep_other_route_presets`。
+    - 设置页顺序: 原先先 `reload_config` 再切路线 → 有一帧"新路线标记 + 旧路线参数"的错配灌进
+      运行态。现改为**先切路线** (switch 内部自己 reload), 路线没变时才直接 reload。
+    - 统一走基路径助手: `switch_vibration_edition` 与 `gui::mod` 里裸写的 `"Vibration.toml"`
+      改用 `vibration_path_for` (震动系统开发规范 §二 的规范形式); 导出前缀规则移到
+      `job_presets::export_prefix` (与 `list_export_files_for_route` 同处, 可单测);
+      导出内容里的文件名改用 `VIBRATION_FILE*` 常量。
+    - 未采纳 (有意的): ①导出档内容里再加 `edition=` 字段 —— 导入下拉已按文件名过滤, 手选不到
+      另一路线的档, 该字段是死代码; ②旧版无标记的导出档 (`vibration_export_<ts>.toml`) 在 S1
+      路线的导入列表里看不到 (用户当前无此类文件), 需要用就手工改名加 `-ACT`。
+
+    **F. 实测与迁移状态**
+    - ⚠ **用户真实配置已经跑过迁移** (2026-09-13 02:43, 交付版第一次启动):
+      `Vibration.toml` → `Vibration-ACT.toml` (16 预设 + attack_gain=100 / master_gain=90 全在,
+      Config.toml 24 条映射未动)。之后再次启动**不会**重复迁移 (ACT 文件已存在)。
+    - 分发包 `…测试版V2.zip` 已刷新: exe = 最终构建, 并**新增** `Vibration-ACT.toml` 条目
+      (老包没有这个文件)。`_pack_dist.py` 因此加了"允许新增"白名单 —— `Config.toml` 仍刻意不入包。
+      包内旧的 `Vibration.toml` (22,902 字节, 与 ACT 档同内容) **保留未删** —— 是否清掉由用户定
+      (删了 = 新装默认只有 ACT 档那套预设)。
+
+    **G. 交付**
+    - 699 测试通过 / 0 失败 (v24.13 基线 688 → 删 2 条旧测试 + 新增 7 条 config 单测 + 1 条
+      `act_variants_tests::act_export_names_and_route_filter`)。
+    - exe md5 **08ff1d13a6539a904094b7a6cf4bc7cc** (9,253,376 字节); 二进制含新串
+      `Vibration-ACT.toml` (3) / `vibration_export` (1) / `客户端路线` (3)。
+    - **未 commit / 未 push** (等用户口令【测试通过，上交到仓库】; v24.11~v24.14 一并交)。
+
+    **H. 沿用注意**
+    - 预设列表现在**按路线分家**: 某路线下的自建预设不出现在另一路线 (用户要的"互不干预"即此)。
+    - 若用户说"导出预设没看到我的文件": 先确认导出时所在路线与文件名里的 `-ACT` 是否一致。
+
+---
+
+69. **★v24.15 路线隔离的三个漏口 (2026-09-13, 700 测试全绿, 用户要求"再检查一下潜藏的 bug")**:
+
+    **方法**: 不靠读代码猜 —— 先写探针 (`tests/zz_probe_tmp.rs`, 独立进程 chdir 到临时目录)
+    驱动真实启动路径 (`AppConfig::load_or_create` + `AppState::new`), 拿到实测数值再改;
+    修完把探针转成常驻回归测试 `tests/route_isolation_tests.rs` (4 场景, 防回归 + 防修过头)。
+
+    **A. ① 职业预设跨路线生效 (最严重 —— 直接架空 v24.14 的"互不干预")**
+    - 根因: `job_presets::find_class` **跨两条路线**查找 (`builtin_jobs() + builtin_jobs_act()`),
+      而两条路线名册互不相交 (S1 全是 `*-ACT`) —— 所以 S1 选的 ACT 职业在 S4 路线照样被找到并生效。
+      调用点: `state.rs` 启动兜底 / `vibration_page.rs` 震动页 INIT_DONE 恢复 / 职业档导入 (3 处)。
+    - 实锤 (探针输出): S4 路线 + `JobVibration.toml` 记着 ACT 职业 applied=true →
+      `AppState::new` 后 `vibration_params[0] = 11` (S4 文件是 77)。且震动页会把职业参数写回
+      `self.config.vibration`, 之后的任一 `save_to_file` 就把它**写进 S4 的 Vibration.toml**。
+      注意 `AppState::new(config.clone())` 是 clone —— 污染走的是"GUI config + 后续保存"这条路。
+    - 修: 新增 `job_presets::find_class_for_route(base, name, legacy_client)` (只认当前路线名册,
+      返回该名册下标 —— 顺带修好 `vib_job_base/class` 的跨名册下标错位); 三处调用点全改走它;
+      `SorahkGui::switch_vibration_edition` 换路线后重算职业会话态
+      (`job_applies = applied && find_class_for_route(...).is_some()`), 不适用就清
+      `vib_job_enabled/active/loaded` —— 否则界面仍显示"已应用职业预设"、再动滑块会把旧职业快照
+      当新路线参数写进 JobVibration.toml。
+      **JobVibration.toml 本身不改写** (切回原路线仍恢复原职业), 也不做"自动停用"式的破坏性回滚。
+    - 反例测试 (防修过头): S1 路线 + 同一个 ACT 职业 → 参数必须仍是职业的 (33)。
+
+    **B. ② 损坏的震动文件让程序完全起不来**
+    - `load_or_create` 里 `load_vibration_from_file(...)?` → 解析错误直接冒泡 → main.rs 弹错误框并退出
+      (与 v23.1 修的"坏触发键阻断启动"完全同类)。触发面比原来大: 现在有两个震动文件,
+      且用户会手改。
+    - 修: `load_vibration_tolerantly` —— 解析失败把该路线的文件 rename 成 `<名>.bad`
+      (已有 .bad 则加时间戳后缀) 并 eprintln, 按出厂默认继续。数据留档可手工修回。
+
+    **C. ③ 保存不是原子写 (半截文件 → 配上 ② 就是起不来)**
+    - `fs::write` 先截断再写: 崩溃/断电/两个实例同时写同名文件都会留半截。
+      ⚠ 本仓库**没有单实例保护**, 双击两次就能跑两个实例 → 真实可触发。
+    - 修: `write_atomic` = 同目录写 `<名>.<pid>.<n>.tmp` 再 rename 覆盖 (Windows 走
+      MoveFileEx(REPLACE_EXISTING))。临时名带 pid + 进程内序号 —— 第一版只加 `.tmp`,
+      结果并行测试共写 temp 根的同一个 `Vibration.toml` 时互相 rename 掉对方临时文件而报错
+      (`test_load_or_create_existing_file` 等 2 条测试红了), 已修。
+
+    **D. ④ 老 Config.toml 残留 `[vibration]` 段的跨路线通道**
+    - `vibration` / `vibration_presets` 原为 `skip_serializing` (不写) 但仍可**读**。共用一份参数的
+      年代可能把参数写在 Config.toml 里; 探针实测: 路线文件缺失 + Config.toml 有 `[vibration] 55`
+      → 该路线参数变成 55 (继承旧路线的调参)。对用户当前 Config.toml 不适用 (无该段)。
+    - 修: 两字段改 `#[serde(skip)]` (读写都不经 Config.toml) + `load_from_file` 里补回内置预设表
+      (skip 后反序列化为空表, 会让预设下拉整个空掉); `load_or_create` 里"该路线文件缺失 = 出厂默认"。
+    - 保留: `find_class` 跨路线查找本身**不删** (职业档导入的兼容/工具场景仍可能用),
+      改为在文档里标注"判断生效性必须用 `find_class_for_route`"。
+
+    **E. 实测与交付**
+    - 700 测试通过 / 0 失败 (699 + 1 条四场景回归测试)。
+    - 用户真实配置跑修复版: 主窗口 1475×950 正常, 预设「ACT1 特供」; **TOML 深比较**
+      (`tomllib`) 证明一次运行后 `[vibration]` 逐字段 (含 60 槽与数组) 与 16 个预设**完全不变**。
+    - exe md5 **f370d2d46cea85904165b0a5a630afcd** (9,266,176 字节); 分发包已刷新。
+    - **未 commit / 未 push** (等口令)。
+    - 📌 观察 (非本改动引起): 用户 02:58 左右自己的一次会话里, `Vibration-ACT.toml` 的**实时段**
+      被换成了某个内置预设的参数 (storm_unified_enabled 转 true 等), 同时 JobVibration.toml 变
+      `applied=false / base_job=""` —— 与"启用过职业预设后切回通用预设 (自动停用+参数回滚)"一致;
+      **16 个预设逐字段未动**。用户手感不对时: 重新应用他的预设即可。
+
+    **F. 已知未修 (报告项, 未动代码)**
+    - **无单实例保护**: 两个实例会互抢 `Vibration-ACT.toml`/`Config.toml`/`JobVibration.toml` 与手柄钩子。
+      原子写只保证"文件不会半截", 不保证"后写的赢的是对的那份"。要根治需加命名互斥体 (单实例)。
+    - `vib_preset_idx` 仍是会话字段 (下拉显示的"当前预设"可能不等于实际生效那套) —— v24.13 起的旧账。
+    - 分发包里旧的 `Vibration.toml` (22,902 字节, 与 ACT 档同内容) 仍留 — 用户定夺是否删。
+
+---
+
+70. **★v24.16 「ACT1 特供」预设用户调优定稿 + 职业基底冻结 (2026-09-13, 702 测试全绿)**:
+
+    **A. 用户原话**
+    "优化一下 ACT1 特供算法预设: 连击增强 (渐进至上限) 改为0 / 打群怪几秒后自动降温 (秒,0=关闭) 调成1秒 /
+    震尾多快切断 % (0=自然衰减) 调成60% / 统合衰减期 ms (越大越连贯,40-400) 修改成40% / 评分点 调成25% /
+    怪物死亡 调节成40% / 玩家命中反馈 (0x01) 调整成36% / 怪物异常反馈 (0x04) 出血/中毒/感电跳字 调整成3% /
+    释放技能 调整成45%。只需要调整参数即可, 这是我手动调优出来的参数。同时你要记录在文档里面。"
+
+    **B. 逐项落点 (标签 → 字段, 别猜错)**
+    | 用户说法 | 落点 | 类型 |
+    |---|---|---|
+    | 连击增强 (渐进至上限) | `params[6]` 35→0 | 60 槽 (预设自带) |
+    | 玩家命中反馈 (0x01) | `params[16]` 65→36 | 60 槽 (预设自带) |
+    | 评分点 / 释放技能 / 怪物死亡 | `rank_type_gain[0]/[9]/[14]` 20→25 / 20→45 / 45→40 | 预设自带 |
+    | 打群怪几秒后自动降温 (秒) | `sustain_secs` 3→1 (+`sustain_enabled=true`) | 标量, **不进预设** |
+    | 震尾多快切断 % | `tail_land_pct` 25→60 (+`tail_land_enabled=true`) | 标量, **不进预设** |
+    | 统合衰减期 ms | `storm_unified_ms` 120→40 (+`storm_unified_enabled=true`) | 标量, **不进预设** |
+    | 怪物异常反馈 (0x04) | `monster_abnormal_gain` 1→3 | 标量, **不进预设** |
+    - 标签→槽位对照来源: `vibration_page.rs` 的 rows/rank_names 表 (评分点 idx0 / 释放技能 idx9 /
+      怪物死亡 idx14; 0x01 = params[16]; 0x04 = `monster_abnormal_gain`, 该行 `pidx=usize::MAX` 说明"不占 60 槽")。
+    - 标量**不接受**预设表承载 (VibrationPreset 只有 params/item_lr/rank_lr/rank_type_gain/
+      rank_level_gain/rank_duration/out_smooth), 所以放 `config::act1_preset_extras`
+      —— v16.8 就是为"ACT1 特供附加默认"建的钩子, 本轮沿用。
+    - ⚠ `storm_unified_enabled` 默认 **false**: 只写 `storm_unified_ms` 滑块不生效, 必须一起打开
+      (用户实机配置里本来就是 true, 所以这条是他手调状态的一部分)。
+    - `sustain_reduce`(降温幅度, 用户实机 60) 与 `hitcap_max`(命中限频, 用户实机 1) **本轮未动** ——
+      用户没点名, 且这两个是"应用预设时不会被覆盖"的标量 (extras 不写它们), 所以不写进 extras 反而
+      保住了用户当前值。若用户要求连它们一起定稿, 加进 `act1_preset_extras` 即可。
+
+    **C. ⛔ 职业基底冻结 (本轮唯一机制性改动, 别改回去)**
+    - `act1_base_params()` 原先 = `default_vibration_presets()` 里「ACT1 特供」的 `params`。
+    - `act_build_params_from(base, src, ...)` 只重建 0/4/9/11/12-17/35-38 + `act_rebuild_advanced`
+      的组; **p[5]/[6]/[10]/[18]/[19]/[20] 等槽位原样继承 `base`**。所以"把 ACT1 特供 的连击增强
+      改成 0"会经基底**静默改掉全部 39 个职业 ACT 变体** (探针实测: 剑魂-ACT 的 p[6] 本来就是 35,
+      直接继承自该预设)。
+    - 用户只要求调这一个预设 → `act1_base_params()` 改为 **v19.5 定稿快照** (p[6]=35 / p[16]=65 等)。
+      验证手法: 改动前后打印"39 个转职 params+rank_type_gain 的 FNV 校验和"比对 ——
+      **0xf96350194404a686 前后完全一致**。
+    - 回归锁: `tests/config_roundtrip_tests.rs::job_act_base_is_frozen_snapshot`
+      (含 `ACT1 特供 表 != 基底` 与 剑魂-ACT p[6]==35 两条断言)。
+    - 反过来, `act_ladder()` 的"Extreme 档 = 75/65/55/40/20/25/10"锚点**仍然成立** (它锚的是职业
+      基底, 不是预设当前表) —— 已在 `act_ladder` doc 注释里写明, 免得下一位 AI 拿预设表去"校准"它。
+
+    **D. 交付与实测**
+    - 702 测试通过 / 0 失败 (700 + 新增 2 条; `act1_preset_extras` 测试扩到覆盖全部新标量)。
+    - 真机实测 (用户真实配置): 启动后持久化的「ACT1 特供」条目被 `ensure_act1_preset_position`
+      自愈为定稿值 (`params[6]=0 / [16]=36 / rank_type_gain=[25,20,30,30,30,20,20,20,20,45,20,40,20,20,40]`),
+      用户当前的实时标量 (sustain 1 / tail 60 / unified 40 开) 原样保留; 职业预设不变。
+      → 用户**不用重新点应用**, 下次启动预设列表里的「ACT1 特供」就是定稿值; 点一次"应用"才会把
+      标量也按 extras 重写 (含 `monster_abnormal_gain` 5→3)。
+    - exe md5 **7ad5d0f5fbe7b7c511dec9dcd792fcb9** (9,265,664 字节); 分发包已刷新。
+    - **未 commit / 未 push** (等口令)。
+    - 📌 顺手记录: v24.16 只在 S1 路线有意义 (ACT1 特供 仅 S1 显示); S4 红线不动, 回归全绿。
+
+---
+
+71. **★v24.17 参数说明全面补"高低后果" + 一刀多怪合并默认为开 (2026-09-13, 703 测试全绿)**:
+
+    **A. 用户原话**
+    "一刀多怪合并 (群怪一刀只震一下) 默认为开 / 然后再修改一下所有参数的描述, 告诉用户, 调高了会怎么样,
+    调低又会怎么样, 让用户知道高低有一个明确的概念。"
+
+    **B. ① 一刀多怪合并**
+    - 该开关的**出厂默认本来就是开** (`#[serde(default = "default_vib_true")] pub merge_enabled` +
+      `VibrationConfig::default()` 里 `merge_enabled: true`) —— 没有需要改的默认值。
+    - 但**用户现场配置里是 `false`** (他以前自己关过), 所以按"预设应带出完整手感"的口径, 在
+      `config::act1_preset_extras` 里写死 `vib.merge_enabled = true` —— 点一次「ACT1 特供 → 应用」
+      即恢复为开。
+    - 回归锁: `tests/config_roundtrip_tests.rs::merge_enabled_defaults_to_on` +
+      extras 测试里"反向设 false 必须被拉回 true"。
+
+    **C. ② 参数说明补高低后果 (本轮工作量主体)**
+    - 口径: 每条说明末尾加 `调高：<后果>；调低：<后果>。`; 开关类用 `开：<...>；关：<...>。`
+    - 两类参数两种做法:
+      * **已有说明** (on_hover_text / 元组表里的说明列): 在**原文末尾追加**, 不覆盖原文。
+      * **只有名字** (label-only 的滑块/开关, 原本悬浮无任何提示): 新增
+        `SorahkGui::param_hint(name) -> &'static str` 单一说明表 + `with_hint(resp, name)`
+        包装控件返回值。接线 34 处 = 8 个参数表循环 (`with_hint(name)`) + 21 个独立滑块 +
+        5 个开关 (`with_hint(ui.checkbox(...), "标签")`)。
+      * 注意: 表循环里是 `for (name, idx, lo, hi) in X_rows` —— **没有说明列**, 所以只能用
+        `name` 去 `param_hint` 查; 独立滑块的标签必须与 `param_hint` 的 key **逐字一致**
+        (踩过: "移动持续震动独立于全局强度" vs 带 " (默认开)" 后缀的真实标签)。
+    - 覆盖: 119 控件 → 112 有高低说明; 余 7 个是模式/分段按钮 (调试中/正常模式/震动开/震动关/
+      允许高级调校/显示专家参数/马达分工), 不是参数, 有意不加。
+      ⚠ 这 7 个里有"允许高级调校 / 显示专家参数"两个**视图开关**, 若用户以后也想加说明, 直接
+      在它们的 `checkbox` 处补 `.on_hover_text("开：…；关：…")` 即可。
+    - 工具 (留在 work/, 未跟踪不打包):
+      * `work/_apply_desc_hilo.py` —— 全部说明文本的**事实来源** (标签/说明前缀 → 高低句)。
+      * `work/_check_coverage.py` —— 覆盖率自检, 列出仍没有高低说明的控件。
+      * `work/_dump_surface.py` —— 每个 slider/checkbox 是否带说明的来源分析。
+
+    **D. ⛔ 本轮踩坑 (批量改字符串的纪律, 下一位别再踩)**
+    1. 直接"按出现次数"替换会把高低句追加到滑块的**标签**上 (例如 `("移动步频 ms (自然步频 ~380)", 23, ...)`
+       这种 4 元组的最后一个中文字面量就是标签) → 标签里出现 `\n` 会撑坏布局。
+       **必须**先判定目标是不是"说明" (行内有 on_hover_text, 或元组行有 >= 2 个中文字面量)。
+    2. 前缀若是**另一个标签的子串** (如 "最轻不低于原来的 %" 是 "减弱后最轻不低于原来的 %" 的子串)
+       → 命中 2 次, 脚本必须报错退出而不是硬改。
+    3. 插入点要用"前缀之后的第一个未转义引号", 若前缀本身**跨到字面量外面** (以 `, 33,` 结尾),
+       插入点会落到下一个字面量的开引号上 → 直接编不过。所以校验必须包含"改完能编译"。
+    4. 改完**必须**跑一次 `sync_and_build.sh` 再跑测试; 本轮曾把 3 个 `});` 结构写错, 靠编译抓出来。
+
+    **E. 交付**
+    - 703 测试通过 / 0 失败。
+    - exe md5 **c7b25c85501ec552d34f039599468d85** (9,286,656 字节)。
+    - 实测: 把启动页临时改到「通用震动」跑离屏截图 → 整页正常渲染、无 panic; 核对后**已还原**
+      (源码里无插桩残留)。
+    - ⚠ **分发包未能刷新**: `…测试版V2.zip` 被其它进程占用 (`os.replace` → WinError 5 拒绝访问;
+      用户 06:00 刚重做过这个包, 367 条目, 新增 ACT4-DLL/ACT5-DLL/DOF手柄适配研究资料)。
+      exe 已放进交付目录, **用户关掉压缩包后重跑** `python work/_pack_dist.py` 即可替换
+      (脚本会替换 exe + Vibration-ACT.toml, 不动其它条目)。
+    - **未 commit / 未 push** (等口令)。

@@ -188,6 +188,9 @@ pub fn load_job_vibration() -> Option<JobVibrationConfig> {
 
 /// 按名字查找职业, 返回 (基础职业索引, 转职索引, 克隆)。
 /// ★v19: ACT 变体 (基础职业名带 "-ACT" 后缀) 一并可查, 供应用/恢复职业快照。
+/// ⚠ 本函数**跨两条路线**查找 (S1 的 `*-ACT` 与 S4 的原表都能命中)。
+/// 凡是"判断某职业预设现在还算不算数"的地方 (启动恢复 JobVibration.toml) 必须用
+/// `find_class_for_route`, 否则 S1 的职业特调会在 S4 路线继续生效。
 pub fn find_class(base: &str, name: &str) -> Option<(usize, usize, JobClass)> {
     let mut jobs = builtin_jobs();
     jobs.extend(builtin_jobs_act());
@@ -201,6 +204,25 @@ pub fn find_class(base: &str, name: &str) -> Option<(usize, usize, JobClass)> {
         }
     }
     None
+}
+
+/// ★v24.15: 按**当前客户端路线**查找职业预设 —— 只认该路线名册。
+///
+/// 两条路线的职业名册互不相交 (S1 全是 `*-ACT`, S4 全是原名, 见 `available_jobs`),
+/// 所以 JobVibration.toml 记的职业只在它所属路线上算数。启动/恢复必须走本函数:
+/// 否则 S1 选的 ACT 职业特调在切到 S4 后照样生效, 并随保存写进 S4 的震动文件 ——
+/// 正是"一条路线一个文件"要杜绝的串味。
+///
+/// 返回的下标是**当前路线名册**里的下标 (可直接喂职业/转职下拉)。
+pub fn find_class_for_route(
+    base: &str,
+    name: &str,
+    legacy_client: bool,
+) -> Option<(usize, usize, JobClass)> {
+    let jobs = available_jobs(legacy_client);
+    let (bi, j) = jobs.iter().enumerate().find(|(_, j)| j.base_job == base)?;
+    let (ci, c) = j.classes.iter().enumerate().find(|(_, c)| c.name == name)?;
+    Some((bi, ci, c.clone()))
 }
 
 // ---------- ★v19 ACT 专属职业预设 (仅 S1 路线显示, 不影响 S4 原表) ----------
@@ -234,7 +256,9 @@ fn act_variant_class(c: &JobClass) -> JobClass {
     /* ★v19.5 用户定稿: **以 ACT1 特供为基底** (连击增强/曲线/节奏等 "ACT1 概念"
      * 槽位全部继承), 再按职业理念覆盖 —— 力度档由原上限重标定, 主反馈显式指定,
      * 密度/连击/移动/窗口/脉冲按职业原型重建, 马达换 ACT 语言;
-     * **专属算法保留** (algo_id/algo_params), 由引擎按 ACT1 理念约束其表现。 */
+     * **专属算法保留** (algo_id/algo_params), 由引擎按 ACT1 理念约束其表现。
+     * ★v24.16: 基底是 `act1_base_params()` 的**定稿快照** (v19.5 值), 不随
+     * 「ACT1 特供」预设被继续调优而联动 —— 用户手调那个预设不该静默改掉 39 个职业。 */
     let tier = crate::config::act_tier_from_max(src[4]);
     let base = crate::config::act1_base_params();
     let params =
@@ -349,6 +373,37 @@ pub fn list_export_files(prefix: &str) -> Vec<String> {
     }
     out.sort();
     out
+}
+
+/// ★v24.14: 导出文件属于 S1 (ACT) 路线的标识 —— 文件名带 `-ACT`。
+///
+/// 通用震动导出 = 前缀 `vibration_export-ACT` (见 `export_prefix`); 职业导出 = 职业名自带
+/// `-ACT` (`available_jobs(true)` 只给 ACT 名册)。玩家自建的导出名也可能带, 属预期行为。
+/// 注意与 `config::is_act_variant_name` (`ends_with("-ACT")`, 判**预设名**) 不同:
+/// 这里判的是**文件名**, 标记出现在中间, 故用 `contains`。
+pub fn is_act_export_name(name: &str) -> bool {
+    name.contains("-ACT")
+}
+
+/// ★v24.14: 通用震动导出的文件名前缀 —— ACT 路线带 "-ACT"。
+/// 职业导出不用它: ACT 名册的职业名本身就带 `-ACT`, 再拼一次会变成 `-ACT-ACT`。
+pub fn export_prefix(base: &str, legacy_client: bool) -> String {
+    if legacy_client {
+        format!("{base}-ACT")
+    } else {
+        base.to_string()
+    }
+}
+
+/// ★v24.14: 按**当前客户端路线**列出可导入的导出文件。
+///
+/// S1 (ACT) 只看 `-ACT` 文件, S4+ 只看非 `-ACT` 文件 —— 与震动设定的路线文件隔离
+/// 口径一致, 防止把 ACT 档位的参数导进 S4 (反之亦然)。
+pub fn list_export_files_for_route(prefix: &str, legacy_client: bool) -> Vec<String> {
+    list_export_files(prefix)
+        .into_iter()
+        .filter(|n| is_act_export_name(n) == legacy_client)
+        .collect()
 }
 
 /* ── 导入值上限 (2026-09-08) ─────────────────────────────────────

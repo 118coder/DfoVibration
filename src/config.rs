@@ -560,13 +560,28 @@ fn default_vib_storm_pause() -> u32 { 400 }
 /* 统合衰减期 (v17) 默认 120ms: 风暴期固定衰减周期 (开关默认关) */
 fn default_vib_storm_unified_ms() -> u32 { 120 }
 
-/* ★ACT1 特供预设附加默认 (v16.8, 用户定稿): 应用「ACT1 特供」时同时开启
- * 高级调校, 并默认勾选两个风暴期静音 (怪物异常反馈 / 评分点系统)。
+/* ★ACT1 特供预设附加默认 (v16.8 用户定稿: 高级调校默认开启 + 两个风暴期静音;
+ * ★v24.16 用户手调追加: 该预设的"群怪治理"标量 —— 这些不是 60 槽预设字段,
+ * 必须在这里随预设一起落地, 否则只调 60 槽/评分族, 实测耐听度对不上)。
  * 纯函数 (便于测试); GUI 应用预设时调用并同步原子量。 */
 pub fn act1_preset_extras(vib: &mut VibrationConfig) {
     vib.advanced_enabled = true;
     vib.storm_mute_abnormal = true;
     vib.storm_mute_rank = true;
+    /* ★v24.16 用户手调 (2026-09-13 实机定稿) */
+    vib.sustain_secs = 1; // 打群怪几秒后自动降温 (秒, 0=关闭): 3 → 1 秒
+    vib.tail_land_pct = 60; // 震尾多快切断 % (0=自然衰减): 25 → 60
+    vib.storm_unified_enabled = true; // 统合衰减期: 风暴期每一击重新起振
+    vib.storm_unified_ms = 40; // 统合衰减期时长 ms (40-400): 120 → 40
+    vib.monster_abnormal_gain = 3; // 怪物异常反馈 (0x04) 出血/中毒/感电跳字 %
+    /* ★v24.17 用户要求"一刀多怪合并默认为开": 出厂默认本来就是 true
+     * (default_vib_true), 但用户现场配置里被关过 —— 这里写死, 保证应用本预设后一定开。
+     * 关掉它 = 命中聚合窗/合并记账/补发全部回到旧行为 (一刀多怪各震各的、更吵)。 */
+    vib.merge_enabled = true;
+                                   /* 两个"母开关": 上面两个滑块要生效必须开着。
+                                    * 默认即 true, 这里显式写死以保证应用预设后 100% 生效。 */
+    vib.sustain_enabled = true;
+    vib.tail_land_enabled = true;
 }
 
 fn default_vib_55() -> u32 {
@@ -713,24 +728,31 @@ pub fn default_vibration_presets() -> Vec<VibrationPreset> {
         },
         /* ── ACT1 特供: 老方案管线 (IVL 20ms/曲线 100 线性) + 弱机搭配,
          * 按 XBOX360 65535 量纲分配 (docs/震动系统开发规范_v20):
-         *   命中 0x01=65 强主体; 技能/暴击 0x10=55 分层 (略低于命中, 且特殊
-         *   攻击自带 200ms 静默窗防叠加爆震); 受击 0x02=40; 出血 0x04=12 极低;
-         *   评分族压低; 怪物死亡中等。全局限幅: master 90 × 上限 75 (弱机保护)。
-         *   密度自适应启用 (thr 45/降 40) + 连击 cap 150/slope 60 =
-         *   后期连击暴增自动压制 (借鉴职业算法的密度/倍率封顶机制);
-         *   槽 1/2/3/7/8 为引擎无引用死槽, 恒 0; p[39]=移动积累窗口。
+         *   命中 0x01=36 主体; 技能/暴击 0x10=55 分层 (略高于命中, 特殊攻击自带
+         *   200ms 静默窗防叠加爆震); 受击 0x02=40; 出血 0x04=3 极低 (独立通道
+         *   monster_abnormal_gain, 见 act1_preset_extras); 评分族压低; 怪物死亡中等。
+         *   全局限幅: master 90 × 上限 75 (弱机保护)。连击增强 0 = 不做连击递增
+         *   (用户 2026-09-13 手调: 只要一击一击的干净反馈, 不要越打越强)。
+         *   密度自适应启用 (thr 45/降 40); 槽 1/2/3/7/8 为引擎无引用死槽, 恒 0;
+         *   p[39]=移动积累窗口。
          *   ★v15.2 马达 L/R 调校: 命中偏右清脆 / 受击偏左低吼 / 特殊偏右,
          *   出血走独立"怪物异常反馈"通道 (此表中性);
          *   评分族: 移动偏左 (走路低频感)。仅 S1 路线在预设列表中显示。
          *   ★v16.4 参数收敛 (狂战士实机日志剂量归因: 命中/特殊/受击为三个最响
-         *   通道, 用户自调配置亦偏收敛): 命中 70→65 / 特殊 60→55 / 受击 45→40,
-         *   降幅 7-11%, 单挑手感基本不变, 高攻职业连打更耐听 ── */
+         *   通道): 命中 70→65 / 特殊 60→55 / 受击 45→40。
+         *   ★v24.16 用户手调 (2026-09-13, 实机调优定稿):
+         *     连击增强 35→0 (不做连击递增) / 命中 0x01 65→36 (更克制);
+         *     评分族: 评分点 20→25 / 释放技能 20→45 / 怪物死亡 45→40。
+         *   其余"群怪治理"标量 (持续降温/震尾切断/统合衰减期/怪物异常反馈) 不是
+         *   60 槽预设字段, 由 `act1_preset_extras` 在应用本预设时一并落地。
+         *   ⚠ 职业 ACT 变体的基底是 `act1_base_params()` 的**定稿快照**, 不随本表调优
+         *   联动 —— 改这里不会静默改掉 39 个职业预设 (见该函数注释)。 */
         VibrationPreset {
             name: "ACT1 特供".to_string(),
-            params: [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 55, 25, 10, 65, 40, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
+            params: [100, 0, 0, 0, 75, 65, 0, 0, 0, 90, 0, 20, 20, 55, 25, 10, 36, 40, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50],
             item_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-5), lr(-5), 0, 0, 0, 0, 0, 15, lr(-10), 10, lr(15), lr(-10)],
             rank_lr: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, lr(-15), 10, 0, 0, 0, 0, 0, 0],
-            rank_type_gain: [20, 20, 30, 30, 30, 20, 20, 20, 20, 20, 20, 40, 20, 20, 45],
+            rank_type_gain: [25, 20, 30, 30, 30, 20, 20, 20, 20, 45, 20, 40, 20, 20, 40],
             rank_level_gain: 30,
             rank_duration: 250,
             out_smooth: 35,
@@ -982,8 +1004,11 @@ pub fn act_tier_from_max(orig_max: u32) -> ActTier {
     }
 }
 
-/// (上限, 命中, 特殊, 受击, DOT, 状态, 特效) —— ACT 事件力度阶梯。
-/// ★v19.5: 以 ACT1 特供为锚 (Extreme 档 = ACT1 特供: 75/65/55/40/20/25/10)。
+/// (上限, 命中, 特殊, 受击, DOT, 状态, 特效) —— ACT 事件力度阶梯 (职业变体用)。
+/// ★v19.5: 以 ACT1 特供定稿基底为锚 (Extreme 档 = 75/65/55/40/20/25/10)。
+/// ⚠ v24.16 起「ACT1 特供」**预设本身**的命中已由用户手调 65→36, 但职业变体的
+/// 基底是 `act1_base_params()` 的定稿快照 (仍是 65), 所以这套阶梯不变 —— 别拿
+/// 「ACT1 特供」当前表来"校准"本函数。
 pub fn act_ladder(t: ActTier) -> (u32, u32, u32, u32, u32, u32, u32) {
     match t {
         ActTier::Light => (58, 50, 42, 30, 15, 20, 8),
@@ -1006,14 +1031,17 @@ pub fn act_decay(t: ActTier) -> (u32, u32, u32, u32) {
     }
 }
 
-/// ★v19.5: ACT1 特供的 60 槽参数 (职业 ACT 变体的基底 —— 用户定稿: "基于 ACT1
-/// 特供预设, 再根据职业理念修改")。
+/// ★v19.5 / ★v24.16: 职业 ACT 变体的 60 槽参数基底 (职业定稿快照)。
+///
+/// 设计原话: "基于 ACT1 特供预设, 再根据职业理念修改"。★v24.16 之前本函数直接取
+/// 「ACT1 特供」预设的 `params`, 而 `act_build_params_from` 只重建事件/衰减/三闸/算法组,
+/// **不改** p[5]/[6]/[10]/[18]/[19]/[20] 等槽位 —— 于是改一次「ACT1 特供」会静默改掉
+/// 全部 39 个职业 ACT 变体 (例如 连击增强 p[6])。
+/// 用户 2026-09-13 只要求调「ACT1 特供」这一个预设, 所以这里改为**定稿快照**:
+/// 职业基底固定为 v19.5 定稿值, 不随预设调优联动 (39 个职业预设逐字节不变)。
+/// 若哪天真要让职业也跟动, 直接改本表即可 (不要改回"读预设")。
 pub fn act1_base_params() -> [u32; 60] {
-    default_vibration_presets()
-        .into_iter()
-        .find(|p| p.name == "ACT1 特供")
-        .map(|p| p.params)
-        .unwrap_or([0; 60])
+    [100, 0, 0, 0, 75, 65, 35, 0, 0, 90, 0, 20, 20, 55, 25, 10, 65, 40, 50, 100, 100, 8, 50, 380, 35, 8, 40, 30, 4, 45, 500, 40, 800, 55, 300, 25, 60, 45, 60, 1200, 150, 90, 600, 30, 800, 1200, 3000, 150, 60, 40, 60, 35, 200, 30, 200, 150, 40, 40, 30, 50]
 }
 
 /// ★v19.4 ACT 高级算法组重建 (职业与通用预设共用): 按源参数的"职业原型标记"
@@ -1434,12 +1462,15 @@ pub struct AppConfig {    /// Display tray icon
     #[serde(default)]
     pub current_preset: String,
     /// Vibration settings (DFO battle events -> gamepad motors)
-    /// 实际持久化在 Vibration.toml (save_vibration_to_file), Config.toml 不写此节
-    #[serde(default, skip_serializing)]
+    /// 实际持久化在路线专属的震动设定文件 (S1 → Vibration-ACT.toml, S4+ → Vibration.toml)。
+    /// ★v24.15: `skip` = **读写都不经此文件** —— 早于"独立震动文件"的老版本可能把
+    /// `[vibration]` 段写进 Config.toml, 若能读进来, 在路线文件缺失时会变成该路线的参数
+    /// (把旧路线的手感/调参带过界)。现在唯一来源就是路线文件。
+    #[serde(skip)]
     pub vibration: VibrationConfig,
     /// Named vibration presets (built-in 3 + user defined)
-    /// 实际持久化在 Vibration.toml, Config.toml 不写此节
-    #[serde(default = "default_vibration_presets", skip_serializing)]
+    /// 同 `vibration`: 持久化在路线专属震动设定文件; ★v24.15 起不从 Config.toml 读。
+    #[serde(skip)]
     pub vibration_presets: Vec<VibrationPreset>,
 }
 
@@ -1680,6 +1711,56 @@ impl Default for AppConfig {
     }
 }
 
+/// 震动设定基文件名 (S4+ 现行新方案路线直接用它)。
+pub const VIBRATION_FILE: &str = "Vibration.toml";
+/// ★v24.14: S1 (ACT1) 路线的独立震动设定文件 —— 与 S4 的 `Vibration.toml` 完全隔离,
+/// 实时参数与预设列表各存一份, 互不覆盖 (用户要求: 两条路线互不干预)。
+pub const VIBRATION_FILE_ACT: &str = "Vibration-ACT.toml";
+
+/// ★v24.15: 原子写 —— 先写同目录 `<名>.<pid>.<n>.tmp` 再 rename 覆盖。
+///
+/// 直接 `fs::write` 会先截断再写: 中途崩溃 / 断电 / 两个实例同时写同一个文件, 都会留下
+/// 半截文件; 而半截的震动文件会让下次启动直接失败 (见 `load_vibration_tolerantly`)。
+/// 同目录 rename 在 Windows 上走 MoveFileEx(REPLACE_EXISTING), 覆盖是原子的。
+/// 临时名带 pid + 进程内序号: 同一目录下并行写多个配置文件 (测试/多实例) 互不踩踏。
+fn write_atomic(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let tmp = std::path::PathBuf::from(tmp);
+    fs::write(&tmp, contents)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// ★v24.15: 把解析失败的文件挪到 `<名>.bad` (第二个坏文件加时间戳后缀), 返回落点。
+fn quarantine_file(path: &Path) -> std::path::PathBuf {
+    let mut bad = path.as_os_str().to_os_string();
+    bad.push(".bad");
+    let mut bad = std::path::PathBuf::from(bad);
+    if bad.exists() {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let mut name = path.as_os_str().to_os_string();
+        name.push(format!(".bad.{ts}"));
+        bad = std::path::PathBuf::from(name);
+    }
+    if fs::rename(path, &bad).is_err() {
+        let _ = fs::remove_file(path);
+    }
+    bad
+}
+
 impl AppConfig {
     /// Loads configuration from file, creating default if not found.
     ///
@@ -1695,15 +1776,80 @@ impl AppConfig {
             Self::load_from_file(&path)?
         };
         let vib_path = Self::vibration_path_for(&path);
-        config.load_vibration_from_file(&vib_path)?;
+        config.migrate_legacy_vibration_file(&vib_path);
+        /* ★v24.15: 容错载入 —— 损坏/半截的震动文件绝不能阻断启动 (v23.1 纪律:
+         * 单条脏数据不得让程序起不来)。坏文件挪成 .bad 留档, 按出厂默认继续跑。 */
+        if !config.load_vibration_tolerantly(&vib_path) {
+            /* 该路线还没有自己的文件 = 首次使用: 一律出厂默认。
+             * ★v24.15: 顺带堵住"老 Config.toml 里残留的 [vibration] 段"这条跨路线通道 ——
+             * 两条路线共用一份参数的年代, 参数可能被写在 Config.toml 里, 现在只认路线文件。 */
+            config.vibration = VibrationConfig::default();
+            config.vibration_presets = default_vibration_presets();
+        }
         Ok(config)
     }
 
-    /// Returns the sibling Vibration.toml path for a Config.toml path.
+    /// Returns the sibling Vibration.toml path (基路径) for a Config.toml path.
+    /// 注意: 这是**基路径**, 实际读写在 `vibration_route_path_for` 按路线换算。
     pub fn vibration_path_for<P: AsRef<Path>>(path: P) -> std::path::PathBuf {
         let p = path.as_ref();
         let dir = p.parent().unwrap_or_else(|| std::path::Path::new("."));
-        dir.join("Vibration.toml")
+        dir.join(VIBRATION_FILE)
+    }
+
+    /// ★v24.14: 基路径 → 当前路线的震动设定文件路径。
+    ///
+    /// S1 (ACT1 老方案) → `Vibration-ACT.toml`; S4+ (现行新方案) → 基路径 `Vibration.toml`。
+    /// 两条路线各读写自己的文件, 实时参数与预设列表都不共享 —— 修的是"S1 的 ACT 特调
+    /// 漏进 S4 手感 / S4 调参污染 ACT"这条互相干扰的老问题。
+    pub fn vibration_route_path_for<P: AsRef<Path>>(path: P, legacy: bool) -> std::path::PathBuf {
+        let p = path.as_ref();
+        if legacy {
+            p.with_file_name(VIBRATION_FILE_ACT)
+        } else {
+            p.to_path_buf()
+        }
+    }
+
+    /// ★v24.14: 一次性迁移 —— v24.13 及以前两条路线共用 `Vibration.toml`。
+    ///
+    /// 当前路线为 S1 (ACT) 且 `Vibration-ACT.toml` 尚不存在时, 把现有 `Vibration.toml`
+    /// **整体搬**过去 (此前 `[vibration]` 段一直是"当前路线"那一套)。原文件随之消失,
+    /// 于是 S4 首次切换时按出厂默认重新初始化 —— ACT 特调不会漏进 S4。
+    /// 返回是否已把数据放到 ACT 文件里。
+    pub fn migrate_legacy_vibration_file<P: AsRef<Path>>(&self, base: P) -> bool {
+        if !self.vib_legacy_client {
+            return false; /* S4 路线: 基路径就是它自己的文件 */
+        }
+        let base = base.as_ref();
+        let act = Self::vibration_route_path_for(base, true);
+        if act.exists() || !base.exists() {
+            return false;
+        }
+        /* 同目录 rename = 原子搬移; 失败保持原状, 下次启动再试 */
+        if fs::rename(base, &act).is_ok() {
+            return true;
+        }
+        /* rename 失败 (文件被占用 / 第二个实例在读): 退化为拷贝 —— 宁可原文件多留一份
+         * (S4 侧最多是旧值), 也不能让 ACT 侧读不到数据而静默回到出厂默认。 */
+        match fs::copy(base, &act) {
+            Ok(_) => {
+                eprintln!(
+                    "vibration: 迁移 {} → {} 用 rename 失败, 已拷贝 (原文件保留)",
+                    base.display(),
+                    act.display()
+                );
+                true
+            }
+            Err(e) => {
+                eprintln!(
+                    "vibration: 迁移 {} → {} 失败 ({e}); 本次按 ACT 文件缺失处理",
+                    base.display(),
+                    act.display()
+                );
+                false
+            }
+        }
     }
 
     /// Loads configuration from a TOML file.
@@ -1730,6 +1876,13 @@ impl AppConfig {
         config.process_whitelist.sort();
         config.process_whitelist.dedup();
 
+        /* ★v24.15: `vibration_presets` 现在是 `#[serde(skip)]` (不从 Config.toml 读),
+         * 反序列化后是空表 —— 补上内置预设, 再由路线文件覆盖。
+         * 空表会让预设下拉整个空掉 ("还原默认" 之外无路可退)。 */
+        if config.vibration_presets.is_empty() {
+            config.vibration_presets = default_vibration_presets();
+        }
+
         // 注意: load 路径不得有任何写副作用。旧版曾在此对 LS_Left/LS_Right
         // 强制开启双击并 save_to_file——彼时 vibration 还是 serde 默认值,
         // 会把磁盘上的 Vibration.toml 整体覆盖成默认 (用户自建预设/调参清空),
@@ -1744,6 +1897,25 @@ impl AppConfig {
     ///
     /// Returns an error if the file cannot be written or serialized.
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+        self.save_config_only(&path)?;
+        // Vibration settings go to the current route's own file
+        // (S1 → Vibration-ACT.toml; S4+ → Vibration.toml), see save_vibration_to_file.
+        let vib_path = Self::vibration_path_for(&path);
+        self.save_vibration_to_file(vib_path)?;
+        Ok(())
+    }
+
+    /// ★v24.14: 只写 Config.toml, **不碰**震动设定文件。
+    ///
+    /// 供"紧接着还要切换震动路线"的场景用 (见 settings_dialog): 那一刻 `vib_legacy_client`
+    /// 已是新路线, 而 `vibration` 仍属于旧路线 —— 走 `save_to_file` 会把旧路线的参数
+    /// 写进新路线的文件, 覆盖掉新路线原有的那套。切换前后由 `switch_vibration_edition_to`
+    /// 自己负责两份文件的读写。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written or serialized.
+    pub fn save_config_only<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
         // 纯 serde 序列化: 字段清单以 AppConfig 结构体为唯一事实来源,
         // 杜绝手工模板漏行 (此前 rawinput_capture_mode 与预设 double_tap_*
         // 曾静默丢失; 用户输入引号未转义、current_preset 归错节同源)。
@@ -1762,24 +1934,33 @@ impl AppConfig {
              #   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 \"GAMEPAD_045E_LS_RightUp+A\"\n\
              #   Raw Input 设备: DEVICE_VID_PID_SERIAL_Bx.x (首次使用会在 GUI 引导激活)\n\
              #\n\
-             # 震动设置在旁边的 Vibration.toml; 全职业微调在 JobVibration.toml。\n\
+             # 震动设置在旁边的 Vibration.toml (S1 ACT 路线为 Vibration-ACT.toml, 两者互不干扰);\n\
+             # 全职业微调在 JobVibration.toml。\n\
              \n\
              ";
         let body = toml::to_string_pretty(self)?;
-        fs::write(&path, format!("{header}{body}"))?;
-
-        // Vibration settings are stored in the separate Vibration.toml
-        // (see save_vibration_to_file / load_vibration_from_file).
-        let vib_path = Self::vibration_path_for(&path);
-        self.save_vibration_to_file(vib_path)?;
+        write_atomic(path.as_ref(), &format!("{header}{body}"))?;
         Ok(())
     }
-    /// Saves vibration settings + presets to the independent Vibration.toml file.
+    /// Saves vibration settings + presets to the **current route's** vibration file.
+    ///
+    /// 入参是基路径 (见 `vibration_path_for`); 路线由 `self.vib_legacy_client` 决定 ——
+    /// S1 → `Vibration-ACT.toml`, S4+ → `Vibration.toml`。两路线互不覆盖。
     ///
     /// # Errors
     ///
     /// Returns an error if the file cannot be written.
     pub fn save_vibration_to_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
+        let target = Self::vibration_route_path_for(path, self.vib_legacy_client);
+        self.save_vibration_exact_file(target)
+    }
+
+    /// 写入**指定**文件 (不做路线换算; 仅供路线切换与测试显式指定路线文件)。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file cannot be written.
+    pub fn save_vibration_exact_file<P: AsRef<Path>>(&self, path: P) -> anyhow::Result<()> {
         #[derive(Serialize)]
         struct VibrationFile<'a> {
             vibration: &'a VibrationConfig,
@@ -1791,6 +1972,8 @@ impl AppConfig {
              #  🌸 Sorahk Vibration Settings (独立文件) 🌸\n\
              # ═══════════════════════════════════════════════════════\n\
              # 独立于 Config.toml, 由程序自动管理 (GUI 内修改, 手改会在下次保存时被覆盖)。\n\
+             # 本文件对应当前客户端路线: S1 ACT → Vibration-ACT.toml; S4+ 新版 → Vibration.toml。\n\
+             # 两条路线各读写自己的文件, 互不干扰。\n\
              # 需要 us_extend_dll\\DfoVibration.dll 注入游戏才有震动事件来源。\n\
              # advanced_enabled 仅控制 UI 是否展开精细调校; 高级参数始终使用本文件保存的值。\n\
              \n\
@@ -1799,17 +1982,57 @@ impl AppConfig {
             vibration: &self.vibration,
             vibration_presets: &self.vibration_presets,
         };
-        fs::write(path, format!("{header}{}", toml::to_string_pretty(&doc)?))?;
+        write_atomic(path.as_ref(), &format!("{header}{}", toml::to_string_pretty(&doc)?))?;
         Ok(())
     }
-    /// Loads vibration settings from the independent Vibration.toml file.
+
+    /// Loads vibration settings from the **current route's** vibration file.
     /// Returns Ok(false) if the file does not exist (caller keeps defaults).
     ///
     /// # Errors
     ///
     /// Returns an error if the file exists but cannot be parsed.
     pub fn load_vibration_from_file<P: AsRef<Path>>(&mut self, path: P) -> anyhow::Result<bool> {
-        if !path.as_ref().exists() {
+        let target = Self::vibration_route_path_for(path, self.vib_legacy_client);
+        self.load_vibration_exact_file(target, false)
+    }
+
+    /// ★v24.15: 启动用容错载入 —— 解析失败**不报错**, 把坏文件挪成 `.bad` 留档后按默认继续。
+    ///
+    /// 修的是"震动文件坏掉 → 程序完全起不来"(与 v23.1 修坏触发键同一类纪律:
+    /// 单条脏数据绝不阻断启动)。返回该路线文件是否存在且已载入。
+    pub fn load_vibration_tolerantly<P: AsRef<Path>>(&mut self, base: P) -> bool {
+        let target = Self::vibration_route_path_for(base.as_ref(), self.vib_legacy_client);
+        match self.load_vibration_exact_file(&target, false) {
+            Ok(exists) => exists,
+            Err(e) => {
+                let bad = quarantine_file(&target);
+                eprintln!(
+                    "vibration: {} 解析失败 ({e}); 已改名为 {} , 本次按出厂默认继续 (用户配置未丢, 可手工修回)",
+                    target.display(),
+                    bad.display()
+                );
+                false
+            }
+        }
+    }
+
+    /// 从**指定**文件载入 (不做路线换算)。返回文件是否存在并已解析。
+    ///
+    /// `force = false` (启动): 走"pristine 才不覆盖"保护 —— 全零/空预设的残缺文件
+    /// 不会把内存里的默认值冲掉。`force = true` (路线切换): 存在即整份覆盖,
+    /// 否则切到空文件时会留着上一条路线的参数。
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the file exists but cannot be parsed.
+    pub fn load_vibration_exact_file<P: AsRef<Path>>(
+        &mut self,
+        path: P,
+        force: bool,
+    ) -> anyhow::Result<bool> {
+        let path = path.as_ref();
+        if !path.exists() {
             return Ok(false);
         }
         let content = fs::read_to_string(path)?;
@@ -1821,17 +2044,63 @@ impl AppConfig {
             vibration_presets: Vec<VibrationPreset>,
         }
         let file: VibFile = toml::from_str(&content)?;
-        if file.vibration.attack_gain != 0
-            || file.vibration.master_gain != 0
-            || file.vibration.advanced_enabled
-            || !file.vibration_presets.is_empty()
-        {
+        let pristine = file.vibration.attack_gain == 0
+            && file.vibration.master_gain == 0
+            && !file.vibration.advanced_enabled
+            && file.vibration_presets.is_empty();
+        if force {
+            /* 整份覆盖: 参数照收, 预设为空则回到内置表 (不把另一条路线的预设带过来) */
             self.vibration = file.vibration;
+            self.vibration_presets = if file.vibration_presets.is_empty() {
+                default_vibration_presets()
+            } else {
+                file.vibration_presets
+            };
+        } else {
+            if !pristine {
+                self.vibration = file.vibration;
+            }
             if !file.vibration_presets.is_empty() {
                 self.vibration_presets = file.vibration_presets;
             }
         }
         Ok(true)
+    }
+
+    /// ★v24.14: 切换客户端路线 (S1/S4) —— 两条路线各自读写独立文件, 互不干预。
+    ///
+    /// 步骤: ① 当前这套参数先落进**它所属**路线的文件;
+    /// ② 换路线标记 (之后所有保存自动走新路线的文件);
+    /// ③ 载入目标路线的文件。
+    ///
+    /// 返回值: `true` = 目标路线有历史文件 (已整份载入);
+    /// `false` = 目标路线首次使用 (已置为该路线出厂默认, **调用方应套该路线内置默认预设**)。
+    /// 文件读写失败不阻断切换 —— 一律按"首次使用"处理 (返回 `false`, 交由调用方套默认)。
+    pub fn switch_vibration_edition_to<P: AsRef<Path>>(
+        &mut self,
+        base: P,
+        from_legacy: bool,
+        to_legacy: bool,
+    ) -> bool {
+        if from_legacy == to_legacy {
+            return true;
+        }
+        let base = base.as_ref();
+        /* ① 当前这套先落盘到旧路线的文件 */
+        let _ = self.save_vibration_exact_file(Self::vibration_route_path_for(base, from_legacy));
+        /* ② 换路线标记 */
+        self.vib_legacy_client = to_legacy;
+        /* ③ 载入目标路线文件 */
+        let target = Self::vibration_route_path_for(base, to_legacy);
+        match self.load_vibration_exact_file(&target, true) {
+            Ok(true) => true,
+            _ => {
+                /* 首次使用该路线: 置出厂默认 (预设列表也回到内置表, 免带上一条路线的自建项) */
+                self.vibration = VibrationConfig::default();
+                self.vibration_presets = default_vibration_presets();
+                false
+            }
+        }
     }
 }
 
@@ -1854,6 +2123,265 @@ mod tests {
 
     fn cleanup_test_file(path: &PathBuf) {
         let _ = fs::remove_file(path);
+    }
+
+    /// ★v24.14: 两路线各写各的文件 —— S1 只碰 Vibration-ACT.toml, S4 只碰 Vibration.toml。
+    #[test]
+    fn vibration_route_paths_are_separate_files() {
+        let s4 = AppConfig::vibration_route_path_for("Vibration.toml", false);
+        let s1 = AppConfig::vibration_route_path_for("Vibration.toml", true);
+        assert_eq!(s4, PathBuf::from("Vibration.toml"));
+        assert_eq!(s1, PathBuf::from("Vibration-ACT.toml"));
+        /* 带目录的基路径同样只换文件名 */
+        assert_eq!(
+            AppConfig::vibration_route_path_for(r"D:\game\Vibration.toml", true),
+            PathBuf::from(r"D:\game\Vibration-ACT.toml")
+        );
+    }
+
+    /// ★v24.14: S1/S4 参数与预设各存一份文件, 切换路线来回不串味。
+    #[test]
+    fn vibration_edition_switch_uses_independent_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_vib_route_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("Vibration.toml");
+        let mut c = AppConfig::default();
+        /* S4 侧特征值 (含自建预设名, 验证预设列表也随文件隔离) */
+        c.vibration.rank_duration = 2222;
+        c.vibration.advanced[7] = 777;
+        c.vibration_presets.push(VibrationPreset {
+            name: "S4自建".to_string(),
+            ..c.vibration_presets[0].clone()
+        });
+
+        /* 切到 S1: 首次使用 → false (调用方套该路线内置默认预设), 参数重置 */
+        assert!(!c.switch_vibration_edition_to(&base, false, true));
+        assert!(c.vib_legacy_client);
+        assert_eq!(
+            c.vibration.rank_duration,
+            VibrationConfig::default().rank_duration,
+            "S1 首次使用不应沿用 S4 参数"
+        );
+        assert!(
+            !c.vibration_presets.iter().any(|p| p.name == "S4自建"),
+            "首次使用 S1 应回到内置预设表, 不带 S4 自建项"
+        );
+        /* S1 侧特征值 */
+        c.vibration.rank_duration = 3333;
+        c.vibration.advanced[7] = 888;
+        /* 切回 S4: 从头文件里还原 S4 那套 (含自建预设) */
+        assert!(c.switch_vibration_edition_to(&base, true, false), "S4 有历史文件");
+        assert!(!c.vib_legacy_client);
+        assert_eq!(c.vibration.rank_duration, 2222);
+        assert_eq!(c.vibration.advanced[7], 777);
+        assert!(c.vibration_presets.iter().any(|p| p.name == "S4自建"));
+        /* 再切回 S1: 还原 S1 那套 (且不含 S4 自建项) */
+        assert!(c.switch_vibration_edition_to(&base, false, true), "S1 有历史文件");
+        assert_eq!(c.vibration.rank_duration, 3333);
+        assert_eq!(c.vibration.advanced[7], 888);
+        assert!(!c.vibration_presets.iter().any(|p| p.name == "S4自建"));
+        /* 两个文件都真实存在 */
+        assert!(base.exists(), "S4 文件");
+        assert!(dir.join("Vibration-ACT.toml").exists(), "S1 文件");
+        /* 同路线切换是 no-op */
+        assert!(c.switch_vibration_edition_to(&base, true, true));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.14: 路线专属文件按 vib_legacy_client 自动选路 (save/load 的入参只是基路径)。
+    #[test]
+    fn vibration_save_load_follows_route() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_vib_follow_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("Vibration.toml");
+        let mut s1 = AppConfig::default();
+        s1.vib_legacy_client = true;
+        s1.vibration.rank_duration = 4444;
+        s1.save_vibration_to_file(&base).unwrap();
+        assert!(
+            dir.join("Vibration-ACT.toml").exists() && !base.exists(),
+            "S1 路线只能写 Vibration-ACT.toml"
+        );
+        let mut s4 = AppConfig::default();
+        s4.vibration.rank_duration = 5555;
+        s4.save_vibration_to_file(&base).unwrap();
+        assert!(base.exists(), "S4 路线写 Vibration.toml");
+        /* ACT 文件不被 S4 的保存覆盖 */
+        let mut probe = AppConfig::default();
+        assert!(probe
+            .load_vibration_exact_file(dir.join("Vibration-ACT.toml"), true)
+            .unwrap());
+        assert_eq!(probe.vibration.rank_duration, 4444);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.14: 老用户升级迁移 —— S1 路线 + 只有 Vibration.toml → 整体搬成 Vibration-ACT.toml,
+    /// 原文件消失 (S4 首次切换时按出厂默认重建, ACT 参数不留进 S4)。
+    #[test]
+    fn legacy_shared_vibration_file_migrates_to_act_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_vib_migrate_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("Vibration.toml");
+        /* 造一份"老共享文件": 先按 S4 写, 再手工搬到基路径 (模拟升级前状态) */
+        let mut old = AppConfig::default();
+        old.vibration.rank_duration = 6666;
+        old.save_vibration_to_file(&base).unwrap();
+        assert!(base.exists());
+
+        /* 升级后: 用户在 S1 路线 → 迁移 */
+        let mut c = AppConfig::default();
+        c.vib_legacy_client = true;
+        assert!(c.migrate_legacy_vibration_file(&base));
+        assert!(!base.exists(), "迁移后原共享文件应消失");
+        assert!(dir.join("Vibration-ACT.toml").exists());
+        /* 迁移过来的参数能被 S1 路线读到 */
+        assert!(c.load_vibration_from_file(&base).unwrap());
+        assert_eq!(c.vibration.rank_duration, 6666);
+        /* 再来一次是 no-op (ACT 文件已在 / 基路径已不存在) */
+        assert!(!c.migrate_legacy_vibration_file(&base));
+        /* S4 路线不迁移 */
+        let mut s4 = AppConfig::default();
+        assert!(!s4.migrate_legacy_vibration_file(&base));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.14: 迁移不覆盖已有的 ACT 文件 (用户已切换过的情形)。
+    #[test]
+    fn migration_keeps_existing_act_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_vib_migrate_keep_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("Vibration.toml");
+        let mut c = AppConfig::default();
+        c.vibration.rank_duration = 1000;
+        c.save_vibration_to_file(&base).unwrap();
+        c.vib_legacy_client = true;
+        c.vibration.rank_duration = 2000;
+        c.save_vibration_to_file(&base).unwrap(); /* 写进 Vibration-ACT.toml */
+        /* Vibration.toml 重现 (S4 侧写过) 时也不得搬移覆盖 */
+        let mut s4 = AppConfig::default();
+        s4.vibration.rank_duration = 3000;
+        s4.save_vibration_to_file(&base).unwrap();
+        assert!(!c.migrate_legacy_vibration_file(&base));
+        let mut probe = AppConfig::default();
+        assert!(probe
+            .load_vibration_exact_file(dir.join("Vibration-ACT.toml"), true)
+            .unwrap());
+        assert_eq!(probe.vibration.rank_duration, 2000, "ACT 文件保持原值");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.14: 设置页"先落盘再切路线"的顺序保护 —— `save_config_only` 不得碰震动文件。
+    /// 那一刻 `vib_legacy_client` 已是新路线而 `vibration` 仍属旧路线, 若走 `save_to_file`
+    /// 就会把旧路线参数写进新路线的文件, 把新路线原有的那套覆盖掉。
+    #[test]
+    fn save_config_only_does_not_touch_vibration_files() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_cfg_only_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let base = dir.join("Vibration.toml");
+        let cfg = dir.join("Config.toml");
+        /* 两条路线各有一份历史 */
+        let mut s4 = AppConfig::default();
+        s4.vibration.rank_duration = 1111;
+        s4.save_vibration_to_file(&base).unwrap();
+        let mut s1 = AppConfig::default();
+        s1.vib_legacy_client = true;
+        s1.vibration.rank_duration = 2222;
+        s1.save_vibration_to_file(&base).unwrap();
+
+        /* 模拟设置页那一刻的错配状态: 标记已是 S1, 参数还是 S4 那套 */
+        let mut dlg = AppConfig::default();
+        dlg.vib_legacy_client = true;
+        dlg.vibration.rank_duration = 1111;
+        dlg.save_config_only(&cfg).unwrap();
+        assert!(cfg.exists(), "Config.toml 照常写");
+
+        /* 两份震动文件都不许被动过 */
+        let mut probe = AppConfig::default();
+        assert!(probe
+            .load_vibration_exact_file(dir.join("Vibration-ACT.toml"), true)
+            .unwrap());
+        assert_eq!(probe.vibration.rank_duration, 2222, "ACT 文件未被错配状态覆盖");
+        let mut probe2 = AppConfig::default();
+        assert!(probe2.load_vibration_exact_file(&base, true).unwrap());
+        assert_eq!(probe2.vibration.rank_duration, 1111, "S4 文件保持原值");
+
+        /* 紧随其后的真正切换: from=S4 (参数属于 S4) → 载入 ACT 那套 */
+        let mut c = AppConfig::default();
+        c.vibration.rank_duration = 1111;
+        assert!(c.switch_vibration_edition_to(&base, false, true));
+        assert_eq!(c.vibration.rank_duration, 2222, "切到 S1 应载入 ACT 文件那套");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.14: `force` 载入是"整份覆盖" —— 目标文件没有预设时回内置表,
+    /// 不把上一条路线的预设带进这条路线 (非 force 的启动保护仍保留内存里的旧预设)。
+    #[test]
+    fn force_load_does_not_keep_other_route_presets() {
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_force_load_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("Vibration-ACT.toml");
+        fs::write(&p, "[vibration]\nattack_gain = 55\n").unwrap(); /* 只有参数, 无预设 */
+
+        let mut c = AppConfig::default();
+        c.vibration_presets.push(VibrationPreset {
+            name: "上一条路线的自建".to_string(),
+            ..c.vibration_presets[0].clone()
+        });
+        assert!(c.load_vibration_exact_file(&p, true).unwrap());
+        assert_eq!(c.vibration.attack_gain, 55, "参数整份覆盖");
+        assert!(
+            !c.vibration_presets.iter().any(|x| x.name == "上一条路线的自建"),
+            "force 载入不得残留旧路线预设"
+        );
+        assert!(c.vibration_presets.iter().any(|x| x.name == "默认"), "回内置预设表");
+
+        let mut d = AppConfig::default();
+        d.vibration_presets.push(VibrationPreset {
+            name: "启动前内存里就有的".to_string(),
+            ..d.vibration_presets[0].clone()
+        });
+        assert!(d.load_vibration_exact_file(&p, false).unwrap());
+        assert!(
+            d.vibration_presets.iter().any(|x| x.name == "启动前内存里就有的"),
+            "非 force: 文件无预设时保留内存里的预设"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

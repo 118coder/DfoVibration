@@ -2191,14 +2191,28 @@ impl SorahkGui {
                 let dark_mode_changed = temp_config.dark_mode != self.config.dark_mode;
                 // Check if language changed
                 let language_changed = temp_config.language != self.config.language;
+                /* ★v24.13: 客户端路线是否切换 (S1/S4 两套震动参数需要互换) —— 须在覆盖 config 前取旧值 */
+                let edition_from = self.config.vib_legacy_client;
+                let edition_to = temp_config.vib_legacy_client;
 
                 // Save to file
-                if temp_config.save_to_file("Config.toml").is_ok() {
-                    // Reload configuration into AppState (takes effect immediately)
-                    let _ = self.app_state.reload_config(temp_config.clone());
-
+                /* ★v24.14: 这里**只写 Config.toml** —— 此刻 temp_config.vib_legacy_client 已是新路线,
+                 * 而 temp_config.vibration 还是旧路线那套; 若走 save_to_file 会把旧参数写进新路线的
+                 * 震动文件, 覆盖掉新路线原有的那套。震动文件由下面的 switch_vibration_edition 负责。 */
+                if temp_config.save_config_only("Config.toml").is_ok() {
                     // Update GUI's config
                     self.config = temp_config.clone();
+
+                    /* ★v24.13: 切换客户端路线 → 换整套震动参数 (全量同步运行态, 并落盘路线文件)。
+                     * ★v24.14: 必须在第一次 reload_config **之前**做完 —— 此刻 self.config 是
+                     * "新路线标记 + 旧路线参数"的错配组合, 直接灌进运行态会让引擎用新路线的语义
+                     * 跑旧路线的参数; switch 内部会按路线读文件再自己 reload 一次。 */
+                    if edition_from != edition_to {
+                        self.switch_vibration_edition(edition_from, edition_to);
+                    } else {
+                        // Reload configuration into AppState (takes effect immediately)
+                        let _ = self.app_state.reload_config(temp_config.clone());
+                    }
 
                     // DFO 震动关闭时震动页不可达: 当前页落在其上则回手柄映射
                     if !self.config.dfo_player {

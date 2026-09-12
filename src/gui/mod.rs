@@ -281,7 +281,9 @@ impl SorahkGui {
          * 同时修历史数据: Vibration.toml 里 enabled=true 但用户已选仅用连发的情况。 */
         if !config.dfo_player && config.vibration.enabled {
             config.vibration.enabled = false;
-            let _ = config.save_vibration_to_file("Vibration.toml");
+            let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for(
+                "Config.toml",
+            ));
         }
         let dark_mode = config.dark_mode;
         let translations = CachedTranslations::new(config.language);

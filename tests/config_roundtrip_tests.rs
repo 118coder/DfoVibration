@@ -361,15 +361,82 @@ fn preset_double_tap_survives_save() {
     cleanup(&p);
 }
 
-/// ★v16.8: ACT1 特供预设的附加默认 (高级调校开 + 两个风暴静音默认勾选)
+/// ★v16.8 / ★v24.16: ACT1 特供预设的附加默认 —— 高级调校开 + 两个风暴静音 +
+/// 用户手调定稿的"群怪治理"标量 (这些不是 60 槽字段, 必须随预设落地)。
 #[test]
 fn act1_preset_extras_defaults() {
     let mut vib = VibrationConfig::default();
     vib.advanced_enabled = false;
     vib.storm_mute_abnormal = false;
     vib.storm_mute_rank = false;
+    /* 反着设一遍, 确认 extras 会把它们拉回定稿值 */
+    vib.sustain_enabled = false;
+    vib.sustain_secs = 3;
+    vib.tail_land_enabled = false;
+    vib.tail_land_pct = 25;
+    vib.storm_unified_enabled = false;
+    vib.storm_unified_ms = 120;
+    vib.monster_abnormal_gain = 1;
+    vib.merge_enabled = false;
     sorahk::config::act1_preset_extras(&mut vib);
     assert!(vib.advanced_enabled, "ACT1 特供应默认开启高级调校");
     assert!(vib.storm_mute_abnormal, "ACT1 特供应默认勾选怪物异常静音");
     assert!(vib.storm_mute_rank, "ACT1 特供应默认勾选评分点系统静音");
+    /* ★v24.16 用户手调定稿 */
+    assert!(vib.sustain_enabled && vib.sustain_secs == 1, "打群怪 1 秒后自动降温");
+    assert!(vib.tail_land_enabled && vib.tail_land_pct == 60, "震尾切断 60%");
+    assert!(
+        vib.storm_unified_enabled && vib.storm_unified_ms == 40,
+        "统合衰减期 40ms (开关必须一起打开, 否则滑块不生效)"
+    );
+    assert_eq!(vib.monster_abnormal_gain, 3, "怪物异常反馈 (0x04) 3%");
+    assert!(vib.merge_enabled, "一刀多怪合并必须为开 (用户要求默认开)");
+}
+
+/// ★v24.17: 「一刀多怪合并」出厂默认就是开 (用户要求"默认为开") —— 回归锁。
+#[test]
+fn merge_enabled_defaults_to_on() {
+    assert!(
+        VibrationConfig::default().merge_enabled,
+        "出厂默认必须是一刀多怪合并 = 开"
+    );
+}
+
+/// ★v24.16: 「ACT1 特供」用户手调值必须落在预设表里 (60 槽 + 评分族)。
+#[test]
+fn act1_preset_carries_user_tuned_values() {
+    let p = sorahk::config::default_vibration_presets()
+        .into_iter()
+        .find(|p| p.name == "ACT1 特供")
+        .expect("内置预设表必须含 ACT1 特供");
+    assert_eq!(p.params[6], 0, "连击增强 (渐进至上限) = 0");
+    assert_eq!(p.params[16], 36, "玩家命中反馈 (0x01) = 36%");
+    assert_eq!(p.rank_type_gain[0], 25, "评分点 = 25%");
+    assert_eq!(p.rank_type_gain[9], 45, "释放技能 = 45%");
+    assert_eq!(p.rank_type_gain[14], 40, "怪物死亡 = 40%");
+}
+
+/// ★v24.16: 职业 ACT 变体的基底是**定稿快照**, 不随「ACT1 特供」调优联动 ——
+/// 否则改一个通用预设会静默改掉 39 个职业预设 (p[5]/[6]/[10]/[18]/[19]/[20] 等
+/// 不被 act_build_params_from 重建的槽位原样继承)。这条测试是那条纪律的锁。
+#[test]
+fn job_act_base_is_frozen_snapshot() {
+    let base = sorahk::config::act1_base_params();
+    assert_eq!(base[6], 35, "职业基底仍是 v19.5 定稿值 (连击增强 35)");
+    assert_eq!(base[16], 65, "职业基底仍是 v19.5 定稿值 (命中 65)");
+    let preset = sorahk::config::default_vibration_presets()
+        .into_iter()
+        .find(|p| p.name == "ACT1 特供")
+        .unwrap();
+    assert_ne!(
+        base, preset.params,
+        "职业基底不得等于当前 ACT1 特供 表 (否则又变成联动)"
+    );
+    /* 抽样一个职业: 它的 p[6] 必须仍来自定稿快照, 而不是预设的 0 */
+    let class = sorahk::job_presets::available_jobs(true)
+        .into_iter()
+        .find(|j| j.base_job == "鬼剑士（男）-ACT")
+        .and_then(|j| j.classes.into_iter().find(|c| c.name == "剑魂"))
+        .expect("ACT 名册里应有 鬼剑士（男）-ACT / 剑魂");
+    assert_eq!(class.params[6], 35, "职业 ACT 变体的连击增强不受 ACT1 特供 调优影响");
 }

@@ -251,3 +251,33 @@ fn job_act_variants_shape_and_route_gate() {
         "S1 职业表全部为 -ACT"
     );
 }
+
+/// ★v24.14: 导出文件的路线标识与按路线过滤 —— ACT 导出带 "-ACT", 且导入列表
+/// 只列当前路线的文件 (防把 ACT 档位参数导进 S4 路线)。
+#[test]
+fn act_export_names_and_route_filter() {
+    use sorahk::job_presets::{export_prefix, is_act_export_name, list_export_files_for_route};
+
+    /* 命名口径: 通用导出靠前缀后缀, 职业导出靠职业名自带 -ACT */
+    assert_eq!(export_prefix("vibration_export", true), "vibration_export-ACT");
+    assert_eq!(export_prefix("vibration_export", false), "vibration_export");
+    assert!(is_act_export_name("vibration_export-ACT_1757000000.toml"));
+    assert!(is_act_export_name("job_export_剑魂-ACT_1757000000.toml"));
+    assert!(!is_act_export_name("vibration_export_1757000000.toml"));
+    assert!(!is_act_export_name("job_export_剑魂_1757000000.toml"));
+
+    /* 目录级过滤: 同前缀下两路线的文件互不可见 */
+    let tag = format!("zz_route_test_{}", std::process::id());
+    let s4_name = format!("{tag}_vibration_export_1.toml");
+    let s1_name = format!("{tag}_vibration_export-ACT_1.toml");
+    for n in [&s4_name, &s1_name] {
+        std::fs::write(n, "params = []\n").unwrap();
+    }
+    let listed_s1 = list_export_files_for_route(&tag, true);
+    let listed_s4 = list_export_files_for_route(&tag, false);
+    assert_eq!(listed_s1, vec![s1_name.clone()], "S1 只列 -ACT");
+    assert_eq!(listed_s4, vec![s4_name.clone()], "S4 只列非 -ACT");
+    for n in [&s4_name, &s1_name] {
+        let _ = std::fs::remove_file(n);
+    }
+}

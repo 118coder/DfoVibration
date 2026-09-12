@@ -1,3 +1,170 @@
+v24.17 (2026-09-13)
+===================
+① 一刀多怪合并默认为开；② 所有参数说明补上"调高/调低"的明确后果（用户要求"高低有明确概念"）:
+
+- **① 一刀多怪合并 (群怪一刀只震一下) = 开**:
+  * 出厂默认本来就是开 (`default_vib_true`), 但用户现场配置里被关过 → 在 `act1_preset_extras`
+    里写死 `merge_enabled = true`, 应用「ACT1 特供」后一定开。
+  * 关掉 = 命中聚合窗/合并记账/补发全部回到旧行为 (一刀多怪各震各的、更吵)。
+- **② 参数说明补"高低后果"**: 119 个可调控件里 112 个的悬浮说明都给出了
+  "调高：…；调低：…"(开关类为"开：…；关：…")的明确后果; 余下 7 个是模式/分段按钮
+  (调试中/正常模式/震动开/震动关/允许高级调校/显示专家参数/马达分工), 不是参数, 未加。
+  * 原本**已有说明**的参数 → 在说明末尾追加高低句 (按唯一前缀定位, 逐条核对, 不覆盖原文);
+  * 原本**只有名字**的参数 → 新增 `SorahkGui::param_hint(标签)` 单一说明表 + `with_hint()`,
+    接线 8 个参数表循环 + 21 个独立滑块 + 5 个开关 (共 34 处)。
+  * 自检: `work/_check_coverage.py` 列出没有高低说明的控件; 说明文本的事实来源 =
+    `work/_apply_desc_hilo.py`。
+- 测试: 新增 `merge_enabled_defaults_to_on` 回归锁; `act1_preset_extras` 测试纳入 merge_enabled
+  (反向设 false 后必须被拉回 true); **703 通过 / 0 失败**。
+- 实测: 临时把启动页改到「通用震动」跑离屏截图 → 整页正常渲染 (无 panic), 核对完立即还原
+  (插桩未留在源码里)。
+- exe md5 c7b25c85501ec552d34f039599468d85
+
+v24.16 (2026-09-13)
+===================
+「ACT1 特供」预设按用户实机调优定稿（用户手调值，逐项落到预设表 + 附加默认）:
+
+- **60 槽 / 评分族（预设本体现有字段）**:
+  * 连击增强 (渐进至上限) `params[6]`: 35 → **0**（不做连击递增）
+  * 玩家命中反馈 (0x01) `params[16]`: 65 → **36**
+  * 评分点 `rank_type_gain[0]`: 20 → **25**
+  * 释放技能 `rank_type_gain[9]`: 20 → **45**
+  * 怪物死亡 `rank_type_gain[14]`: 45 → **40**
+- **附加标量（不是 60 槽字段，走 `act1_preset_extras`，应用该预设时落地）**:
+  * 打群怪几秒后自动降温 `sustain_secs`: 3 → **1 秒**（+ 母开关 `sustain_enabled=true`）
+  * 震尾多快切断 `tail_land_pct`: 25 → **60**（+ 母开关 `tail_land_enabled=true`）
+  * 统合衰减期 `storm_unified_ms`: 120 → **40**（+ `storm_unified_enabled=true`；该开关默认 false，
+    不一起打开则滑块静默不生效）
+  * 怪物异常反馈 (0x04) 出血/中毒/感电跳字 `monster_abnormal_gain`: 1 → **3**
+  * GUI 应用预设处把这些字段一并同步到运行态原子量（原先只同步 3 个布尔开关）。
+- **职业基底冻结（防静默连带）**: `act1_base_params()` 原为"读「ACT1 特供」预设的 params"，
+  而 `act_build_params_from` 不重建 p[5]/[6]/[10]/[18]/[19]/[20] 等槽位 → 改这个通用预设会连带
+  改掉全部 39 个职业 ACT 变体。改为 **v19.5 定稿快照**。
+  验证: 39 个转职的 params+rank_type_gain 校验和改动前后逐字节一致（0xf96350194404a686）。
+- 测试: 新增「预设表带用户手调值」+「职业基底是冻结快照（含剑魂-ACT 抽样）」两条；
+  `act1_preset_extras` 测试扩到覆盖全部新标量（反向设置后必须被拉回）；**702 通过 / 0 失败**。
+- 实测: 用户真实配置跑新版 → 持久化的「ACT1 特供」条目被自愈为定稿值
+  (`params[6]=0 / params[16]=36 / rank_type_gain=[25,...,45,...,40]`)，39 个职业预设不变。
+- exe md5 7ad5d0f5fbe7b7c511dec9dcd792fcb9
+
+v24.15 (2026-09-13)
+===================
+路线隔离的三个漏口（自审 + 双轴 review 后用探针逐个复现并修掉；用户要求"再检查一下潜藏的 bug"）:
+
+- **① 职业预设跨路线生效（最严重，直接架空"互不干预"）**: 启动恢复与震动页初始化都用
+  `job_presets::find_class` —— 它**跨两条路线**查找，ACT 职业名 (`*-ACT`) 在 S4 路线也命中。
+  探针实测: S4 路线 + `JobVibration.toml` 里是 S1 的 ACT 职业 → 启动参数被 ACT 职业覆盖
+  (`params[0]` 77 → 11)，并随保存写进 **S4 的** `Vibration.toml`。
+  修: 新增 `find_class_for_route(base, name, legacy_client)`（只认当前路线名册，返回该名册下标）;
+  启动兜底 (state.rs) / 震动页恢复 / 职业档导入全部改走它; 路线切换时同步清掉
+  `vib_job_enabled/active/loaded`（名册互不相交，切完必然不适用，否则界面还显示"已应用职业预设"）。
+  JobVibration.toml 本身不改写 —— 切回原路线仍恢复原职业。
+- **② 损坏的震动文件让程序完全起不来**: `load_or_create` 对解析错误直接 `?`
+  → 与 v23.1 修的"坏触发键阻断启动"同类。新增 `load_vibration_tolerantly`: 坏文件挪成
+  `<名>.bad` 留档、按出厂默认继续（数据不丢，可手工修回）。
+- **③ 半截文件风险**: 保存是 `fs::write`（先截断再写），崩溃/断电/两个实例同时写会留半截文件
+  → 配上 ② 就是"下次启动直接失败"。新增 `write_atomic`（同目录 `<名>.<pid>.<n>.tmp` + rename 覆盖）。
+  临时名带 pid + 序号: 并行写多个配置（测试/多实例）互不踩踏。
+- **④ 老 Config.toml 残留 `[vibration]` 段的跨路线通道**: 该字段原为 `skip_serializing` 但仍可**读**，
+  路线文件缺失时旧段的值会当成该路线参数。改 `#[serde(skip)]`（读写都不经 Config.toml）,
+  并在 `load_from_file` 里补回内置预设表（skip 后反序列化为空表会让预设下拉整个空掉）。
+  另外路线文件缺失 = 首次使用 → 一律出厂默认，不继承任何残留值。
+- 测试: 新增 `tests/route_isolation_tests.rs`（4 个场景: S4 不吃 ACT 职业 / S1 照常吃（防修过头）/
+  残留段不继承 / 坏文件不阻断启动且挪 .bad）；**700 通过 / 0 失败**。
+- 实测: 用用户真实配置（S1 路线 + 已迁移的 `Vibration-ACT.toml`）跑修复版 → 主窗口正常、
+  预设「ACT1 特供」；TOML 深比较证明一次运行后**参数与 16 个预设逐字段不变**（含 60 槽/数组）。
+- exe md5 f370d2d46cea85904165b0a5a630afcd
+
+v24.14 (2026-09-13)
+===================
+震动设定改为「一条路线一个文件」(用户新方案 —— 彻底互不干预；替换 v24.13 的快照槽):
+
+- **问题**: v24.13 用两个内存快照槽 (`vibration_saved_act` / `vibration_saved_new`) 存另一条路线的
+  参数，两条路线仍共用同一个 `Vibration.toml`；预设列表也是共用一份（靠 UI 过滤器分流）。
+- **新方案**:
+  * 文件隔离: S1 (ACT) 路线读写 **`Vibration-ACT.toml`**；S4+ 路线读写 `Vibration.toml`。
+    换算集中在 `AppConfig::vibration_route_path_for`，`save_vibration_to_file` /
+    `load_vibration_from_file` 内部按 `vib_legacy_client` 选路 —— 全部调用点无需改动。
+  * 路线切换 (`switch_vibration_edition_to`): ① 当前这套落进旧路线的文件；② 换路线标记；
+    ③ 载入新路线的文件（存在即整份覆盖）。首次使用该路线 → 置出厂默认，由 GUI 套用该路线的
+    内置默认预设 (S1 →「ACT1 特供」, S4 →「默认」)。两个快照槽随之下线。
+  * 老用户升级迁移 (`migrate_legacy_vibration_file`): 当前在 S1 路线且 `Vibration-ACT.toml`
+    尚不存在时，把现有 `Vibration.toml` **整体 rename** 过去（原文件消失 → S4 首次切换按出厂
+    默认重建，ACT 特调不会漏进 S4）。已有 ACT 文件时不动。
+- **设置页顺序保护**: 客户端版本下拉在设置对话框里会先改 `vib_legacy_client`, 而 `vibration`
+  仍是旧路线那套 → 原来紧跟的 `save_to_file` 会把旧参数写进**新路线**的文件, 覆盖新路线原有的数据。
+  新增 `AppConfig::save_config_only` (只写 Config.toml), 该接入点改用它; 震动文件交给
+  `switch_vibration_edition_to` 自己按路线读写。
+- **健壮性**: 迁移 rename 失败退化为 copy（文件被占用时也不静默丢数据）；
+  `force` 载入按"整份覆盖"处理预设列表（不再残留另一条路线的预设）；
+  设置页切路线改到第一次 `reload_config` 之前（不留"新路线标记 + 旧路线参数"的错配帧）。
+- **导出预设按路线分流**: S1 路线导出文件名带 `-ACT`（通用设定 `vibration_export-ACT_<时间戳>.toml`；
+  职业导出因 ACT 名册职业名自带 `-ACT` 自然带标记），导出内容里注明路线；
+  导入下拉只列**当前路线**的导出文件 (`job_presets::list_export_files_for_route`)，
+  防止把 ACT 档位参数导进 S4（反之亦然）。
+- 测试: 路线路径换算 / 两路线文件隔离（含预设列表）/ save·load 自动选路 / 升级迁移（含
+  "已有 ACT 文件不覆盖"）/ 导出名与路线过滤 / `save_config_only` 不碰震动文件 /
+  force 载入整份覆盖（含预设）；**699 通过 / 0 失败**。
+- 实测: 用用户真实配置（S1 路线, 16 个预设）启动 → `Vibration.toml` 迁移为 `Vibration-ACT.toml`,
+  参数与 16 预设完整保留，主窗口正常渲染；用户交付版首次启动 (02:43) 已实际完成迁移。
+- exe md5 08ff1d13a6539a904094b7a6cf4bc7cc
+
+v24.13 (2026-09-12)
+===================
+S1 / S4 各存一套震动参数（用户选方案 B —— 切版本不再互相污染）:
+
+- **问题**: 切换客户端路线只改引擎路由 (`engine.legacy`) + 预设可见性，**参数只有一份** →
+  S1 下套用的 ACT 特调（「ACT1 特供」/「*-ACT」，含事件强度/衰减/档位）继续作用于 S4，
+  实机表现为"切到 S4 手感不一样"；且预设下拉的 `vib_preset_idx` 是会话字段（不持久化），
+  显示的"当前预设"未必是实际生效的那套（误导）。
+- **方案 B 实现**:
+  * 配置层: `AppConfig` 新增 `vibration_saved_act` / `vibration_saved_new` 两个快照槽
+    （随 Vibration.toml 持久化, Config.toml 不写）；`switch_vibration_edition_to(from, to)` 负责互换。
+  * 运行态: 新增 `AppState::apply_vibration_config(cfg)` —— 把**整套** VibrationConfig
+    （59 个字段 + 60 槽参数数组）灌进原子量；函数体由脚本从 `AppState::new` 的字面量机械生成，
+    并把 `new()` 的 init_params 改为复用同一 helper（`vibration_params_from`），杜绝两处漂移。
+  * GUI: 新增 `SorahkGui::switch_vibration_edition(from, to)`；某路线**首次使用**（无历史快照）时
+    自动套该路线内置默认预设（S1 →「ACT1 特供」, S4 →「默认」）；落盘两份配置并热重载。
+  * 接入点: 首次「客户端版本」询问（guide）+ 设置页客户端版本应用（settings_dialog）。
+- 测试: 配置层互换往返 + Vibration.toml 持久化往返 + 运行态写入校验；**688 通过 / 0 失败**。
+- exe md5 2064105f291194d5f9e7101d275b1a4f
+- ⚠ 已被 v24.14 取代: 两个快照槽换成"S1 读 `Vibration-ACT.toml`、S4 读 `Vibration.toml`"的
+  独立文件方案（预设列表也随文件隔离）。
+
+v24.12 (2026-09-12)
+===================
+修复「累计事件」把移动流也计入（S4 模式下总事件暴增）:
+
+- **根因**: 环形缓冲消费处的计数口径不一致 —— S1(legacy) 分支是
+  `last_injected && etype != VEV_MOVE`，而 **S4(非 legacy) 分支直接 `true`**
+  （原注释"新方案维持全量计数"）。`VEV_MOVE` 是 6ms 续期的持续流（走路 10 分钟 ≈ 6 万条）→
+  UI「● 已连接游戏 (累计 N 事件)」在 S4 下疯狂上涨。
+- **修复**: 抽出 `counts_toward_event_total(etype, legacy, last_injected)` 统一口径 ——
+  **两种模式都不计 `VEV_MOVE`**；S1 仍保留"只计真实注入"的老语义；
+  移动的细分计数 `rank_type_events[11]` 照常（保持不变）。
+- 新增回归测试 `vibration::event_count_tests`。
+- 682 测试通过, 0 失败; exe md5 c718d6704d213e7a8953bfeb74de1e03
+
+v24.11 (2026-09-12)
+===================
+修复宿主「移动通道」被 0 哨兵时间戳挡死（用户适配其他版本时发现的宿主 bug）:
+
+- **根因**: 输出三选一分支的第一道门 `if before(now_ms(), engine.rank_full_until)` 缺 0 哨兵守卫。
+  `rank_full_until` 初始/复位为 0（= 无评分族事件）；而 `before()` 是
+  `deadline.wrapping_sub(now) as i32 > 0`，当 `now_ms()`（UNIX 毫秒截断 u32）落在"负半区"
+  （bit31=1）时 **`before(now, 0)` 恒真** → 每帧都走评分分支 → **移动分支成为死代码**。
+  例：`before(2517474289, 0) = (0 - 2517474289) mod 2^32 = 1777493007 → i32 为正 → true`。
+  该陷阱只在 now 落进负半区的约 24.8 天窗口内暴露，故长期未发现；且 legacy(S1) 评分分支把
+  战斗输出 `max` 了进来 → 表现为"战斗/评分照震，**只有移动不震**"（城镇走路完全不震）。
+- **修复**:
+  * 新增 `rank_window_active(now, until) = until != 0 && before(now, until)`，评分门改用它；
+  * **顺带修活移动分支内的同类 0 哨兵**：`move_pace_until` 初次为 0 时裸 `!before(now,0)` 恒 false
+    → 步频计时器永不武装（且 `0 - now` 下溢/相位错乱）——该分支此前是死代码所以一直没暴露。
+    新增 `expired_or_unset()`（0 = 需武装）并用 `wrapping_sub`。
+- 新增 3 条回归测试：`vibration::time_sentinel_tests`（裸 `before(now,0)` 陷阱 / rank 门判 0 非激活 /
+  节奏计时器首用即武装）。
+- 680 测试通过, 0 失败; exe md5 707e5a7fa3bdebc3108a6d49a263fee4
+
 v24.10 (2026-09-12)
 ===================
 「仅用连发」模式收口 + 关于页文案:

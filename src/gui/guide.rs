@@ -136,11 +136,12 @@ impl SorahkGui {
                                 th.secondary_button("🆕 S4 之后的新版本 (推荐)"),
                             );
                             if s1.clicked() || s4.clicked() {
-                                self.config.vib_legacy_client = s1.clicked();
+                                let from = self.config.vib_legacy_client;
+                                let to = s1.clicked();
                                 self.config.vib_edition_asked = true;
-                                self.app_state
-                                    .vib_legacy_client
-                                    .store(s1.clicked(), std::sync::atomic::Ordering::Relaxed);
+                                /* ★v24.13: 换客户端路线 = 换**整套**震动参数 (S1/S4 各一套, 互不污染);
+                                 * 目标路线首次使用则套该路线内置默认预设。 */
+                                self.switch_vibration_edition(from, to);
                                 let _ = self.config.save_to_file("Config.toml");
                                 self.show_edition_ask = false;
                                 /* 选完进入第 2 弹: 使用说明 (延迟一帧防点击穿透) */

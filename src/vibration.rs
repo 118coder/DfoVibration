@@ -63,6 +63,34 @@ const VEV_MOVE: u32 = 23;          /* 移动持续震动 */
 const VEV_SKILL_HIT: u32 = 24;     /* 技能震动 */
 const VEV_CRIT_SHAKE: u32 = 25;    /* 暴击/击杀特写震屏 */
 
+/// ★v24.12: 该事件是否计入宿主"累计事件"诊断口径 (`vibration_events_received`)。
+///
+/// `VEV_MOVE` 是 **6ms 续期的持续流** (走路 10 分钟 ≈ 6 万条), 计入会让总数暴增且毫无诊断价值
+/// (UI 上就是"累计 N 事件"疯狂涨)。S1(legacy) 侧原本按"真实注入"过滤且排除 MOVE,
+/// **S4 侧漏了 MOVE 排除** —— 本函数把口径统一为两种模式都不计移动。
+#[inline]
+fn counts_toward_event_total(etype: u32, legacy: bool, last_injected: bool) -> bool {
+    etype != VEV_MOVE && (!legacy || last_injected)
+}
+
+#[cfg(test)]
+mod event_count_tests {
+    use super::*;
+
+    #[test]
+    fn move_stream_never_counts_toward_event_total() {
+        // 移动流: 两种模式都不计入 (S4 曾漏排除 → 总事件暴增)
+        assert!(!counts_toward_event_total(VEV_MOVE, false, true));
+        assert!(!counts_toward_event_total(VEV_MOVE, true, true));
+        // 普通战斗事件: 两种模式都计入
+        assert!(counts_toward_event_total(VEV_FONT, false, true));
+        assert!(counts_toward_event_total(VEV_RANKING, false, true));
+        // S1 仍保留"只计真实注入"的老口径
+        assert!(counts_toward_event_total(VEV_FONT, true, true));
+        assert!(!counts_toward_event_total(VEV_FONT, true, false));
+    }
+}
+
 /* 评分震动映射: 测试模式全强度 (0~8 全部满震, 便于感知事件是否生效)
  * 等级: 0=SSS 1=SS 2=S 3=A 4=B 5=C 6=D 7=E 8=F (数字越低评价越高) */
 fn rank_strength(level: u32) -> f32 {
@@ -2097,6 +2125,67 @@ fn before(now: u32, deadline: u32) -> bool {
     deadline.wrapping_sub(now) as i32 > 0
 }
 
+/// ★v24.11: 评分脉冲窗口是否激活 —— **必须带 0 哨兵守卫**。
+///
+/// `rank_full_until` 初始/复位为 0 (= 没有评分族事件)。裸 `before(now, 0)` 在 `now` 的低 31 位
+/// 为负时恒为真 (u32 回绕语义), 会让输出每帧都走"评分分支" → **移动分支成为死代码**
+/// (实机: 城镇/副本走路都不震, 但战斗/评分照震 —— 因为 legacy 评分分支把战斗输出 max 了进来)。
+/// 该陷阱只在 `now_ms()` 落进"负半区"的约 24.8 天窗口内暴露, 故长期未被发现。
+#[inline]
+fn rank_window_active(now: u32, rank_full_until: u32) -> bool {
+    rank_full_until != 0 && before(now, rank_full_until)
+}
+
+/// ★v24.11: 计时器"已到期 **或从未设置 (0)**" —— 用于需要"首次使用即武装"的步频/节奏计时器。
+/// 裸 `!before(now, 0)` 恒为 false → 计时器永不武装; 而 `0 - now` 还会下溢。
+#[inline]
+fn expired_or_unset(now: u32, deadline: u32) -> bool {
+    deadline == 0 || !before(now, deadline)
+}
+
+#[cfg(test)]
+mod time_sentinel_tests {
+    use super::*;
+
+    /// 用户日志里的真实时间戳 (u32 截断后 bit31=1)。这正是当年没暴露的原因:
+    /// 只有 now 落在"负半区"时, 裸 before(now, 0) 才会恒真。
+    const NOW: u32 = 2_517_474_289;
+
+    #[test]
+    fn bare_before_on_zero_is_the_trap() {
+        assert!(
+            before(NOW, 0),
+            "裸 before(now,0) 在此时间戳下为真 —— 这就是把移动分支挡死的根因"
+        );
+    }
+
+    #[test]
+    fn rank_window_requires_nonzero_deadline() {
+        assert!(!rank_window_active(NOW, 0), "0 = 无评分事件, 不得判为激活");
+        assert!(!rank_window_active(0, 0));
+        assert!(
+            rank_window_active(NOW, NOW.wrapping_add(200)),
+            "窗口内应激活"
+        );
+        assert!(
+            !rank_window_active(NOW.wrapping_add(300), NOW.wrapping_add(200)),
+            "已过期应关闭"
+        );
+        // 回绕边界仍按有符号差判定
+        assert!(rank_window_active(u32::MAX - 10, 5), "回绕后仍在窗口内");
+    }
+
+    #[test]
+    fn expired_or_unset_arms_on_first_use() {
+        assert!(expired_or_unset(NOW, 0), "未设置 → 需要武装");
+        assert!(!expired_or_unset(NOW, NOW.wrapping_add(200)), "未到期不武装");
+        assert!(
+            expired_or_unset(NOW.wrapping_add(300), NOW.wrapping_add(200)),
+            "已到期 → 需要武装"
+        );
+    }
+}
+
 /// 向"当前已连接"的 XInput 槽位输出震动 (每次输出时扫描 0..4)。
 /// 旧实现硬编码 0 号槽 —— 非 0 号槽位的手柄收不到任何游戏震动。
 fn send_vibration(left: u16, right: u16) {
@@ -2403,13 +2492,13 @@ pub fn run(state: Arc<AppState>) {
                                 eprintln!("[vib] RANK-TYPE event type={} strength={} received", ev.etype, ev.strength);
                             }
                             /* ★S1 老方案计数口径 (老宿主同源): 只计真实注入的震动;
-                             * 移动洪流 (6ms 续期, 10 分钟 ≈ 6 万条) 不灌总数,
-                             * 移动板块 rank_type_events[11] 照常。新方案维持全量计数 */
-                            let counted = if legacy {
-                                engine.last_injected && ev.etype != VEV_MOVE
-                            } else {
-                                true
-                            };
+                             * ★v24.12 移动洪流 (6ms 续期, 10 分钟 ≈ 6 万条) 两种模式都不计入总数,
+                             * 否则 S4 模式下"累计事件"会暴增 (只留 rank_type_events[11] 的移动细分计数)。 */
+                            let counted = counts_toward_event_total(
+                                ev.etype,
+                                legacy,
+                                engine.last_injected,
+                            );
                             t = t.wrapping_add(ev_size);
                             if counted {
                                 got = got.wrapping_add(1);
@@ -2575,8 +2664,10 @@ pub fn run(state: Arc<AppState>) {
                         for i in 0..4 {
                             engine.algo_ap[i] = state.vibration_algo_ap[i].load(Ordering::Relaxed) as f32;
                         }
-                        /* 评分脉冲: 按各事件强度 × 满幅输出, 持续 rank_duration */
-                        if before(now_ms(), engine.rank_full_until) {
+                        /* 评分脉冲: 按各事件强度 × 满幅输出, 持续 rank_duration
+                         * ★v24.11: 必须用带 0 哨兵守卫的 rank_window_active —— 裸 before(now,0)
+                         * 会在"负半区"时间戳下恒真, 把移动分支挡死 (根因见该函数注释)。 */
+                        if rank_window_active(now_ms(), engine.rank_full_until) {
                             let lvl = engine.rank_level.clamp(0.0, 1.0);
                             /* 全局总调整[9] + 强度上限[4] 作用于评分通道 (v24.3);
                              * 独立测试开关开时评分通道独立 (单通道测试用) */
@@ -2651,12 +2742,18 @@ pub fn run(state: Arc<AppState>) {
                             let ml = engine.move_level.clamp(0.0, 1.0);
                             let now = now_ms();
                             let pace_ms = params[P_MOVE_PACE].max(200).min(800);
-                            if !before(now, engine.move_pace_until) {
+                            /* ★v24.11: 0 哨兵 —— 首次进入移动分支时 move_pace_until=0,
+                             * 裸 !before(now,0) 恒为 false 会导致步频计时器永不武装
+                             * (且下面的 0 - now 会下溢)。 */
+                            if expired_or_unset(now, engine.move_pace_until) {
                                 engine.move_pace_until = now.wrapping_add(pace_ms);
                                 engine.move_phase = !engine.move_phase;
                             }
-                            let pace_frac = if before(now, engine.move_pace_until) {
-                                1.0 - ((engine.move_pace_until - now) as f32 / pace_ms as f32)
+                            let pace_frac = if engine.move_pace_until != 0
+                                && before(now, engine.move_pace_until)
+                            {
+                                1.0 - (engine.move_pace_until.wrapping_sub(now) as f32
+                                    / pace_ms as f32)
                             } else {
                                 1.0
                             };

@@ -11,6 +11,107 @@ use eframe::egui;
 use super::main_window::FrameState;
 
 impl SorahkGui {
+
+    /* ★v24.16: 参数说明单一来源 —— 按滑块显示名查"高低后果"。
+     * 用户要求: 每个参数都要讲清"调高会怎样 / 调低会怎样"(开关类讲"开/关"),
+     * 让高低有明确概念。没有登记的返回空串 (该控件不挂提示, 不会 panic)。
+     * 登记在 param_hint 里的都是原本**没有任何说明**的参数 (只有名字的滑块);
+     * 原本已有说明的参数, 其说明末尾已直接补上同样的"调高/调低"句子。 */
+    pub(super) fn param_hint(name: &str) -> &'static str {
+        match name {
+        "停手衰减延迟 ms" => "调高：停手后更久才开始衰减（余感更长）；调低：停手后立刻开始掉分衰减。",
+        "衰减速度 级/秒 (整数)" => "调高：掉分更快（停手后很快冷下来）；调低：掉分更慢（分数更耐留）。",
+        "最低反馈倍率 % (评级 0, 保底)" => "调高：低评级时也震得不轻（保底更响）；调低：低评级时更轻，几乎只有高评级才震。",
+        "最高反馈倍率 % (满评分, 预设×此值)" => "调高：高分时更猛（更强的高分奖励感）；调低：高分与低分的差别变小。",
+        "绝对频率窗口 ms" => "调高：统计窗口更长，判定更宽容；调低：窗口更短，判定更挑剔。",
+        "窗口内最大震动次数" => "调高：允许更密（更容易顶满上限）；调低：更容易被限住（更克制）。",
+        "满幅脉冲时长 ms (所有评分事件)" => "调高：评分脉冲更长更厚；调低：更短更利落；0 = 只闪一下。",
+        "命中聚合窗 ms (群怪一刀只震一下)" => "调高：更多命中被并成一下（群怪更整齐）；调低：只有真正同时的命中才合并。",
+        "合成一下时保留多少力度 % (0=关闭)" => "调高：合并那一下更接近原力度（更厚更响）；调低：合并后更轻；0 = 关闭合并。",
+        "漏掉的震动多久后补一下 (ms, 0=不补)" => "调高：等得更久才补（更容易补出一记收尾）；调低：很快补上；0 = 不补，漏掉就漏掉。",
+        "每秒最多震几下 (0=不限制)" => "调高：允许更密（群怪更热闹，也更吵）；调低：限得更死（更安静）；0 = 完全不限。",
+        "限频的计时窗口 ms" => "调高：窗口更长，长时间的平均更严格；调低：窗口更短，只在很短的爆发里限频。",
+        "一秒内命中超过几下算风暴" => "调高：更难进入风暴（阈值高，抽样少触发）；调低：更容易进入风暴（阈值低，抽样多触发）。",
+        "风暴期保留多少 % 命中震动" => "调高：保留更多震动（更密、接近刀刀震）；调低：保留更少（更稀疏、更安静）。",
+        "停手多久恢复刀刀震 ms" => "调高：要停更久才退出风暴（风暴持续更久）；调低：很快退出风暴（更快恢复刀刀震）。",
+        "风暴的统计窗口 ms" => "调高：风暴判定更平缓（不容易被瞬时爆发触发）；调低：判定更挑剔/更灵敏（窗口越小越挑）。",
+        "统合衰减期 ms (越大越连贯, 40-400)" => "调高：每击延续更久（更连贯，可能糊在一起）；调低：每击更短促（一击是一击，更干脆）。",
+        "打群怪几秒后自动降温 (秒, 0=关闭)" => "调高：更晚才降温（更晚才开始变轻）；调低：很快就开始降温（更早变轻）；0 = 不降温。",
+        "自动降温幅度 % (变轻多少)" => "调高：降温后更轻（压得更狠）；调低：降温后只是稍微轻一点。",
+        "震尾多快切断 % (0=自然衰减)" => "调高：更早切断余震（一击更干脆、更像点状）；调低：更接近自然衰减（余音更长）。",
+        "多快算太密: 连击次数 (100=关闭)" => "调高：更难触发降强度（更晚才开始收敛）；调低：更容易触发（更早开始收敛）。",
+        "统计时长 ms" => "调高：统计窗口更长，降强度更平缓；调低：窗口更短，只压瞬时太密。",
+        "太密时减轻多少 %" => "调高：太密时压得更狠（更轻）；调低：几乎不压。",
+        "停手多久恢复力度 ms" => "调高：要停更久才恢复满强度；调低：很快恢复满强度。",
+        "最轻不低于原来的 %" => "调高：压到底也保留更多力度（更响）；调低：允许压得更轻。",
+        "恢复快慢 ms (0=立刻)" => "调高：恢复更慢更平滑（不突兀）；调低：恢复更快（立刻恢复）。",
+        "连击加成的上限 (倍数×100)" => "调高：连击加成能给到更高（后期更猛）；调低：封顶更低（后期更克制）。",
+        "连击越长震越强: 每 100 连加强多少 %" => "调高：每 100 连加强更多（涨得更快）；调低：涨得更慢。",
+        "连击很久没连上时补一记的门槛" => "调高：门槛更低（更容易补脉冲）；调低：门槛更高（很少补）。",
+        "打多快算太快: 间隔低于此开始减弱 ms" => "调高：更容易被判太快（更早开始减弱）；调低：要打得更快才会减弱。",
+        "打太快时减轻多少 %" => "调高：打太快时压得更狠；调低：几乎不压。",
+        "打多慢算正常: 间隔超过此恢复满强度 ms" => "调高：要更慢才恢复满强度；调低：稍慢就恢复满强度。",
+        "减弱后最轻不低于原来的 %" => "调高：减弱后仍保留更多力度；调低：允许减得更轻。",
+        "移动持续震动强度" => "调高：走路震动更明显；调低：走路更轻；0 = 走路不震。",
+        "移动步频 ms (自然步频 ~380)" => "调高：脚步更慢更沉（步点拉长）；调低：脚步更密更快。",
+        "移动着地脉冲 % (柔和, 不宜高)" => "调高：落地那一下更重（过高会震手）；调低：更轻更柔。",
+        "移动抬脚保持 % (极轻)" => "调高：抬脚阶段保留更多（更连续）；调低：抬脚更安静。",
+        "移动整体增益 % (轻音量)" => "调高：移动整体更响；调低：更轻（更背景）。",
+        "移动平滑系数 % (越大过渡越柔, 消除嗡嗡声)" => "调高：过渡更柔（更不容易嗡嗡，但也更钝）；调低：更锐利（反应更快，可能嗡）。",
+        "移动最低输出阈值 % (低于归0, 消除沙沙声)" => "调高：更容易归零（更干净，但轻微移动不震）；调低：更灵敏（轻微移动也有震，可能沙沙）。",
+        "移动积累速率 %/秒 (0=禁用)" => "调高：走位时涨得更快（更快变强）；调低：涨得更慢；0 = 不走位积累。",
+        "攻击增强上限 % (最多 ×(1+上限))" => "调高：走位能涨到的上限更高；调低：上限更低（走位加成更小）。",
+        "增强窗口 ms (停手后有效)" => "调高：停手后保留更久（加成更耐留）；调低：很快失效。",
+        "左马达曲线 %" => "调高：左马达更早出力（低强度就有感、更厚重）；调低：更线性/更迟出力（低强度几乎不动）。",
+        "右马达曲线 %" => "调高：右马达更早出力（更清脆明显）；调低：更线性/更迟出力。",
+        "普通命中衰减 ms" => "调高：命中余震更长更连贯；调低：更短更干脆。",
+        "特殊攻击衰减 ms" => "调高：特殊攻击余震更长；调低：更短更利落。",
+        "受击衰减 ms" => "调高：挨打的余震更长（更沉）；调低：更短更干脆。",
+        "状态变化衰减 ms" => "调高：状态提示余震更长；调低：更短。",
+        "DOT 持续反馈时长 ms" => "调高：每次掉血延续更久（更黏）；调低：更短促。",
+        "装备特效节奏周期 ms" => "调高：节奏更慢更悠长；调低：节奏更快更碎。",
+        "爆发窗口 ms (窗口内 6 连触发爆发)" => "调高：更容易凑够 6 连触发爆发（更常爆发）；调低：更难触发（更少爆发）。",
+        "爆发模式最低强度 %" => "调高：爆发更响；调低：爆发更轻。",
+        "反击窗口 ms (受击后攻击强化)" => "调高：挨打后强化持续更久；调低：强化转瞬即逝。",
+        "连击统计窗口 ms" => "调高：连击更不容易断（统计更宽容）；调低：连击更容易断。",
+        "空闲判定 ms (回战斗前状态)" => "调高：更久才算空闲（状态更黏）；调低：很快判定空闲（更快回初始）。",
+        "特殊攻击后静默 ms (突显暴击破招)" => "调高：静默更久（暴击/破招更突出，但普攻被压更久）；调低：静默更短（更连续）。",
+        "反击强化倍数 %" => "调高：反击那一下加成更高；调低：加成更低。",
+        "唤醒脉冲强度 %" => "调高：唤醒（开打第一下）更明显；调低：更轻。",
+        "里程碑脉冲强度 %" => "调高：里程碑提示更明显；调低：更轻。",
+        "连击中断收尾脉冲 %" => "调高：断连收尾那一下更明显；调低：更轻。",
+        "测试震动强度 %" => "调高：测试按钮震得更强；调低：更轻（只验证有没有震动）。",
+        "绝对震动频率 (3 秒最多 6 次)" => "开：3 秒内最多震 6 次（防连成一片）；关：完全不限次数。",
+        "震动随机性 %" => "调高：每次震动的强弱更随机（更自然，但可预测性变差）；调低：每次几乎一样（更稳定）。",
+        "移动持续震动独立于全局强度 (默认开)" => "开：走路震动不随「全局总调整」缩放（独立的一条）；关：跟全局总调整一起变大变小。",
+        "启用伤害飘字震动 (默认开启)" => "开：伤害数字出现时震（下面的飘字滑块才生效）；关：飘字不震。",
+        "通用飘字强度" => "调高：所有飘字类型整体更响；调低：整体更轻；0 = 飘字通道全关。",
+        "飘字最小间隔 ms" => "调高：跳字更疏、更省电（每跳至少隔这么久）；调低：跳字越密越容易连着震（容易糊成一片）。",
+        "评分等级强度 % (等级 F~SSS)" => "调高：高评分等级（SSS）震得更猛；调低：各等级差别变小。",
+        "启用评分动态衰减 (类鬼泣)" => "开：连打得越猛越强、停手跌分变轻（有起伏）；关：一直按固定强度震。",
+        "启用命中自适应 (关=回到旧行为, 下方滑块不生效)" => "开：打太快自动减轻、打太慢自动恢复；关：不自动减（下面 4 个滑块不生效）。",
+        "输出平滑 % (抑制嗡嗡声, 高=柔)" => "调高：输出更柔（消除嗡嗡声，但更钝）；调低：更锐利（反应快，低档可能嗡）。",
+        "分工分界 % (低于为轻反馈)" => "调高：更多能量给左马达（更厚重）；调低：更多给右马达（更清脆）。",
+        "输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)" => "调高：弱震动更容易被完全压掉（更干净）；调低：弱震动保留更多（更灵敏，可能沙沙）。",
+        "重映射最小输出 % (与死区一致, S4 / S1-S4模式)" => "调高：最低档也有明显输出（抬底更高）；调低：最低档几乎没输出（更安静）。",
+        "震动节流窗口 ms (0=禁用, 仅 S4)" => "调高：节流窗口更长、更持续（更安静）；调低：只在很短窗口内节流；0 = 关闭节流。",
+        "窗口内最大震动次数 (仅 S4)" => "调高：窗口内允许更多次（更密）；调低：更容易被限住（更克制）。",
+        "狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)" => "调高：狂震期保留更多震动；调低：狂震期压得更狠（更安静）；100 = 不收紧。",
+        "衰减时间 (预留)" => "预留槽位：当前引擎不读，调高调低都不影响震动。",
+            _ => "",
+        }
+    }
+
+    /// 给控件挂上 `param_hint` 的说明 (没有登记就原样返回)。
+    pub(super) fn with_hint(resp: egui::Response, name: &str) -> egui::Response {
+        let h = Self::param_hint(name);
+        if h.is_empty() {
+            resp
+        } else {
+            resp.on_hover_text(h)
+        }
+    }
+
     /// 将当前参数写入 config.vibration (索引映射, 与预设 params 顺序一致)
     pub(super) fn sync_vib_config_from_params(
         cfg: &mut crate::config::VibrationConfig,
@@ -210,7 +311,18 @@ impl SorahkGui {
         let mut s = String::new();
         s.push_str("# ═══════════════════════════════════════════════════════\n");
         s.push_str("#  Sorahk 通用震动设定导出\n");
-        s.push_str("# ═══════════════════════════════════════════════════════\n\n");
+        s.push_str("# ═══════════════════════════════════════════════════════\n");
+        /* ★v24.14: 注明路线与对应设定文件 (文件名也带同样的标记) */
+        let route = if config.vib_legacy_client {
+            crate::config::VIBRATION_FILE_ACT
+        } else {
+            crate::config::VIBRATION_FILE
+        };
+        s.push_str(&format!(
+            "#  客户端路线: {}\n#  对应设定文件: {}\n\n",
+            if config.vib_legacy_client { "S1 ACT (老方案)" } else { "S4+ 新版 (现行方案)" },
+            route,
+        ));
         s.push_str(&format!("independent_test = {}\n", config.vibration.independent_test));
         s.push_str(&format!("move_independent = {}\n", config.vibration.move_independent));
         s.push_str(&format!("out_smooth = {}\n", config.vibration.out_smooth));
@@ -244,7 +356,11 @@ impl SorahkGui {
         let mut s = String::new();
         s.push_str("# ═══════════════════════════════════════════════════════\n");
         s.push_str("#  Sorahk 全职业预设导出\n");
-        s.push_str("# ═══════════════════════════════════════════════════════\n\n");
+        s.push_str("# ═══════════════════════════════════════════════════════\n");
+        s.push_str(&format!(
+            "#  客户端路线: {}\n\n",
+            if cls.name.ends_with("-ACT") { "S1 ACT (老方案)" } else { "S4+ 新版 (现行方案)" },
+        ));
         let _ = writeln!(s, "base_job = \"{}\"", base);
         let _ = writeln!(s, "class_name = \"{}\"", cls.name);
         let _ = writeln!(s, "out_smooth = {}", cls.out_smooth);
@@ -406,51 +522,59 @@ impl SorahkGui {
                 }
                 /* 全职业预设恢复 (v21): applied=true 时覆盖默认预设; 否则绝对频率强制关闭 */
                 if let Some(jcfg) = crate::job_presets::load_job_vibration() {
-                    self.vib_job_enabled = jcfg.applied;
+                    /* ★v24.15: 职业预设按**当前路线**判定 —— ACT 名册的职业在 S4 路线不存在,
+                     * 不能因为 JobVibration.toml 记着 applied=true 就继续生效 (否则 ACT 特调
+                     * 会盖在 S4 参数上, 并随保存写进 S4 的震动文件)。
+                     * 只重算内存态, **不改写** JobVibration.toml: 切回原路线仍会恢复。 */
+                    let route_job = crate::job_presets::find_class_for_route(
+                        &jcfg.base_job,
+                        &jcfg.class_name,
+                        self.config.vib_legacy_client,
+                    );
+                    self.vib_job_enabled = jcfg.applied && route_job.is_some();
                     if !jcfg.applied {
                         self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
                         self.config.vibration.abs_freq_enabled = false;
                     }
-                    if jcfg.applied {                        if let Some((bi, ci, cls)) = crate::job_presets::find_class(&jcfg.base_job, &jcfg.class_name) {
-                            self.vib_job_base = bi;
-                            self.vib_job_class = ci;
-                            let params: Vec<u32> = if jcfg.params.len() == 60 {
-                                jcfg.params.clone()
-                            } else {
-                                cls.params.to_vec()
-                            };
-                            self.vib_job_snapshot = params.clone();
-                            for (i, v) in params.iter().enumerate() {
-                                p[i].store(*v, Ordering::Relaxed);
-                            }
-                            for (i, v) in cls.rank_lr.iter().enumerate() {
-                                self.app_state.vibration_rank_lr[i].store(*v as u32, Ordering::Relaxed);
-                            }
-                            for (i, v) in cls.rank_type_gain.iter().enumerate() {
-                                self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                            }
-                            let dur = if jcfg.rank_duration > 0 { jcfg.rank_duration } else { cls.rank_duration };
-                            let lg = if jcfg.rank_level_gain > 0 { jcfg.rank_level_gain } else { cls.rank_level_gain };
-                            self.app_state.vibration_rank_duration.store(dur, Ordering::Relaxed);
-                            self.app_state.vibration_rank_level_gain.store(lg, Ordering::Relaxed);
-                            self.app_state.vibration_out_smooth.store(cls.out_smooth, Ordering::Relaxed);
-                            self.config.vibration.out_smooth = cls.out_smooth;
-                            self.app_state.vibration_throttle_window.store(cls.throttle_window, Ordering::Relaxed);
-                            self.app_state.vibration_throttle_max.store(cls.throttle_max, Ordering::Relaxed);
-                            self.app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, Ordering::Relaxed);
-                            /* ★保险A: 职业预设恢复也强制关绝对频率 (堵重启复活路径) */
-                            self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
-                            self.app_state.vibration_algo_id.store(cls.algo_id as u32, Ordering::Relaxed);
-                            for (i, v) in cls.algo_params.iter().enumerate() {
-                                self.app_state.vibration_algo_ap[i].store(*v, Ordering::Relaxed);
-                            }
-                            self.config.vibration.throttle_window_ms = cls.throttle_window;
-                            self.config.vibration.throttle_max_hits = cls.throttle_max;
-                            self.config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                            self.config.vibration.abs_freq_enabled = false;
-                            self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
-                            self.vib_job_loaded = Some((bi, ci));
+                    if let Some((bi, ci, cls)) = route_job {
+                        self.vib_job_base = bi;
+                        self.vib_job_class = ci;
+                        let params: Vec<u32> = if jcfg.params.len() == 60 {
+                            jcfg.params.clone()
+                        } else {
+                            cls.params.to_vec()
+                        };
+                        self.vib_job_snapshot = params.clone();
+                        for (i, v) in params.iter().enumerate() {
+                            p[i].store(*v, Ordering::Relaxed);
                         }
+                        for (i, v) in cls.rank_lr.iter().enumerate() {
+                            self.app_state.vibration_rank_lr[i].store(*v as u32, Ordering::Relaxed);
+                        }
+                        for (i, v) in cls.rank_type_gain.iter().enumerate() {
+                            self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
+                        }
+                        let dur = if jcfg.rank_duration > 0 { jcfg.rank_duration } else { cls.rank_duration };
+                        let lg = if jcfg.rank_level_gain > 0 { jcfg.rank_level_gain } else { cls.rank_level_gain };
+                        self.app_state.vibration_rank_duration.store(dur, Ordering::Relaxed);
+                        self.app_state.vibration_rank_level_gain.store(lg, Ordering::Relaxed);
+                        self.app_state.vibration_out_smooth.store(cls.out_smooth, Ordering::Relaxed);
+                        self.config.vibration.out_smooth = cls.out_smooth;
+                        self.app_state.vibration_throttle_window.store(cls.throttle_window, Ordering::Relaxed);
+                        self.app_state.vibration_throttle_max.store(cls.throttle_max, Ordering::Relaxed);
+                        self.app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, Ordering::Relaxed);
+                        /* ★保险A: 职业预设恢复也强制关绝对频率 (堵重启复活路径) */
+                        self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
+                        self.app_state.vibration_algo_id.store(cls.algo_id as u32, Ordering::Relaxed);
+                        for (i, v) in cls.algo_params.iter().enumerate() {
+                            self.app_state.vibration_algo_ap[i].store(*v, Ordering::Relaxed);
+                        }
+                        self.config.vibration.throttle_window_ms = cls.throttle_window;
+                        self.config.vibration.throttle_max_hits = cls.throttle_max;
+                        self.config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
+                        self.config.vibration.abs_freq_enabled = false;
+                        self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
+                        self.vib_job_loaded = Some((bi, ci));
                     }
                 }
             }
@@ -599,27 +723,38 @@ impl SorahkGui {
                         ui.add_space(8.0);
                         if ui
                             .button(egui::RichText::new("导出当前职业").size(13.0))
-                            .on_hover_text("导出当前选择职业的完整设置 (仅当前职业)")
+                            .on_hover_text("导出当前选择职业的完整设置 (仅当前职业; ACT 路线职业名自带 -ACT)")
                             .clicked()
                         {
                             let content = Self::export_job_settings(jobs[base_sel].base_job, cur_cls);
+                            /* ★v24.14: 职业名自带 -ACT (ACT 名册), 导出名随之带标记 ——
+                             * 不用 job_presets::export_prefix, 否则会拼成 -ACT-ACT */
                             let fname = Self::save_export_file(&content, &format!("job_export_{}", cur_cls.name));
                             self.vib_export_msg = Some(fname);
                         }
                         ui.add_space(8.0);
-                        /* 导入职业设置 (v33.1: 按规范 base_job/class_name 匹配内置职业) */
+                        /* 导入职业设置 (v33.1: 按规范 base_job/class_name 匹配内置职业;
+                         * v24.14: 只列当前路线的导出文件) */
                         if ui
                             .button(egui::RichText::new("导入职业设置").size(13.0))
-                            .on_hover_text("从 job_export_*.toml 导入 (按 base_job/class_name 匹配内置职业后应用)")
+                            .on_hover_text("从当前路线的 job_export_*.toml 导入 (按 base_job/class_name 匹配内置职业后应用)")
                             .clicked()
                         {
-                            let files = crate::job_presets::list_export_files("job_export");
+                            let files = crate::job_presets::list_export_files_for_route(
+                                "job_export",
+                                self.config.vib_legacy_client,
+                            );
                             let sel = self.job_import_sel.min(files.len().saturating_sub(1));
                             if let Some(f) = files.get(sel) {
                                 match crate::job_presets::parse_job_export(f) {
                                     Some(ij) => {
-                                        /* 规范: 按 base_job/class_name 匹配内置职业 */
-                                        if let Some((bi, ci, _cls)) = crate::job_presets::find_class(&ij.base_job, &ij.class_name) {
+                                        /* 规范: 按 base_job/class_name 匹配**当前路线**内置职业
+                                         * (v24.15: 跨路线匹配会让 S1 的 ACT 职业档导进 S4) */
+                                        if let Some((bi, ci, _cls)) = crate::job_presets::find_class_for_route(
+                                            &ij.base_job,
+                                            &ij.class_name,
+                                            self.config.vib_legacy_client,
+                                        ) {
                                             self.vib_job_base = bi;
                                             self.vib_job_class = ci;
                                             /* 导入参数覆盖 (只写 AppState; 快照检测自动落盘 JobVibration.toml) */
@@ -649,7 +784,7 @@ impl SorahkGui {
                                             self.vib_job_enabled = true;
                                             self.vib_import_msg = Some(format!("已导入并应用: {} - {}", ij.base_job, ij.class_name));
                                         } else {
-                                            self.vib_import_msg = Some(format!("规范不符: 未匹配内置职业 {} - {}", ij.base_job, ij.class_name));
+                                            self.vib_import_msg = Some(format!("规范不符: 当前路线没有这个职业 {} - {}", ij.base_job, ij.class_name));
                                         }
                                     }
                                     None => {
@@ -908,17 +1043,25 @@ impl SorahkGui {
                     ui.add_space(8.0);
                     if ui
                         .button(egui::RichText::new("导出当前设置").size(13.0))
-                        .on_hover_text("导出当前页面生效的通用震动设定 (params/评分/高级算法) 为 TOML")
+                        .on_hover_text("导出当前页面生效的通用震动设定 (params/评分/高级算法) 为 TOML; ACT 路线导出文件名带 -ACT")
                         .clicked()
                     {
                         let content = Self::export_vibration_settings(&self.app_state, &self.config);
-                        let fname = Self::save_export_file(&content, "vibration_export");
+                        /* ★v24.14: ACT 路线导出带 -ACT (文件名 + 导入列表按路线过滤, 两路线不串档) */
+                        let prefix = crate::job_presets::export_prefix(
+                            "vibration_export",
+                            self.config.vib_legacy_client,
+                        );
+                        let fname = Self::save_export_file(&content, &prefix);
                         self.vib_export_msg = Some(fname);
                     }
                     ui.add_space(8.0);
-                    /* 导入设置 (v33.1: 扫描 vibration_export_*.toml) */
+                    /* 导入设置 (v33.1: 扫描 vibration_export_*.toml; v24.14: 只列当前路线的) */
                     {
-                        let files = crate::job_presets::list_export_files("vibration_export");
+                        let files = crate::job_presets::list_export_files_for_route(
+                            "vibration_export",
+                            self.config.vib_legacy_client,
+                        );
                         let sel = self.vib_import_sel.min(files.len().saturating_sub(1));
                         if !files.is_empty() {
                             egui::ComboBox::from_id_salt("vib_import_sel")
@@ -934,10 +1077,14 @@ impl SorahkGui {
                         }
                         if ui
                             .button(egui::RichText::new("导入设置").size(13.0))
-                            .on_hover_text("从 vibration_export_*.toml 导入通用震动设定 (往返一致规范)")
+                            .on_hover_text("从当前路线的 vibration_export*.toml 导入通用震动设定 (往返一致规范)")
                             .clicked()
                         {
-                            if let Some(f) = crate::job_presets::list_export_files("vibration_export").get(self.vib_import_sel) {
+                            let route_files = crate::job_presets::list_export_files_for_route(
+                                "vibration_export",
+                                self.config.vib_legacy_client,
+                            );
+                            if let Some(f) = route_files.get(self.vib_import_sel) {
                                 if let Some(iv) = crate::job_presets::parse_vibration_export(f) {
                                     for (i, v) in iv.params.iter().enumerate() {
                                         self.app_state.vibration_params[i].store(*v, Ordering::Relaxed);
@@ -1102,9 +1249,12 @@ impl SorahkGui {
                             .app_state
                             .vibration_abs_freq_enabled
                             .load(Ordering::Relaxed);
-                        if ui
-                            .checkbox(&mut ae, "绝对震动频率 (3 秒最多 6 次)")
-                            .changed()
+                                                    let resp = Self::with_hint(
+                                ui
+                                .checkbox(&mut ae, "绝对震动频率 (3 秒最多 6 次)"),
+                                "绝对震动频率 (3 秒最多 6 次)",
+                            );
+                            if resp.changed()
                         {
                             self.app_state
                                 .vibration_abs_freq_enabled
@@ -1116,10 +1266,11 @@ impl SorahkGui {
                             .app_state
                             .vibration_abs_freq_window
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut aw, 1000.0..=10000.0).text("绝对频率窗口 ms"))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut aw, 1000.0..=10000.0).text("绝对频率窗口 ms")),
+                            "绝对频率窗口 ms",
+                        );
+                        if resp.changed() {
                             self.app_state
                                 .vibration_abs_freq_window
                                 .store(aw as u32, Ordering::Relaxed);
@@ -1130,10 +1281,11 @@ impl SorahkGui {
                             .app_state
                             .vibration_abs_freq_max
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut am, 1.0..=20.0).text("窗口内最大震动次数"))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut am, 1.0..=20.0).text("窗口内最大震动次数")),
+                            "窗口内最大震动次数",
+                        );
+                        if resp.changed() {
                             self.app_state
                                 .vibration_abs_freq_max
                                 .store(am as u32, Ordering::Relaxed);
@@ -1213,10 +1365,14 @@ impl SorahkGui {
                      * 迁出: 连击增强→「连击与自适应」卡, 节奏感→「输出质感」卡,
                      * 衰减时间(p5 预留死槽)→高级区, 移动体系→「移动与走路」卡 */
                     let rows = [
-                        ("全局总调整 %", 9, 100.0, "", "总开关: 0 = 全部关闭; 调低 = 整体减弱所有震动。\nACT1 路线下最低实感约 20%×此值 (重映射抬底随总调缩放)", 0usize),
-                        ("攻击频率 (总闸1)", 0, 100.0, "", "攻击/技能命中反馈总闸: 0 = 命中不震", 1),
-                        ("强度上限 (总闸2)", 4, 100.0, "%", "输出强度上限: 调低 = 所有震动更弱 (保护手柄)", 2),
-                        ("连击增强 (渐进至上限)", 6, 100.0, "", "连击数越高震动越强, 渐进到强度上限 (上限/斜率在高级调校「连击与自适应」)", 4),
+                        ("全局总调整 %", 9, 100.0, "", "总开关: 0 = 全部关闭; 调低 = 整体减弱所有震动。\nACT1 路线下最低实感约 20%×此值 (重映射抬底随总调缩放)
+调高：整体更响、更有打击感（也更费电、更容易震手）；调低：整体变轻，最轻近乎不震。", 0usize),
+                        ("攻击频率 (总闸1)", 0, 100.0, "", "攻击/技能命中反馈总闸: 0 = 命中不震
+调高：每次命中更实、更响；调低：命中变轻；0 = 命中完全不震。", 1),
+                        ("强度上限 (总闸2)", 4, 100.0, "%", "输出强度上限: 调低 = 所有震动更弱 (保护手柄)
+调高：最强的那一击更有冲击力（可能震手）；调低：给所有震动压一个天花板，更稳更省电。", 2),
+                        ("连击增强 (渐进至上限)", 6, 100.0, "", "连击数越高震动越强, 渐进到强度上限 (上限/斜率在高级调校「连击与自适应」)
+调高：连得越久越强（后期更猛）；调低：连击加成越弱；0 = 完全不随连击变化，每下一样。", 4),
                     ];
                     /* 每项独立块: 名称+滑块+说明+L/R, 宽度自适应卡片, 长文本自然换行 */
                     /* 每项独立块: 名称+滑块+说明+L/R, 宽屏双列排布 */
@@ -1262,12 +1418,15 @@ impl SorahkGui {
                         .app_state
                         .vibration_random_gain
                         .load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(
-                            egui::Slider::new(&mut rg, 0.0..=100.0)
-                                .text("震动随机性 %"),
-                        )
-                        .changed()
+                                                    let resp = Self::with_hint(
+                                    ui
+                            .add(
+                                egui::Slider::new(&mut rg, 0.0..=100.0)
+                                    .text("震动随机性 %"),
+                            ),
+                                    "震动随机性 %",
+                                );
+                                if resp.changed()
                     {
                         self.app_state
                             .vibration_random_gain
@@ -1291,13 +1450,16 @@ impl SorahkGui {
                     ui.vertical(|ui| {
                     /* 移动独立开关 (v24.5): 默认开, 移动一直在走, 不吃全局强度 */
                     let mut mi = self.app_state.vibration_move_independent.load(Ordering::Relaxed);
-                    if ui
-                        .checkbox(&mut mi, "移动持续震动独立于全局强度 (默认开)")
-                        .on_hover_text(
-                            "开: 移动震动不受全局总调整/强度上限影响 (移动一直在走, 吃全局强度容易直接没有震动)。\n\
-                             关: 移动震动也受全局总调整与强度上限约束。",
-                        )
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .checkbox(&mut mi, "移动持续震动独立于全局强度 (默认开)")
+                            .on_hover_text(
+                                "开: 移动震动不受全局总调整/强度上限影响 (移动一直在走, 吃全局强度容易直接没有震动)。\n\
+                                 关: 移动震动也受全局总调整与强度上限约束。",
+                            ),
+                            "移动持续震动独立于全局强度 (默认开)",
+                        );
+                        if resp.changed()
                     {
                         self.app_state.vibration_move_independent.store(mi, Ordering::Relaxed);
                         self.config.vibration.move_independent = mi;
@@ -1311,10 +1473,11 @@ impl SorahkGui {
                             .color(th.text),
                     );
                     let mut g = self.app_state.vibration_rank_type_gain[11].load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(egui::Slider::new(&mut g, 0.0..=100.0).suffix("").text("移动持续震动强度"))
-                        .changed()
-                    {
+                    let resp = Self::with_hint(
+                    ui.add(egui::Slider::new(&mut g, 0.0..=100.0).suffix("").text("移动持续震动强度")),
+                        "移动持续震动强度",
+                    );
+                    if resp.changed() {
                         self.app_state.vibration_rank_type_gain[11].store(g as u32, Ordering::Relaxed);
                         self.config.vibration.rank_type_gain[11] = g as u32;
                         let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
@@ -1351,9 +1514,12 @@ impl SorahkGui {
                         .app_state
                         .vibration_font_hits
                         .load(Ordering::Relaxed);
-                    if ui
-                        .checkbox(&mut font_on, "启用伤害飘字震动 (默认开启)")
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .checkbox(&mut font_on, "启用伤害飘字震动 (默认开启)"),
+                            "启用伤害飘字震动 (默认开启)",
+                        );
+                        if resp.changed()
                     {
                         self.app_state
                             .vibration_font_hits
@@ -1365,9 +1531,12 @@ impl SorahkGui {
                             .weak(),
                     );
                     let mut fs = p[10].load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(egui::Slider::new(&mut fs, 0.0..=100.0).text("通用飘字强度"))
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .add(egui::Slider::new(&mut fs, 0.0..=100.0).text("通用飘字强度")),
+                            "通用飘字强度",
+                        );
+                        if resp.changed()
                     {
                         p[10].store(fs as u32, Ordering::Relaxed);
                     }
@@ -1380,9 +1549,12 @@ impl SorahkGui {
                     );
                     Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, 6);
                     let mut fi = p[11].load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(egui::Slider::new(&mut fi, 10.0..=500.0).text("飘字最小间隔 ms"))
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .add(egui::Slider::new(&mut fi, 10.0..=500.0).text("飘字最小间隔 ms")),
+                            "飘字最小间隔 ms",
+                        );
+                        if resp.changed()
                     {
                         p[11].store(fi as u32, Ordering::Relaxed);
                     }
@@ -1401,7 +1573,8 @@ impl SorahkGui {
                      * ★S1 限定: "装备特效反馈"之下插入"怪物异常反馈"独立行 (v15 拆分,
                      * 0x04 在 ACT 里 100% 是怪物异常跳字); 装备特效行保留不删 —— S4 语义不变 */
                     let mut rows: Vec<(String, usize, usize, String)> = vec![
-                        ("持续伤害 DOT 反馈 (0x20)".to_string(), 12, 7usize, "中毒/灼烧/出血等持续掉血反馈, 每次掉血持续震动".to_string()),
+                        ("持续伤害 DOT 反馈 (0x20)".to_string(), 12, 7usize, "中毒/灼烧/出血等持续掉血反馈, 每次掉血持续震动
+调高：掉血跳字更明显（持续感更黏）；调低：几乎察觉不到；0 = 关闭这一路。".to_string()),
                         (
                             "装备特效反馈 (0x04)".to_string(),
                             15,
@@ -1412,10 +1585,14 @@ impl SorahkGui {
                                 "装备触发效果(特效等), 例如天域之类的".to_string()
                             },
                         ),
-                        ("玩家状态变化反馈 (0x08)".to_string(), 14, 9, "自身状态变化(增益/减益/回复)".to_string()),
-                        ("特殊攻击反馈 (0x10) 暴击/破招/背击".to_string(), 13, 10, "暴击/破招/背击瞬间的重击强调".to_string()),
-                        ("玩家命中反馈 (0x01)".to_string(), 16, 11, "普通攻击与技能每次命中的基础反馈 (核心)".to_string()),
-                        ("玩家受击反馈 (0x02)".to_string(), 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉".to_string()),
+                        ("玩家状态变化反馈 (0x08)".to_string(), 14, 9, "自身状态变化(增益/减益/回复)
+调高：加/掉状态提示更明显；调低：更轻；0 = 不震。".to_string()),
+                        ("特殊攻击反馈 (0x10) 暴击/破招/背击".to_string(), 13, 10, "暴击/破招/背击瞬间的重击强调
+调高：特殊攻击更重更突出（过高时与命中叠加会震手）；调低：与普攻的差别变小；0 = 不震。".to_string()),
+                        ("玩家命中反馈 (0x01)".to_string(), 16, 11, "普通攻击与技能每次命中的基础反馈 (核心)
+调高：每一击都更实（最影响主手感）；调低：整体变轻；0 = 命中完全不震。".to_string()),
+                        ("玩家受击反馈 (0x02)".to_string(), 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉
+调高：挨打更有感觉；调低：更容易忽略挨打；0 = 挨打不震。".to_string()),
                     ];
                     if self.config.vib_legacy_client {
                         rows.insert(
@@ -1424,7 +1601,8 @@ impl SorahkGui {
                                 "怪物异常反馈 (0x04) 出血/中毒/感电跳字".to_string(),
                                 usize::MAX,
                                 8,
-                                "怪物身上的异常状态 (出血/中毒等) 每次跳字的反馈, 独立通道 (仅 ACT 版本)。\n默认 1 = 最低档; ACT 重映射 20% 抬底, 1 实感约 20% 满幅; 0 = 完全关闭".to_string(),
+                                "怪物身上的异常状态 (出血/中毒等) 每次跳字的反馈, 独立通道 (仅 ACT 版本)。\n默认 1 = 最低档; ACT 重映射 20% 抬底, 1 实感约 20% 满幅; 0 = 完全关闭
+调高：出血/中毒/感电跳字更明显；调低：更轻；0 = 完全不震。".to_string(),
                             ),
                         );
                     }
@@ -1525,19 +1703,23 @@ impl SorahkGui {
                     ui.add_space(4.0);
                     /* 评分等级强度 + 满幅时长 */
                     let mut lvl_gain = self.app_state.vibration_rank_level_gain.load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(egui::Slider::new(&mut lvl_gain, 0.0..=100.0).text("评分等级强度 % (等级 F~SSS)"))
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .add(egui::Slider::new(&mut lvl_gain, 0.0..=100.0).text("评分等级强度 % (等级 F~SSS)")),
+                            "评分等级强度 % (等级 F~SSS)",
+                        );
+                        if resp.changed()
                     {
                         self.app_state.vibration_rank_level_gain.store(lvl_gain as u32, Ordering::Relaxed);
                         self.config.vibration.rank_level_gain = lvl_gain as u32;
                         let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                     }
                     let mut rank_dur = self.app_state.vibration_rank_duration.load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add(egui::Slider::new(&mut rank_dur, 20.0..=1000.0).text("满幅脉冲时长 ms (所有评分事件)"))
-                        .changed()
-                    {
+                    let resp = Self::with_hint(
+                    ui.add(egui::Slider::new(&mut rank_dur, 20.0..=1000.0).text("满幅脉冲时长 ms (所有评分事件)")),
+                        "满幅脉冲时长 ms (所有评分事件)",
+                    );
+                    if resp.changed() {
                         self.app_state.vibration_rank_duration.store(rank_dur as u32, Ordering::Relaxed);
                         self.config.vibration.rank_duration = rank_dur as u32;
                         let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
@@ -1550,24 +1732,34 @@ impl SorahkGui {
                     );
                     /* 细分事件独立强度 + 触发计数 */
                     let rank_names = [
-                        ("评分点", 0usize, "每次命中累积的评分点"),
-                        ("极限闪避", 1, "闪避/反击成功瞬间"),
-                        ("暴击", 2, "暴击命中瞬间 (未定位)"),
+                        ("评分点", 0usize, "每次命中累积的评分点
+调高：每一击累积的评分反馈更明显；调低：更轻；0 = 不震。"),
+                        ("极限闪避", 1, "闪避/反击成功瞬间
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("暴击", 2, "暴击命中瞬间 (未定位)
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
                         /* 破招/背击 已搁置 (2026-08-15): 客户端判定未定位, 推断服务器判定
                          * 见 docs/背击破招定位最终结论_v19.md
                          * ("破招", 3, "破招控制命中 (未定位)"),
                          * ("背击", 4, "背后攻击命中 (未定位)"), */
-                        ("最终击杀", 5, "BOSS 击杀/结算 (未定位)"),
-                        ("凌空追击", 6, "空中追击命中 (槽评分)"),
-                        ("命中第一击", 7, "命中怪物第一击 (原\"破甲\"槽, 实测语义)"),
-                        ("增益叠加", 8, "增益层数叠加 (未定位)"),
-                        ("释放技能", 9, "释放技能瞬间 (n2500[5747] 计数)"),
+                        ("最终击杀", 5, "BOSS 击杀/结算 (未定位)
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("凌空追击", 6, "空中追击命中 (槽评分)
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("命中第一击", 7, "命中怪物第一击 (原\"破甲\"槽, 实测语义)
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("增益叠加", 8, "增益层数叠加 (未定位)
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("释放技能", 9, "释放技能瞬间 (n2500[5747] 计数)
+调高：放技能那一下更有存在感；调低：更轻；0 = 不震。"),
                         /* 镜头震动/技能震动 已搁置 (2026-08-15): 见 docs/震屏事件搁置记录_v16.md
                          * ("镜头震动", 10, "真 [shake screen] 词条屏幕震动"),
                          * ("技能震动", 12, "技能释放/命中时的屏幕震动"), */
                         /* 移动 (持续震动) 已移至"全局总闸"卡片节奏感下方 (v22) */
-                        ("暴击特写", 13, "暴击/击杀时的镜头特写震屏"),
-                        ("怪物死亡", 14, "怪物死亡 (OnTargetDie 纯目标死亡信号)"),
+                        ("暴击特写", 13, "暴击/击杀时的镜头特写震屏
+调高：该事件震得更明显；调低：更轻；0 = 不震。"),
+                        ("怪物死亡", 14, "怪物死亡 (OnTargetDie 纯目标死亡信号)
+调高：怪死时更明显；调低：更轻；0 = 不震。"),
                     ];
                     let col_w = (ui.available_width() - theme::SP_L) / 2.0;
                     ui.horizontal(|ui| {
@@ -1624,13 +1816,16 @@ impl SorahkGui {
                     );
                     ui.add_space(4.0);
                     let mut rd_on = rd;
-                    if ui
-                        .checkbox(&mut rd_on, "启用评分动态衰减 (类鬼泣)")
-                        .on_hover_text(
-                            "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n\
-                             最高评级反馈 = 当前预设参数 ×1.2; 最低档保底 0.6 (不失去基础反馈)。",
-                        )
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .checkbox(&mut rd_on, "启用评分动态衰减 (类鬼泣)")
+                            .on_hover_text(
+                                "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n\
+                                 最高评级反馈 = 当前预设参数 ×1.2; 最低档保底 0.6 (不失去基础反馈)。",
+                            ),
+                            "启用评分动态衰减 (类鬼泣)",
+                        );
+                        if resp.changed()
                     {
                         self.app_state
                             .vibration_rank_decay_enabled
@@ -1642,13 +1837,17 @@ impl SorahkGui {
                         .app_state
                         .vibration_rank_decay_delay
                         .load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add_enabled(
-                            rd_on,
-                            egui::Slider::new(&mut rdd, 500.0..=5000.0)
-                                .text("停手衰减延迟 ms"),
-                        )
-                        .changed()
+                                        let resp = Self::with_hint(
+                        ui
+                            .add_enabled(
+                                rd_on,
+                                egui::Slider::new(&mut rdd, 500.0..=5000.0)
+                                    .text("停手衰减延迟 ms"),
+                            )
+,
+                        "停手衰减延迟 ms",
+                    );
+                    if resp.changed()
                     {
                         self.app_state
                             .vibration_rank_decay_delay
@@ -1662,13 +1861,17 @@ impl SorahkGui {
                         .load(Ordering::Relaxed) as f32;
                     /* ★审计修复: 载体是 u32, 浮点滑块的小数档位 (如 4.5) 会被截成 4
                      * —— 改为整数步进, 滑块档位与实际生效值一致 */
-                    if ui
-                        .add_enabled(
-                            rd_on,
-                            egui::Slider::new(&mut rds, 1.0..=5.0).integer()
-                                .text("衰减速度 级/秒 (整数)"),
-                        )
-                        .changed()
+                                        let resp = Self::with_hint(
+                        ui
+                            .add_enabled(
+                                rd_on,
+                                egui::Slider::new(&mut rds, 1.0..=5.0).integer()
+                                    .text("衰减速度 级/秒 (整数)"),
+                            )
+,
+                        "衰减速度 级/秒 (整数)",
+                    );
+                    if resp.changed()
                     {
                         self.app_state
                             .vibration_rank_decay_speed
@@ -1680,13 +1883,17 @@ impl SorahkGui {
                         .app_state
                         .vibration_rank_decay_min
                         .load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add_enabled(
-                            rd_on,
-                            egui::Slider::new(&mut rdmin, 40.0..=100.0)
-                                .text("最低反馈倍率 % (评级 0, 保底)"),
-                        )
-                        .changed()
+                                        let resp = Self::with_hint(
+                        ui
+                            .add_enabled(
+                                rd_on,
+                                egui::Slider::new(&mut rdmin, 40.0..=100.0)
+                                    .text("最低反馈倍率 % (评级 0, 保底)"),
+                            )
+,
+                        "最低反馈倍率 % (评级 0, 保底)",
+                    );
+                    if resp.changed()
                     {
                         self.app_state
                             .vibration_rank_decay_min
@@ -1698,13 +1905,17 @@ impl SorahkGui {
                         .app_state
                         .vibration_rank_decay_max
                         .load(Ordering::Relaxed) as f32;
-                    if ui
-                        .add_enabled(
-                            rd_on,
-                            egui::Slider::new(&mut rdmax, 100.0..=200.0)
-                                .text("最高反馈倍率 % (满评分, 预设×此值)"),
-                        )
-                        .changed()
+                                        let resp = Self::with_hint(
+                        ui
+                            .add_enabled(
+                                rd_on,
+                                egui::Slider::new(&mut rdmax, 100.0..=200.0)
+                                    .text("最高反馈倍率 % (满评分, 预设×此值)"),
+                            )
+,
+                        "最高反馈倍率 % (满评分, 预设×此值)",
+                    );
+                    if resp.changed()
                     {
                         self.app_state
                             .vibration_rank_decay_max
@@ -1868,7 +2079,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_merge_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用一刀多怪合并 (关=回到旧行为, 下方滑块不生效)")
-                            .on_hover_text("关掉后: 命中聚合窗/合并记账/补发全部回到旧行为 (不做合并, 不补发)。默认开。")
+                            .on_hover_text("关掉后: 命中聚合窗/合并记账/补发全部回到旧行为 (不做合并, 不补发)。默认开。
+开：群怪一刀只震一下（推荐，默认开）；关：回到旧行为：一刀多怪各震各的、更吵。")
                             .changed()
                         {
                             self.app_state.vibration_merge_enabled.store(_t, Ordering::Relaxed);
@@ -1880,13 +2092,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_hitmerge_ms
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut hmz, 10.0..=200.0)
-                                    .text("命中聚合窗 ms (群怪一刀只震一下)"),
-                            )
-                            .on_hover_text("群怪时一刀会同时产生多条命中事件 (每怪一条)。此窗口内的事件全部合并成一下更厚的震动 (能量不丢)。\n默认 60: 一刀砍中几个怪都只震一下; 单挑慢速攻击不受影响。觉得合并得不够就调大。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut hmz, 10.0..=200.0)
+                                        .text("命中聚合窗 ms (群怪一刀只震一下)"),
+                                )
+                                .on_hover_text("群怪时一刀会同时产生多条命中事件 (每怪一条)。此窗口内的事件全部合并成一下更厚的震动 (能量不丢)。\n默认 60: 一刀砍中几个怪都只震一下; 单挑慢速攻击不受影响。觉得合并得不够就调大。
+调高：窗口更大，一刀砍多怪更容易并成一下；调低：窗口更小，可能一刀震两下。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_hitmerge_ms
@@ -1900,12 +2114,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_merge_keep
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut mk, 0.0..=100.0)
-                                    .text("合成一下时保留多少力度 % (0=关闭)"),
-                            )
-                            .changed()
+                                                let resp = Self::with_hint(
+                            ui
+                                .add(
+                                    egui::Slider::new(&mut mk, 0.0..=100.0)
+                                        .text("合成一下时保留多少力度 % (0=关闭)"),
+                                )
+,
+                            "合成一下时保留多少力度 % (0=关闭)",
+                        );
+                        if resp.changed()
                         {
                             self.app_state
                                 .vibration_merge_keep
@@ -1922,7 +2140,8 @@ impl SorahkGui {
                                 egui::Slider::new(&mut mc, 20.0..=150.0)
                                     .text("合成一下的最大力度 % (100=满力)"),
                             )
-                            .on_hover_text("群怪时合成出来的那一响最大有多重。调低 = 群怪更轻; 调高 = 群怪更重。")
+                            .on_hover_text("群怪时合成出来的那一响最大有多重。调低 = 群怪更轻; 调高 = 群怪更重。
+调高：群怪合成的那一下更重；调低：群怪合成的那一下更轻。")
                             .changed()
                         {
                             self.app_state
@@ -1935,13 +2154,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_merge_hold
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut mh, 0.0..=300.0)
-                                    .text("漏掉的震动多久后补一下 (ms, 0=不补)"),
-                            )
-                            .on_hover_text("被合并的震动如果一直没等到下一发, 到时间就补一记小的收尾, 保证不白打。0 = 不补。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut mh, 0.0..=300.0)
+                                        .text("漏掉的震动多久后补一下 (ms, 0=不补)"),
+                                )
+                                .on_hover_text("被合并的震动如果一直没等到下一发, 到时间就补一记小的收尾, 保证不白打。0 = 不补。
+调高：等待窗口更长（更容易补上）；调低：窗口更短；0 = 不补。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_merge_hold
@@ -1960,7 +2181,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_hitcap_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用命中限频 (关=回到旧行为, 下方滑块不生效)")
-                            .on_hover_text("关掉后: 命中不再受每秒次数上限约束 (超额不再记账合并)。默认开。")
+                            .on_hover_text("关掉后: 命中不再受每秒次数上限约束 (超额不再记账合并)。默认开。
+开：群怪每秒最多震几下（更安静、更耐听，默认开）；关：不限制：群怪可能连成一片。")
                             .changed()
                         {
                             self.app_state.vibration_hitcap_enabled.store(_t, Ordering::Relaxed);
@@ -1973,13 +2195,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_hitcap_max
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut hm, 0.0..=30.0)
-                                    .text("每秒最多震几下 (0=不限制)"),
-                            )
-                            .on_hover_text("打群怪时, 普通攻击的震动每秒最多这么多次; 超出的不会消失, 会合并成一下更厚的。\n默认 6: 单挑永远打不满, 群怪最多每秒 6 下。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut hm, 0.0..=30.0)
+                                        .text("每秒最多震几下 (0=不限制)"),
+                                )
+                                .on_hover_text("打群怪时, 普通攻击的震动每秒最多这么多次; 超出的不会消失, 会合并成一下更厚的。\n默认 6: 单挑永远打不满, 群怪最多每秒 6 下。
+调高：允许每秒更多下（更密）；调低：每秒更少下（更省更耐听）。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_hitcap_max
@@ -1992,13 +2216,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_hitcap_win
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut hw, 200.0..=5000.0)
-                                    .text("限频的计时窗口 ms"),
-                            )
-                            .on_hover_text("统计多长时间内的震动次数。窗口 × 次数 = 这段时间里最多震几下")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut hw, 200.0..=5000.0)
+                                        .text("限频的计时窗口 ms"),
+                                )
+                                .on_hover_text("统计多长时间内的震动次数。窗口 × 次数 = 这段时间里最多震几下
+调高：窗口更长，限频更平缓；调低：窗口更短，只压瞬时爆发。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_hitcap_win
@@ -2017,7 +2243,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_storm_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用命中风暴抽样 (关=只检测不抽样, 下方静音开关仍有效)")
-                            .on_hover_text("关掉后: 命中不再被抽样丢弃 (每一击都震), 但「风暴期」检测继续运行, 两个静音开关照常可用。默认开。")
+                            .on_hover_text("关掉后: 命中不再被抽样丢弃 (每一击都震), 但「风暴期」检测继续运行, 两个静音开关照常可用。默认开。
+开：命中暴增时自动抽稀（防连成一串，默认开）；关：每一击都震（更吵，但风暴静音仍可用）。")
                             .changed()
                         {
                             self.app_state.vibration_storm_enabled.store(_t, Ordering::Relaxed);
@@ -2028,13 +2255,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_storm_thr
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut st_thr, 2.0..=30.0).integer()
-                                    .text("一秒内命中超过几下算风暴"),
-                            )
-                            .on_hover_text("短时间内命中事件暴增 (狂战士双倍打击、群怪混战) 时进入\"风暴\": 只保留一部分震动, 防止连成一串停不下来。\n只统计你打出去的命中, 被怪打、出血跳字等完全不算。默认 10。本阈值同时用于判定「风暴期」(供下方两个静音开关使用); 要关闭抽样请用上面的总开关。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut st_thr, 2.0..=30.0).integer()
+                                        .text("一秒内命中超过几下算风暴"),
+                                )
+                                .on_hover_text("短时间内命中事件暴增 (狂战士双倍打击、群怪混战) 时进入\"风暴\": 只保留一部分震动, 防止连成一串停不下来。\n只统计你打出去的命中, 被怪打、出血跳字等完全不算。默认 10。本阈值同时用于判定「风暴期」(供下方两个静音开关使用); 要关闭抽样请用上面的总开关。
+调高：更难触发风暴（更少抽样）；调低：更容易触发风暴（更多抽样）。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_storm_thr
@@ -2046,13 +2275,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_storm_keep_pct
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut st_keep, 10.0..=100.0).integer()
-                                    .text("风暴期保留多少 % 命中震动"),
-                            )
-                            .on_hover_text("风暴期间每几下命中震一下。50 = 两条命中震一条 (被跳过的不再补发、不变厚)。\n100 = 风暴只记账不丢震 (等于关闭); 觉得还是太密就调小。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut st_keep, 10.0..=100.0).integer()
+                                        .text("风暴期保留多少 % 命中震动"),
+                                )
+                                .on_hover_text("风暴期间每几下命中震一下。50 = 两条命中震一条 (被跳过的不再补发、不变厚)。\n100 = 风暴只记账不丢震 (等于关闭); 觉得还是太密就调小。
+调高：保留更多（100 = 不抽样）；调低：抽得更狠（更稀疏）。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_storm_keep_pct
@@ -2064,13 +2295,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_storm_pause_ms
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut st_pause, 100.0..=2000.0).integer()
-                                    .text("停手多久恢复刀刀震 ms"),
-                            )
-                            .on_hover_text("两次命中之间隔开这么久, 就退出风暴、下一击开始恢复每一刀都震。\n默认 400: 停半秒再打, 刀刀震。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut st_pause, 100.0..=2000.0).integer()
+                                        .text("停手多久恢复刀刀震 ms"),
+                                )
+                                .on_hover_text("两次命中之间隔开这么久, 就退出风暴、下一击开始恢复每一刀都震。\n默认 400: 停半秒再打, 刀刀震。
+调高：更容易退出风暴（更早恢复刀刀震）；调低：风暴状态更黏（更久才恢复）。
+调高：风暴更黏（更久才恢复刀刀震）；调低：很快退出风暴（更快恢复）。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_storm_pause_ms
@@ -2083,13 +2317,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_storm_win_ms
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut st_win, 200.0..=5000.0).integer()
-                                    .text("风暴的统计窗口 ms"),
-                            )
-                            .on_hover_text("在这个时间窗里数命中次数, 超过上面的\"算风暴\"条数就进入风暴。\n默认 1000 (1 秒); 窗口越小, 风暴触发越挑剔。一般不用动。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut st_win, 200.0..=5000.0).integer()
+                                        .text("风暴的统计窗口 ms"),
+                                )
+                                .on_hover_text("在这个时间窗里数命中次数, 超过上面的\"算风暴\"条数就进入风暴。\n默认 1000 (1 秒); 窗口越小, 风暴触发越挑剔。一般不用动。
+调高：窗口更长，风暴判定更平缓；调低：窗口越小越挑剔。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_storm_win_ms
@@ -2105,7 +2341,8 @@ impl SorahkGui {
                             .load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut sue, "启用统合衰减期 (风暴期每一击重新起振, 旧的瞬间消失)")
-                            .on_hover_text("风暴期普通命中改用一条统合包络: 每命中一次就把旧包络瞬间清零、重新起振, 衰减时间统一固定, 到点硬归零。\n连续命中 = 一击接一击的干净持续震动 (旧尾巴不再叠糊)。\n开启时风暴抽样与命中限频对该通道让路 (每一击都重新起振)。默认不勾选。")
+                            .on_hover_text("风暴期普通命中改用一条统合包络: 每命中一次就把旧包络瞬间清零、重新起振, 衰减时间统一固定, 到点硬归零。\n连续命中 = 一击接一击的干净持续震动 (旧尾巴不再叠糊)。\n开启时风暴抽样与命中限频对该通道让路 (每一击都重新起振)。默认不勾选。
+开：风暴期一击是一击、更干净（默认关）；关：风暴期保留原来的叠加尾巴。")
                             .changed()
                         {
                             self.app_state
@@ -2119,13 +2356,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_storm_unified_ms
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut sum_ms, 40.0..=400.0).integer()
-                                    .text("统合衰减期 ms (越大越连贯, 40-400)"),
-                            )
-                            .on_hover_text("每击重新起振后多久硬归零。比两次命中的间隔略长一点最连贯 (默认 120)。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut sum_ms, 40.0..=400.0).integer()
+                                        .text("统合衰减期 ms (越大越连贯, 40-400)"),
+                                )
+                                .on_hover_text("每击重新起振后多久硬归零。比两次命中的间隔略长一点最连贯 (默认 120)。
+调高：延续更久更连贯；调低：更短更干脆。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_storm_unified_ms
@@ -2142,7 +2381,8 @@ impl SorahkGui {
                             .load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut sma, "风暴期间暂时关闭怪物异常反馈 (出血/中毒跳字)")
-                            .on_hover_text("勾选后: 命中风暴期间, 怪物出血/中毒等跳字的震动暂时关掉 (完全不震、也不抢节奏);\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n适合狂战士这类每次攻击都挂出血、出血跳字一直抢震动的场景。默认不勾选。")
+                            .on_hover_text("勾选后: 命中风暴期间, 怪物出血/中毒等跳字的震动暂时关掉 (完全不震、也不抢节奏);\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n适合狂战士这类每次攻击都挂出血、出血跳字一直抢震动的场景。默认不勾选。
+开：风暴期出血跳字静音（更干净，默认关）；关：出血跳字照常参与。")
                             .changed()
                         {
                             self.app_state
@@ -2159,7 +2399,8 @@ impl SorahkGui {
                             .load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut smr, "风暴期间暂时关闭评分点系统 (评分/击杀/怪物死亡等)")
-                            .on_hover_text("勾选后: 命中风暴期间, 评分点系统整族事件 (评分等级脉冲/评分点/闪避/暴击/破招/背击/最终击杀/凌空追击/命中第一击/增益叠加/释放技能/镜头震动/技能震动/暴击特写/怪物死亡) 暂时不震;\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n移动持续震动不属于评分点系统, 不受影响。默认不勾选。")
+                            .on_hover_text("勾选后: 命中风暴期间, 评分点系统整族事件 (评分等级脉冲/评分点/闪避/暴击/破招/背击/最终击杀/凌空追击/命中第一击/增益叠加/释放技能/镜头震动/技能震动/暴击特写/怪物死亡) 暂时不震;\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n移动持续震动不属于评分点系统, 不受影响。默认不勾选。
+开：风暴期评分族整族静音（更干净，默认关）；关：评分族照常参与。")
                             .changed()
                         {
                             self.app_state
@@ -2178,7 +2419,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_sustain_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用持续降温 (关=回到旧行为, 下方两个滑块不生效)")
-                            .on_hover_text("关掉后: 打久了不再自动变轻 (持续压制关闭)。默认开。")
+                            .on_hover_text("关掉后: 打久了不再自动变轻 (持续压制关闭)。默认开。
+开：一直打群怪会自动变轻（默认开）；关：一直打也不会变轻（下方两个滑块不生效）。")
                             .changed()
                         {
                             self.app_state.vibration_sustain_enabled.store(_t, Ordering::Relaxed);
@@ -2191,13 +2433,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_sustain_secs
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut sus_s, 0.0..=10.0).integer()
-                                    .text("打群怪几秒后自动降温 (秒, 0=关闭)"),
-                            )
-                            .on_hover_text("一直打群怪、震动一直顶满上限超过这个秒数后, 命中震动自动再变轻一档, 防止越打越吵。\n停手或怪变少后自动恢复。适合狂战士血之狂暴这类越打越密的职业。0 = 关闭。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut sus_s, 0.0..=10.0).integer()
+                                        .text("打群怪几秒后自动降温 (秒, 0=关闭)"),
+                                )
+                                .on_hover_text("一直打群怪、震动一直顶满上限超过这个秒数后, 命中震动自动再变轻一档, 防止越打越吵。\n停手或怪变少后自动恢复。适合狂战士血之狂暴这类越打越密的职业。0 = 关闭。
+调高：要打更久才降温；调低：很快就降温（更早变轻）；0 = 关闭。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_sustain_secs
@@ -2209,13 +2453,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_sustain_reduce
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut sus_r, 10.0..=80.0)
-                                    .text("自动降温幅度 % (变轻多少)"),
-                            )
-                            .on_hover_text("触发自动降温后, 命中震动在原来的基础上再变轻这个比例。30 = 打久了比刚开打轻 30%。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut sus_r, 10.0..=80.0)
+                                        .text("自动降温幅度 % (变轻多少)"),
+                                )
+                                .on_hover_text("触发自动降温后, 命中震动在原来的基础上再变轻这个比例。30 = 打久了比刚开打轻 30%。
+调高：压得更狠（更轻）；调低：几乎不压。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_sustain_reduce
@@ -2226,7 +2472,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_tail_land_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用脉冲落地 (关=回到自然衰减尾巴, 下方滑块不生效)")
-                            .on_hover_text("关掉后: 每下的余震不再被提前切断 (保持自然余音)。默认开。")
+                            .on_hover_text("关掉后: 每下的余震不再被提前切断 (保持自然余音)。默认开。
+开：余震提前切断（一击更干脆，默认开）；关：保留自然余音（余震更长）。")
                             .changed()
                         {
                             self.app_state.vibration_tail_land_enabled.store(_t, Ordering::Relaxed);
@@ -2239,13 +2486,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_tail_land_pct
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut tl_pct, 0.0..=60.0)
-                                    .text("震尾多快切断 % (0=自然衰减)"),
-                            )
-                            .on_hover_text("一直打群怪时, 每下的余震降到这一下的 25% 就直接静音, 一下是一下更干脆。\n默认 25; 0 = 不切, 保持自然余音。")
-                            .changed()
+                                                if ui
+                                .add(
+                                    egui::Slider::new(&mut tl_pct, 0.0..=60.0)
+                                        .text("震尾多快切断 % (0=自然衰减)"),
+                                )
+                                .on_hover_text("一直打群怪时, 每下的余震降到这一下的 25% 就直接静音, 一下是一下更干脆。\n默认 25; 0 = 不切, 保持自然余音。
+调高：更早切断余震（更干脆）；调低：更接近自然余音；0 = 不切。")
+                                
+                                                    .changed()
                         {
                             self.app_state
                                 .vibration_tail_land_pct
@@ -2290,7 +2539,8 @@ impl SorahkGui {
                         let mut _t = self.app_state.vibration_density_enabled.load(Ordering::Relaxed);
                         if ui
                             .checkbox(&mut _t, "启用连击密度自适应 (关=回到旧行为, 下方滑块不生效)")
-                            .on_hover_text("关掉后: 连击暴增时不再自动降强度 (等效阈值 100)。默认开。")
+                            .on_hover_text("关掉后: 连击暴增时不再自动降强度 (等效阈值 100)。默认开。
+开：连击暴增时自动降强度（防越打越吵，默认开）；关：不降强度（下方四个滑块不生效）。")
                             .changed()
                         {
                             self.app_state.vibration_density_enabled.store(_t, Ordering::Relaxed);
@@ -2319,10 +2569,11 @@ impl SorahkGui {
                                 continue;
                             }
                             let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                            if ui
-                                .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                                .changed()
-                            {
+                            let resp = Self::with_hint(
+                            ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                                name,
+                            );
+                            if resp.changed() {
                                 p[idx].store(v as u32, Ordering::Relaxed);
                                 if !job_mode {
                                     Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2341,10 +2592,13 @@ impl SorahkGui {
                             .strong(),
                     );
                     let mut _t = self.app_state.vibration_adapt_enabled.load(Ordering::Relaxed);
-                    if ui
-                        .checkbox(&mut _t, "启用命中自适应 (关=回到旧行为, 下方滑块不生效)")
-                        .on_hover_text("关掉后: 打太快时不再自动减轻 (等效降幅 0)。默认开。")
-                        .changed()
+                                            let resp = Self::with_hint(
+                            ui
+                            .checkbox(&mut _t, "启用命中自适应 (关=回到旧行为, 下方滑块不生效)")
+                            .on_hover_text("关掉后: 打太快时不再自动减轻 (等效降幅 0)。默认开。"),
+                            "启用命中自适应 (关=回到旧行为, 下方滑块不生效)",
+                        );
+                        if resp.changed()
                     {
                         self.app_state.vibration_adapt_enabled.store(_t, Ordering::Relaxed);
                         self.config.vibration.adapt_enabled = _t;
@@ -2365,10 +2619,11 @@ impl SorahkGui {
                             continue;
                         }
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
                                 Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2400,10 +2655,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in m_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
                                 Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2424,7 +2680,8 @@ impl SorahkGui {
                     let mut _t = self.app_state.vibration_move_charge_enabled.load(Ordering::Relaxed);
                     if ui
                         .checkbox(&mut _t, "启用走位能量积累 (关=回到旧行为, 下方滑块不生效)")
-                        .on_hover_text("关掉后: 长时间走位不再积累攻击增强 (等效速率 0)。默认开。")
+                        .on_hover_text("关掉后: 长时间走位不再积累攻击增强 (等效速率 0)。默认开。
+开：走位越久攻击越强（默认开）；关：走位不积累强度。")
                         .changed()
                     {
                         self.app_state.vibration_move_charge_enabled.store(_t, Ordering::Relaxed);
@@ -2455,10 +2712,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in c_rows2 {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
                                 Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2486,10 +2744,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in a_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
                                 Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2503,12 +2762,15 @@ impl SorahkGui {
                             .app_state
                             .vibration_out_smooth
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut v, 0.0..=100.0)
-                                    .text("输出平滑 % (抑制嗡嗡声, 高=柔)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add(
+                                    egui::Slider::new(&mut v, 0.0..=100.0)
+                                        .text("输出平滑 % (抑制嗡嗡声, 高=柔)"),
+                                ),
+                                        "输出平滑 % (抑制嗡嗡声, 高=柔)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_out_smooth
@@ -2565,13 +2827,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_split_thr
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                sp,
-                                egui::Slider::new(&mut spt, 20.0..=90.0)
-                                    .text("分工分界 % (低于为轻反馈)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    sp,
+                                    egui::Slider::new(&mut spt, 20.0..=90.0)
+                                        .text("分工分界 % (低于为轻反馈)"),
+                                ),
+                                        "分工分界 % (低于为轻反馈)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_split_thr
@@ -2592,7 +2857,8 @@ impl SorahkGui {
                     let mut _t = self.app_state.vibration_decay_enabled.load(Ordering::Relaxed);
                     if ui
                         .checkbox(&mut _t, "启用自定义衰减时长 (关=使用内置默认衰减: 命中25/特殊55/受击25/状态60)")
-                        .on_hover_text("关掉后: 四个衰减滑块不生效, 改用内置「默认」预设的衰减时长。默认开。")
+                        .on_hover_text("关掉后: 四个衰减滑块不生效, 改用内置「默认」预设的衰减时长。默认开。
+开：用下面四个衰减时长（默认开）；关：改用内置「默认」预设的衰减时长。")
                         .changed()
                     {
                         self.app_state.vibration_decay_enabled.store(_t, Ordering::Relaxed);
@@ -2607,10 +2873,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in dec_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
                                 Self::sync_vib_config_from_params(&mut self.config.vibration, p);
@@ -2656,13 +2923,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_out_threshold
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                s4_shape_on,
-                                egui::Slider::new(&mut v, 0.0..=60.0)
-                                    .text("输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    s4_shape_on,
+                                    egui::Slider::new(&mut v, 0.0..=60.0)
+                                        .text("输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)"),
+                                ),
+                                        "输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_out_threshold
@@ -2701,13 +2971,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_remap_min
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                rm && s4_shape_on,
-                                egui::Slider::new(&mut rmn, 10.0..=60.0)
-                                    .text("重映射最小输出 % (与死区一致, S4 / S1-S4模式)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    rm && s4_shape_on,
+                                    egui::Slider::new(&mut rmn, 10.0..=60.0)
+                                        .text("重映射最小输出 % (与死区一致, S4 / S1-S4模式)"),
+                                ),
+                                        "重映射最小输出 % (与死区一致, S4 / S1-S4模式)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_remap_min
@@ -2740,13 +3013,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_throttle_window
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                !s1_route,
-                                egui::Slider::new(&mut tw, 0.0..=10000.0)
-                                    .text("震动节流窗口 ms (0=禁用, 仅 S4)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    !s1_route,
+                                    egui::Slider::new(&mut tw, 0.0..=10000.0)
+                                        .text("震动节流窗口 ms (0=禁用, 仅 S4)"),
+                                ),
+                                        "震动节流窗口 ms (0=禁用, 仅 S4)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_throttle_window
@@ -2758,13 +3034,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_throttle_max
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                !s1_route,
-                                egui::Slider::new(&mut tm, 1.0..=30.0)
-                                    .text("窗口内最大震动次数 (仅 S4)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    !s1_route,
+                                    egui::Slider::new(&mut tm, 1.0..=30.0)
+                                        .text("窗口内最大震动次数 (仅 S4)"),
+                                ),
+                                        "窗口内最大震动次数 (仅 S4)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_throttle_max
@@ -2776,13 +3055,16 @@ impl SorahkGui {
                             .app_state
                             .vibration_throttle_dense_ratio
                             .load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(
-                                !s1_route,
-                                egui::Slider::new(&mut tr, 1.0..=100.0)
-                                    .text("狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)"),
-                            )
-                            .changed()
+                                                            let resp = Self::with_hint(
+                                        ui
+                                .add_enabled(
+                                    !s1_route,
+                                    egui::Slider::new(&mut tr, 1.0..=100.0)
+                                        .text("狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)"),
+                                ),
+                                        "狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)",
+                                    );
+                                    if resp.changed()
                         {
                             self.app_state
                                 .vibration_throttle_dense_ratio
@@ -2804,9 +3086,12 @@ impl SorahkGui {
                     );
                     {
                         let mut v = p[5].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(adv_on, egui::Slider::new(&mut v, 0.0..=500.0).suffix("ms").text("衰减时间 (预留)"))
-                            .changed()
+                                                    let resp = Self::with_hint(
+                                ui
+                                .add_enabled(adv_on, egui::Slider::new(&mut v, 0.0..=500.0).suffix("ms").text("衰减时间 (预留)")),
+                                "衰减时间 (预留)",
+                            );
+                            if resp.changed()
                         {
                             p[5].store(v as u32, Ordering::Relaxed);
                             if !job_mode {
@@ -2827,7 +3112,8 @@ impl SorahkGui {
                     let mut _t = self.app_state.vibration_algo_windows_enabled.load(Ordering::Relaxed);
                     if ui
                         .checkbox(&mut _t, "启用自定义算法窗口 (关=使用内置默认窗口)")
-                        .on_hover_text("关掉后: 本组七个窗口滑块不生效, 改用内置「默认」预设的窗口值。默认开。")
+                        .on_hover_text("关掉后: 本组七个窗口滑块不生效, 改用内置「默认」预设的窗口值。默认开。
+开：用下面七个窗口时长（默认开）；关：改用内置「默认」预设的窗口值。")
                         .changed()
                     {
                         self.app_state.vibration_algo_windows_enabled.store(_t, Ordering::Relaxed);
@@ -2845,10 +3131,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in d_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
                             if !job_mode {
@@ -2870,7 +3157,8 @@ impl SorahkGui {
                     let mut _t = self.app_state.vibration_pulse_enabled.load(Ordering::Relaxed);
                     if ui
                         .checkbox(&mut _t, "启用静默/反击/脉冲 (关=不再静默/不再反击加成/不再发脉冲)")
-                        .on_hover_text("关掉后: 特殊攻击后不再静默、受击后不再反击加成、唤醒/里程碑/连击收尾脉冲全部关闭 (测试震动强度不受影响)。默认开。")
+                        .on_hover_text("关掉后: 特殊攻击后不再静默、受击后不再反击加成、唤醒/里程碑/连击收尾脉冲全部关闭 (测试震动强度不受影响)。默认开。
+开：静默/反击/脉冲全开（默认开）；关：全关：更平、更连续（测试强度不受影响）。")
                         .changed()
                     {
                         self.app_state.vibration_pulse_enabled.store(_t, Ordering::Relaxed);
@@ -2887,10 +3175,11 @@ impl SorahkGui {
                     ];
                     for (name, idx, lo, hi) in f_rows {
                         let mut v = p[idx].load(Ordering::Relaxed) as f32;
-                        if ui
-                            .add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name))
-                            .changed()
-                        {
+                        let resp = Self::with_hint(
+                        ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
+                            name,
+                        );
+                        if resp.changed() {
                             p[idx].store(v as u32, Ordering::Relaxed);
                             /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
                             if !job_mode {
@@ -3003,19 +3292,42 @@ impl SorahkGui {
         config.vibration.throttle_max_hits = 0;
         config.vibration.throttle_dense_ratio = 100;
         Self::sync_vib_config_from_params(&mut config.vibration, p);
-        /* ★v16.8 ACT1 特供附加默认 (用户定稿): 高级调校默认开启 + 两个风暴期静音
-         * 默认勾选 (怪物异常反馈 / 评分点系统) */
+        /* ★v16.8 ACT1 特供附加默认 + ★v24.16 群怪治理标量 (用户手调定稿):
+         * 高级调校默认开启 + 两个风暴期静音 + 持续降温/震尾切断/统合衰减期/怪物异常反馈。
+         * 这些不是 60 槽字段, 必须在这里同步到运行态原子量 (以及 config)。 */
         if name == "ACT1 特供" {
             crate::config::act1_preset_extras(&mut config.vibration);
+            let v = &config.vibration;
             app_state
                 .vibration_advanced_enabled
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(v.advanced_enabled, std::sync::atomic::Ordering::Relaxed);
             app_state
                 .vibration_storm_mute_abnormal
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(v.storm_mute_abnormal, std::sync::atomic::Ordering::Relaxed);
             app_state
                 .vibration_storm_mute_rank
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+                .store(v.storm_mute_rank, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_sustain_enabled
+                .store(v.sustain_enabled, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_sustain_secs
+                .store(v.sustain_secs, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_tail_land_enabled
+                .store(v.tail_land_enabled, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_tail_land_pct
+                .store(v.tail_land_pct, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_storm_unified_enabled
+                .store(v.storm_unified_enabled, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_storm_unified_ms
+                .store(v.storm_unified_ms, std::sync::atomic::Ordering::Relaxed);
+            app_state
+                .vibration_monster_abnormal
+                .store(v.monster_abnormal_gain, std::sync::atomic::Ordering::Relaxed);
         }
         let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
     }
@@ -3172,6 +3484,72 @@ impl SorahkGui {
         );
     }
 
+
+    /// ★v24.14: 切换客户端路线 (S1/S4) —— 两条路线各自**独立文件**
+    /// (S1 → `Vibration-ACT.toml`; S4+ → `Vibration.toml`), 参数与预设列表互不干扰。
+    ///
+    /// `from_legacy` = 当前 `self.config.vibration` 所属路线 (调用方须在批量赋值**前**取旧值),
+    /// `to_legacy` = 目标路线。目标路线首次使用 (无历史文件) 时套用该路线内置默认预设:
+    /// S1 → 「ACT1 特供」; S4 → 内置原版第一项「默认」。
+    pub(super) fn switch_vibration_edition(&mut self, from_legacy: bool, to_legacy: bool) {
+        if from_legacy == to_legacy {
+            return;
+        }
+        let base = crate::config::AppConfig::vibration_path_for("Config.toml");
+        let had_saved = self
+            .config
+            .switch_vibration_edition_to(&base, from_legacy, to_legacy);
+        if had_saved {
+            /* 目标路线有历史参数 → 全量同步到运行态 */
+            self.app_state.apply_vibration_config(&self.config.vibration);
+        } else {
+            /* 目标路线首次使用 → 套该路线内置默认预设 (会写 config.vibration + 运行态) */
+            let want = if to_legacy { "ACT1 特供" } else { "默认" };
+            let name = crate::config::default_vibration_presets()
+                .iter()
+                .find(|p| p.name == want)
+                .map(|p| p.name.clone())
+                .unwrap_or_else(|| "默认".to_string());
+            Self::apply_general_vibration_preset_in(
+                &name,
+                &self.app_state,
+                &mut self.config,
+                &mut self.vib_job_enabled,
+                &mut self.vib_job_active,
+                &mut self.vib_job_loaded,
+            );
+            self.app_state.apply_vibration_config(&self.config.vibration);
+        }
+        self.app_state
+            .vib_legacy_client
+            .store(to_legacy, std::sync::atomic::Ordering::Relaxed);
+        /* ★v24.15: 职业预设的"已应用"会话状态按新路线重算 ——
+         * 两条路线的职业名册互不相交, 所以切完路线后记着的那个职业必然不属于新路线:
+         * 不清掉的话界面会继续显示"当前职业: X (已应用职业预设)", 而参数其实是新路线那套,
+         * 且再动一次滑块就会把旧职业的快照当成新路线的参数写进 JobVibration.toml。
+         * JobVibration.toml 本身不动 (切回原路线仍恢复)。 */
+        let job_applies = crate::job_presets::load_job_vibration()
+            .map(|j| {
+                j.applied
+                    && crate::job_presets::find_class_for_route(
+                        &j.base_job,
+                        &j.class_name,
+                        to_legacy,
+                    )
+                    .is_some()
+            })
+            .unwrap_or(false);
+        if !job_applies {
+            self.vib_job_enabled = false;
+            self.vib_job_active = None;
+            self.vib_job_loaded = None;
+        }
+        let _ = self.config.save_vibration_to_file(&base);
+        let _ = self.config.save_to_file("Config.toml");
+        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+            eprintln!("Failed to reload config after edition switch: {e}");
+        }
+    }
 
     pub(super) fn disable_job_vibration_preset(&mut self) {
         Self::disable_job_vibration_preset_in(

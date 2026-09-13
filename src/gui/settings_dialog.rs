@@ -2174,6 +2174,10 @@ impl SorahkGui {
                 temp_config.window_rect_minimal = self.config.window_rect_minimal;
                 temp_config.minimal_mode = self.config.minimal_mode;
                 temp_config.minimal_vib_preset_job = self.config.minimal_vib_preset_job;
+                /* ★v24.18: 经典模式也要同步 —— 设置弹窗是非模态的, 打开期间用户可能点了「典」,
+                 * 漏掉这两行会把模式回滚成开弹窗那一刻的值 (表现为"模式没记住") */
+                temp_config.classic_mode = self.config.classic_mode;
+                temp_config.window_rect_classic = self.config.window_rect_classic;
 
                 // Update preset mappings if a preset is currently active
                 if !temp_config.current_preset.is_empty() {
@@ -2194,6 +2198,8 @@ impl SorahkGui {
                 /* ★v24.13: 客户端路线是否切换 (S1/S4 两套震动参数需要互换) —— 须在覆盖 config 前取旧值 */
                 let edition_from = self.config.vib_legacy_client;
                 let edition_to = temp_config.vib_legacy_client;
+                /* ★v24.18: 玩家类型是否切换 (DFO 玩家 ↔ 仅用连发) —— 决定震动默认开/关 */
+                let player_from = self.config.dfo_player;
 
                 // Save to file
                 /* ★v24.14: 这里**只写 Config.toml** —— 此刻 temp_config.vib_legacy_client 已是新路线,
@@ -2230,6 +2236,17 @@ impl SorahkGui {
                             crate::gui::types::Page::Vibration | crate::gui::types::Page::JobPresets
                         ) {
                             self.active_page = crate::gui::types::Page::Gamepad;
+                        }
+                    } else if player_from != self.config.dfo_player {
+                        /* ★v24.18: 切回「DFO 玩家」→ 震动默认开 (与首次选择口径一致)。
+                         * 只在**玩家类型真的发生切换**时改, 免得用户手动关掉震动后一保存又被打回开。 */
+                        self.app_state
+                            .vibration_enabled
+                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                        if !self.config.vibration.enabled {
+                            self.config.vibration.enabled = true;
+                            let _ = self.config.save_to_file("Config.toml");
+                            let _ = self.app_state.reload_config(self.config.clone());
                         }
                     }
 

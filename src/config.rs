@@ -1390,8 +1390,8 @@ pub struct AppConfig {    /// Display tray icon
     /// ★v20.4: 经典模式 (老宿主 820×600 三页签窗口) 窗口矩形记忆 [x, y, w, h]
     #[serde(default)]
     pub window_rect_classic: Option<[f32; 4]>,
-    /// ★v20.4: 启动时进入经典模式 (用户定稿: 经典界面默认开启;
-    /// 与极简模式互斥, 后切换的模式生效)
+    /// ★v20.4: 启动时进入经典模式 (★v24.18: **默认关**, 首次运行进完整界面; 见 default_classic_mode)。
+    /// 与极简模式互斥, 后切换的模式生效; 用户切过就记住, 退出后下次仍进同一模式
     #[serde(default = "default_classic_mode")]
     pub classic_mode: bool,
     /// 极简模式震动预设来源 (false=通用 / true=全职业)
@@ -1633,7 +1633,9 @@ fn default_dfo_player() -> bool {
 
 /// ★v20.4: 经典模式默认开启 (用户定稿"经典界面为默认开启"; serde default 使旧配置也生效)
 fn default_classic_mode() -> bool {
-    true
+    /* ★v24.18 用户要求: 首次运行默认进**完整界面** (旧默认是经典模式, 新用户一上手就是 820x600
+     * 小窗、入口少容易找不到东西)。老用户 Config.toml 已有 classic_mode 键, 不受影响。 */
+    false
 }
 
 fn default_whitelist_enabled() -> bool {
@@ -2382,6 +2384,18 @@ mod tests {
             "非 force: 文件无预设时保留内存里的预设"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// ★v24.18: 首次运行默认进**完整界面** (既不是经典也不是极简), 且震动默认开。
+    #[test]
+    fn first_run_defaults_to_full_ui_with_vibration_on() {
+        let c = AppConfig::default();
+        assert!(!c.classic_mode, "经典模式默认必须关 (首次运行要进完整界面)");
+        assert!(!c.minimal_mode, "极简模式默认必须关");
+        assert!(
+            VibrationConfig::default().enabled,
+            "震动默认开 (DFO 玩家状态下默认开; 「仅用连发」由向导/设置改成关)"
+        );
     }
 
     #[test]

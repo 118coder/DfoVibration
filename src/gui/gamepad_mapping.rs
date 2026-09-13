@@ -558,6 +558,8 @@ pub fn set_slot_trigger_moving(
 
 /// 向槽位添加一个目标键 (不重复)。返回是否发生修改。
 /// ★v24.0: 映射必须已由校对创建; 不存在则不改动 (调用方负责提示先校对)。
+/// ⚠ 这是**追加**语义 —— 仅「鼠标映射…」菜单用它 (UI 文案就是"选一个即加入")。
+/// 键盘捕获必须用 `set_slot_targets` (替换), 否则"X+A 改成 X"不会生效。
 pub fn add_slot_target(config: &mut AppConfig, slot: &GamepadSlot, target: String) -> bool {
     let Some(idx) = find_slot_mapping_index(config, slot) else {
         return false;
@@ -566,6 +568,24 @@ pub fn add_slot_target(config: &mut AppConfig, slot: &GamepadSlot, target: Strin
     config.mappings[idx].add_target_key(target);
     config.mappings[idx].note = slot_note(slot.label);
     config.mappings[idx].target_keys.len() != len_before
+}
+
+/// ★v24.18: 用捕获结果**替换**该槽位的目标键 (设置语义)。
+///
+/// 修的是用户报的 bug: 手柄映射页里把键位从「X+A」重设为「X」不生效、仍显示「X+A」。
+/// 根因 = 确认捕获时调用了追加版 `add_slot_target`: X 已在集合里 → 集合没变化。
+/// 捕获流程 (第 2 步按键盘 + 「＋ 再加一个键」累加) 得出的本来就是该槽位**完整**的目标键,
+/// 所以这里必须整份替换。传入的 `target` 支持用 `+` 连接的多键 (内部会拆分+去重+规范排序)。
+/// 返回是否发生修改 (调用方用于决定要不要提示)。
+pub fn set_slot_targets(config: &mut AppConfig, slot: &GamepadSlot, target: String) -> bool {
+    let Some(idx) = find_slot_mapping_index(config, slot) else {
+        return false;
+    };
+    let before = config.mappings[idx].target_keys.clone();
+    config.mappings[idx].clear_target_keys();
+    config.mappings[idx].add_target_key(target);
+    config.mappings[idx].note = slot_note(slot.label);
+    config.mappings[idx].target_keys != before
 }
 
 /// 清空槽位的目标键。
@@ -787,7 +807,7 @@ impl SorahkGui {
                 }
                 self.set_gamepad_toast(format!("已设置: {} → {key}", slot.label));
             } else {
-                self.set_gamepad_warn("这个键还没校对 — 请先点「一键校对手柄按键」");
+                self.set_gamepad_warn("这个键还没校对 — 请先点「快速校对手柄按键」");
             }
             self.gp_flow = GpFlow::Selected { slot: slot.id };
             close = true;
@@ -850,7 +870,7 @@ impl SorahkGui {
                         }
                         if !matches!(self.gp_flow, GpFlow::Calibrate { .. })
                             && ui
-                                .add(th.primary_button("一键校对手柄按键"))
+                                .add(th.primary_button("快速校对手柄按键"))
                                 .on_hover_text(
                                     "新手先点这个: 按提示把手柄上全部热点校对一遍 (约 20 秒), 自动记住键位; 中途不能跳过
 完整流程: ① 一键校对一次 → ② 手柄按键快速映射设/改键位 → ③ 有遗漏按同一个手柄键重设",
@@ -867,7 +887,7 @@ impl SorahkGui {
                             .strong()
                             .color(th.hint),
                     );
-                    ui.label(th.hint_text("新手请先「一键校对手柄按键」; 老手可直接点图上的键"));
+                    ui.label(th.hint_text("新手请先「快速校对手柄按键」; 老手可直接点图上的键"));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         /* 空状态已有一个大按钮; 非空状态才在状态条上补一个 */
                         if self.gp_flow != GpFlow::Idle
@@ -880,7 +900,7 @@ impl SorahkGui {
                         }
                         if !matches!(self.gp_flow, GpFlow::Calibrate { .. })
                             && ui
-                                .add(th.primary_button("一键校对手柄按键"))
+                                .add(th.primary_button("快速校对手柄按键"))
                                 .on_hover_text(
                                     "新手先点这个: 按提示把手柄上全部热点校对一遍 (约 20 秒), 自动记住键位; 中途不能跳过
 完整流程: ① 一键校对一次 → ② 手柄按键快速映射设/改键位 → ③ 有遗漏按同一个手柄键重设",
@@ -1749,7 +1769,7 @@ impl SorahkGui {
         true
     }
 
-    /// ★v22.6: 开始「一键校对手柄按键」向导 (覆盖全部热点圈)。
+    /// ★v22.6: 开始「快速校对手柄按键」向导 (覆盖全部热点圈)。
     fn start_calibration(&mut self) {
         self.capture_pressed_keys.clear();
         self.gp_pad_capture.reset();
@@ -1865,7 +1885,7 @@ impl SorahkGui {
             .unwrap_or("?");
         th.panel(ui, None, |ui| {
             ui.horizontal(|ui| {
-                th.badge(ui, "一键校对手柄按键", egui::Color32::WHITE, th.accent);
+                th.badge(ui, "快速校对手柄按键", egui::Color32::WHITE, th.accent);
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(format!("{}/{}", step + 1, total))
@@ -1996,7 +2016,7 @@ impl SorahkGui {
                 ui.add_space(4.0);
                 if uncalibrated {
                     th.badge(ui, "未校对", th.warn, th.faint)
-                        .on_hover_text("请先点右上「一键校对手柄按键」把手柄键位校一遍");
+                        .on_hover_text("请先点右上「快速校对手柄按键」把手柄键位校一遍");
                 } else {
                     th.trigger_badge(ui, &trigger);
                 }
@@ -2025,7 +2045,7 @@ impl SorahkGui {
                 "修改键盘键"
             };
             let main_hint = if uncalibrated {
-                "这个键还没校对 — 请先点右上「一键校对手柄按键」"
+                "这个键还没校对 — 请先点右上「快速校对手柄按键」"
             } else {
                 "按一下键盘上要代替的键 → 再点「确认」; 想设组合键可在确认页点「＋ 再加一个键」"
             };
@@ -2338,7 +2358,7 @@ impl SorahkGui {
     fn begin_set_kb(&mut self, slot_id: usize) {
         let Some(slot) = get_slot(slot_id) else { return };
         if find_slot_mapping_index(&self.config, slot).is_none() {
-            self.set_gamepad_warn("这个键还没校对 — 请先点右上「一键校对手柄按键」");
+            self.set_gamepad_warn("这个键还没校对 — 请先点右上「快速校对手柄按键」");
             return;
         }
         self.gp_flow = self
@@ -2418,11 +2438,13 @@ impl SorahkGui {
             }
             GpCaptureKind::Target => {
                 if find_slot_mapping_index(&self.config, slot).is_none() {
-                    self.set_gamepad_warn("这个键还没校对 — 请先点「一键校对手柄按键」");
+                    self.set_gamepad_warn("这个键还没校对 — 请先点「快速校对手柄按键」");
                     self.gp_flow = self.gp_flow.transition(GpEvent::Cancel);
                     return;
                 }
-                add_slot_target(&mut self.config, slot, value.clone());
+                /* ★v24.18: **替换**而不是追加 —— 捕获结果就是这个槽位完整的目标键。
+                 * (原来是 add: 已有「X+A」时再捕获「X」因为 X 已在集合里, 看着像没生效) */
+                set_slot_targets(&mut self.config, slot, value.clone());
                 self.set_gamepad_toast(format!("已设置: {} → {}", slot.label, value));
             }
         }
@@ -2577,13 +2599,13 @@ enum EmptyAction {
     None,
     /// 「手柄按键快速映射」(读取手柄 → 按手柄键快速设映射)
     Map,
-    /// 「一键校对手柄按键」
+    /// 「快速校对手柄按键」
     Calibrate,
 }
 
 /// 未选中槽位时的引导空状态。
 /// ★v24.9 压缩: 去掉 64px 大图标与竖排大按钮 —— 两个入口**并排一行**, 让整页一屏放下。
-/// 未识别 → 「一键校对手柄按键」+「手柄按键快速映射」并排; 已识别 → 一句提示。
+/// 未识别 → 「快速校对手柄按键」+「手柄按键快速映射」并排; 已识别 → 一句提示。
 fn render_slot_empty_state(ui: &mut egui::Ui, th: &Theme, identified: bool) -> EmptyAction {
     let mut action = EmptyAction::None;
     /* ★v24.9: 不再单独成卡 (省一层内边距) —— 直接排在「快速连接」卡上方 */
@@ -2603,7 +2625,7 @@ fn render_slot_empty_state(ui: &mut egui::Ui, th: &Theme, identified: bool) -> E
                     .add_sized(
                         [w, 36.0],
                         egui::Button::new(
-                            egui::RichText::new("一键校对手柄按键")
+                            egui::RichText::new("快速校对手柄按键")
                                 .size(14.0)
                                 .strong()
                                 .color(egui::Color32::WHITE),
@@ -2967,6 +2989,34 @@ mod pad_capture_reconcile_tests {
     /// 旧数据串位自愈: 该键已被别的槽位占用时, 移到当前槽位而不是拒绝
     /// (实机症状: A 键的位组合被旧配置记在 X 槽 → 重新校对按 A 被拦下)。
     #[test]
+    /// ★v24.18: 用户报的 bug —— 手柄映射页把键位从「X+A」重设为「X」必须生效。
+    /// 根因: 确认捕获走了"追加"(add_target_key), X 已在集合里 → 集合不变。
+    #[test]
+    fn set_slot_targets_replaces_instead_of_appending() {
+        let mut cfg = AppConfig::default();
+        let s = get_slot(0).unwrap(); /* A 键 */
+        set_slot_trigger(&mut cfg, s, "GAMEPAD_045E_ABXY_A".to_string());
+        assert!(add_slot_target(&mut cfg, s, "X".to_string()));
+        assert!(add_slot_target(&mut cfg, s, "A".to_string()));
+        assert_eq!(slot_targets(&cfg, s).len(), 2, "先造出 X+A");
+
+        /* 重设为单个 X —— 必须只剩 X (旧行为: 追加后仍是 X+A, 看着"没生效") */
+        assert!(
+            set_slot_targets(&mut cfg, s, "X".to_string()),
+            "从 X+A 改成 X 应判定为发生了修改"
+        );
+        assert_eq!(slot_targets(&cfg, s), vec!["X".to_string()], "应替换而不是追加");
+
+        /* 再设成组合键 (第 2 步「＋ 再加一个键」累加后的形态) */
+        assert!(set_slot_targets(&mut cfg, s, "X+A".to_string()));
+        assert_eq!(slot_targets(&cfg, s).len(), 2);
+        /* 设成与当前完全相同的内容 → 报告"没变化" */
+        assert!(!set_slot_targets(&mut cfg, s, "X+A".to_string()));
+        /* 未校对的槽位不动 */
+        let s2 = get_slot(1).unwrap();
+        assert!(!set_slot_targets(&mut cfg, s2, "Y".to_string()));
+    }
+
     fn set_slot_trigger_moves_conflicting_key() {
         let mut cfg = AppConfig::default();
         let a = get_slot(19).unwrap();

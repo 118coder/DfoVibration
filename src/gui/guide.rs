@@ -55,6 +55,16 @@ impl SorahkGui {
                             if yes.clicked() || no.clicked() {
                                 self.config.dfo_player = yes.clicked();
                                 self.dfo_ask_answered = true;
+                                /* ★v24.18: 震动默认跟随玩家类型 —— DFO 玩家默认「开」, 仅用连发默认「关」。
+                                 * (首次运行本来就是 true, 但用户若曾关过震动、现在用「?」重跑向导选"是",
+                                 * 这里要把它打开) */
+                                if self.config.dfo_player {
+                                    self.app_state.vibration_enabled.store(
+                                        true,
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                    self.config.vibration.enabled = true;
+                                }
                                 /* ★v24.10: 选「仅用连发」→ 震动功能一并默认关闭 (用户要求),
                                  * 而不是只藏入口却让震动仍在后台驱动 */
                                 if !self.config.dfo_player {

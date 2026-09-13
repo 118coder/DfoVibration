@@ -291,7 +291,7 @@ impl SorahkGui {
         let cached_light_style = Self::create_light_style();
         let parsed_switch_key = Self::parse_switch_key(&config.switch_key);
         let minimal_mode = config.minimal_mode;
-        /* 经典模式默认开, 但显式设置的极简模式优先 (双标记同真时极简赢) */
+        /* ★v24.18: 首次运行进完整界面 (classic 默认关); 显式设置的极简模式优先 (双标记同真时极简赢) */
         let classic_mode = config.classic_mode && !config.minimal_mode;
         let minimal_vib_preset_job = config.minimal_vib_preset_job;
 

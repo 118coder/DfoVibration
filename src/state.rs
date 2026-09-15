@@ -477,7 +477,7 @@ pub enum MouseScrollDirection {
 }
 
 /// Output action type for input mapping.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutputAction {
     /// Keyboard key output with scancode
     KeyboardKey(u16),
@@ -624,6 +624,8 @@ pub struct AppState {
     show_about_requested: AtomicBool,
     /// Input timeout in milliseconds
     input_timeout: AtomicU64,
+    /// ★v24.27 组合键内相邻两键的间隔 ms (模拟手速); 0 = 整组同按
+    pub combo_key_gap_ms: AtomicU64,
     /// Active worker thread count
     worker_count: AtomicU64,
     /// Configured worker count for display
@@ -1017,6 +1019,7 @@ impl AppState {
             show_window_requested: AtomicBool::new(false),
             show_about_requested: AtomicBool::new(false),
             input_timeout: AtomicU64::new(config.input_timeout.clamp(1, 2000)),
+            combo_key_gap_ms: std::sync::atomic::AtomicU64::new(config.combo_key_gap_ms),
             worker_count: AtomicU64::new(0),
             process_whitelist: Mutex::new(config.process_whitelist.clone()),
             whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
@@ -1375,6 +1378,8 @@ impl AppState {
         // Update input timeout
         self.input_timeout
             .store(config.input_timeout.clamp(1, 2000), Ordering::Relaxed);
+        self.combo_key_gap_ms
+            .store(config.combo_key_gap_ms, Ordering::Relaxed);
 
         // Update capture modes (防中毒锁: 锁被 panic 弄脏时继续运行)
         *util::write_guard(&self.rawinput_capture_mode) =
@@ -2254,21 +2259,42 @@ impl AppState {
                     }
                 }
                 OutputAction::MultipleActions(actions) => {
-                    // Collect press events for batch processing
-                    let mut press_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
-                    self.collect_press_inputs(&actions, &mut press_inputs);
-                    if !press_inputs.is_empty() {
-                        SendInput(&press_inputs, std::mem::size_of::<INPUT>() as i32);
-                    }
+                    /* ★v24.27 模拟手速: combo_key_gap_ms > 0 时**逐键顺序执行** ——
+                     * 每键 按下 → 保持 duration → 弹起 → 间隔 gap; ↓→→Z / ↓+Z+Z 这类
+                     * 序列指令靠它 (重复键 = 先后两次实按)。
+                     * gap = 0 → 旧版整组同按 (一次 KEYDOWN 批量 + 保持 + 弹起批量)。 */
+                    let gap = self.combo_key_gap_ms.load(Ordering::Relaxed);
+                    if gap > 0 {
+                        for a in actions.iter() {
+                            let one = SmallVec::from_vec(vec![a.clone()]);
+                            let mut press_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
+                            self.collect_press_inputs(&one, &mut press_inputs);
+                            if !press_inputs.is_empty() {
+                                SendInput(&press_inputs, std::mem::size_of::<INPUT>() as i32);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(duration));
+                            let mut release_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
+                            self.collect_release_inputs(&one, &mut release_inputs);
+                            if !release_inputs.is_empty() {
+                                SendInput(&release_inputs, std::mem::size_of::<INPUT>() as i32);
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(gap));
+                        }
+                    } else {
+                        let mut press_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
+                        self.collect_press_inputs(&actions, &mut press_inputs);
+                        if !press_inputs.is_empty() {
+                            SendInput(&press_inputs, std::mem::size_of::<INPUT>() as i32);
+                        }
 
-                    // Hold duration
-                    std::thread::sleep(std::time::Duration::from_millis(duration));
+                        // Hold duration
+                        std::thread::sleep(std::time::Duration::from_millis(duration));
 
-                    // Collect release events for batch processing
-                    let mut release_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
-                    self.collect_release_inputs(&actions, &mut release_inputs);
-                    if !release_inputs.is_empty() {
-                        SendInput(&release_inputs, std::mem::size_of::<INPUT>() as i32);
+                        let mut release_inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
+                        self.collect_release_inputs(&actions, &mut release_inputs);
+                        if !release_inputs.is_empty() {
+                            SendInput(&release_inputs, std::mem::size_of::<INPUT>() as i32);
+                        }
                     }
                 }
             }
@@ -2385,6 +2411,8 @@ impl AppState {
                     }
                 }
                 OutputAction::MultipleActions(actions) => {
+                    // ★v24.26 按住模式不拆组: 重复键的第二次 KEYDOWN/KEYUP 被
+                    // 系统忽略 (无害), 按住 ↓+Z+Z = 按住 ↓+Z, 符合"按住期间"语义。
                     // Collect and send all press events in a single call
                     let mut inputs: SmallVec<[INPUT; 8]> = SmallVec::new();
                     self.collect_press_inputs(actions, &mut inputs);

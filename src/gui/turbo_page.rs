@@ -1420,6 +1420,29 @@ impl SorahkGui {
                     }
                     ui.end_row();
 
+                    /* ★v24.27 组合键每键间隔 (模拟手速) */
+                    let mut v = self.config.combo_key_gap_ms as f64;
+                    ui.label(th.weak("组合键每键间隔"));
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut v)
+                                .range(0.0..=1000.0)
+                                .speed(1.0)
+                                .suffix(" ms"),
+                        )
+                        .on_hover_text(
+                            "组合键内相邻两键的间隔 (模拟人类手速): ↓→→Z 这类顺序指令靠它逐键发出。\n                             40ms 左右 = 接近人手速; 0 = 关闭 (整组同按, 旧行为)。修改立即生效",
+                        )
+                        .changed()
+                    {
+                        self.config.combo_key_gap_ms = (v.round().max(0.0) as u64).min(1000);
+                        self.app_state
+                            .combo_key_gap_ms
+                            .store(self.config.combo_key_gap_ms, std::sync::atomic::Ordering::Relaxed);
+                        dirty = true;
+                    }
+                    ui.end_row();
+
                     ui.label(th.weak(&lbl_tray));
                     let mut flag = self.config.show_tray_icon;
                     if ui

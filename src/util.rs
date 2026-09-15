@@ -363,21 +363,22 @@ fn combo_part_rank(part: &str) -> (u8, u32, String) {
 
 /// 去重 (忽略大小写) + 规范排序。
 pub fn normalize_combo_parts(parts: &[String]) -> Vec<String> {
+    // ★v24.26 允许重复 (用户需求: ↓+Z+Z = 依次按 ↓+Z、再按 Z 的序列):
+    // 大小写规范化成大写 (UP+up = 同一个键按两次, 保留两次), 稳定排序保持重复键的先后。
+    // (v21.7d 的去重是追加语义时代的兜底; v24.18 换替换语义后, 重复不再有歧义。)
     let mut seen: Vec<String> = Vec::new();
     for p in parts {
-        let p = p.trim();
-        if p.is_empty() {
-            continue;
-        }
-        if !seen.iter().any(|e| e.eq_ignore_ascii_case(p)) {
-            seen.push(p.to_string());
+        let p = p.trim().to_uppercase();
+        if !p.is_empty() {
+            seen.push(p);
         }
     }
     seen.sort_by_key(|p| combo_part_rank(p));
     seen
 }
 
-/// 组合键字符串 → 去重 + 规范排序后的组合键字符串 (用户要求的"严格顺序+不重复")。
+/// 组合键字符串 → 大小写规范化 + 稳定排序后的组合键字符串
+/// (★v24.26 重复键保留; 不同键仍按规范序排列 —— v21.7d 的顺序要求保留)。
 pub fn normalize_key_combo(combo: &str) -> String {
     compact_key_combo(&normalize_combo_parts(&key_combo_parts(combo)))
 }
@@ -438,10 +439,11 @@ mod tests {
     /* ── ★v21.7d 组合键规范化 (用户实测要求) ── */
 
     #[test]
-    fn combo_dedupes_identical_keys() {
-        // 上+上+空格 → 上+空格 (重复的上被丢弃)
-        assert_eq!(normalize_key_combo("UP+UP+SPACE"), "UP+SPACE");
-        assert_eq!(normalize_key_combo("UP+up+SPACE"), "UP+SPACE");
+    fn combo_keeps_duplicate_keys_as_sequence() {
+        // ★v24.26 (用户需求, 覆盖 v21.7d 的"不重复"): UP+UP = 先后两次实按;
+        // 大小写规范化 (UP+up 是同一个键按两次), 顺序保持
+        assert_eq!(normalize_key_combo("UP+UP+SPACE"), "UP+UP+SPACE");
+        assert_eq!(normalize_key_combo("UP+up+SPACE"), "UP+UP+SPACE");
     }
 
     #[test]

@@ -1422,6 +1422,10 @@ pub struct AppConfig {    /// Display tray icon
     /// Default key press duration in milliseconds
     #[serde(default = "default_event_duration")]
     pub event_duration: u64,
+    /// ★v24.27 组合键内相邻两键的间隔 ms (模拟人类手速, 逐键顺序执行);
+    /// 0 = 关闭 (整组同按, 旧行为)
+    #[serde(default = "default_combo_key_gap_ms")]
+    pub combo_key_gap_ms: u64,
     /// Worker thread count (0 for auto-detection)
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
@@ -1593,8 +1597,10 @@ impl KeyMapping {
     }
 
     /// Adds a target key
-    /// ★v21.7d: 先按 `+` 拆成独立按键 (同时按住的组合会一次给出), 忽略大小写去重, 再按规范
-    /// 顺序重排 —— 满足用户要求"相同按键不得重复 / 顺序严格规范" (下+上+空格 → 上+下+空格)。
+    /// ★v21.7d: 先按 `+` 拆成独立按键, 再按规范顺序重排 (下+上+空格 → 上+下+空格)。
+    /// ★v24.26: 重复键**保留** (用户需求 ↓+Z+Z = 序列依次按); 大小写规范化成大写
+    /// (UP+up = 同一个键按两次)。追加语义仅「鼠标映射…」菜单用; 键盘捕获走
+    /// `set_slot_targets` 整份替换 (v24.18)。
     pub fn add_target_key(&mut self, key: String) {
         if key.trim().is_empty() {
             return;
@@ -1632,6 +1638,9 @@ fn default_interval() -> u64 {
 }
 fn default_event_duration() -> u64 {
     5
+}
+fn default_combo_key_gap_ms() -> u64 {
+    40
 }
 fn default_worker_count() -> usize {
     0 // 0 means auto-detect based on CPU cores
@@ -1690,6 +1699,7 @@ impl Default for AppConfig {
             minimal_vib_preset_job: false,
             dfo_player: default_dfo_player(),
             vib_legacy_client: false,
+            combo_key_gap_ms: 40,
             vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {
@@ -3017,9 +3027,12 @@ mod tests {
         assert_eq!(mapping.target_keys.len(), 2);
         assert_eq!(mapping.target_keys[1], "C");
 
-        // Adding duplicate should not increase count
+        // ★v24.26 重复键保留 (序列语义): 再加 B = 第二次按 B;
+        // 稳定排序把它排在原有 B 旁边 (B,B,C)
         mapping.add_target_key("B".to_string());
-        assert_eq!(mapping.target_keys.len(), 2);
+        assert_eq!(mapping.target_keys.len(), 3);
+        assert_eq!(mapping.target_keys[1], "B");
+        assert_eq!(mapping.target_keys[2], "C");
     }
 
     #[test]

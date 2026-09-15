@@ -556,7 +556,7 @@ pub fn set_slot_trigger_moving(
     moved_from
 }
 
-/// 向槽位添加一个目标键 (不重复)。返回是否发生修改。
+/// 向槽位添加一个目标键 (★v24.26 重复键保留; 大小写规范化)。返回是否发生修改。
 /// ★v24.0: 映射必须已由校对创建; 不存在则不改动 (调用方负责提示先校对)。
 /// ⚠ 这是**追加**语义 —— 仅「鼠标映射…」菜单用它 (UI 文案就是"选一个即加入")。
 /// 键盘捕获必须用 `set_slot_targets` (替换), 否则"X+A 改成 X"不会生效。
@@ -3035,6 +3035,36 @@ mod pad_capture_reconcile_tests {
         /* 未校对的槽位不动 */
         let s2 = get_slot(1).unwrap();
         assert!(!set_slot_targets(&mut cfg, s2, "Y".to_string()));
+    }
+
+    /// ★v24.26: 用户需求 —— 目标键允许重复: 「↓+Z」之后再补一个 Z → 「↓+Z+Z」
+    /// (序列语义: 连发时依次按 ↓+Z、再按 Z)。当初的去重 (v21.7d) 是为追加语义时代的
+    /// "看不出来生效"兜底; v24.18 换成替换语义后, 重复不再有歧义, 按用户要求放开。
+    #[test]
+    fn set_slot_targets_allows_duplicate_keys() {
+        let mut cfg = AppConfig::default();
+        let s = get_slot(0).unwrap(); /* A 键 */
+        set_slot_trigger(&mut cfg, s, "GAMEPAD_045E_ABXY_A".to_string());
+        assert!(set_slot_targets(&mut cfg, s, "DOWN+Z".to_string()));
+        /* ↓+Z 已存在时再设 ↓+Z+Z —— 当前被去重 → 判定"没变化"拒绝 (本测试要修的红) */
+        assert!(
+            set_slot_targets(&mut cfg, s, "DOWN+Z+Z".to_string()),
+            "↓+Z+Z 应可设置 (重复键保留)"
+        );
+        assert_eq!(
+            slot_targets(&cfg, s),
+            vec!["DOWN".to_string(), "Z".to_string(), "Z".to_string()],
+            "重复键应保留 (序列语义)"
+        );
+        /* 大小写不同的同名键 → 规范成大写后与当前完全相同 → 报告"没变化" (内容仍 ↓+Z+Z) */
+        assert!(!set_slot_targets(&mut cfg, s, "DOWN+z+z".to_string()));
+        assert_eq!(
+            slot_targets(&cfg, s),
+            vec!["DOWN".to_string(), "Z".to_string(), "Z".to_string()]
+        );
+        /* 旧修复不回退: X+A 改 X 依然生效 (v24.18) */
+        assert!(set_slot_targets(&mut cfg, s, "X".to_string()));
+        assert_eq!(slot_targets(&cfg, s), vec!["X".to_string()]);
     }
 
     fn set_slot_trigger_moves_conflicting_key() {

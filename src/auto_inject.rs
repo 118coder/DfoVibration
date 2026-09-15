@@ -27,6 +27,8 @@
 //!   注入成功记录 PID; 客户端重启自动重注入; 失败静默重试 (1500ms)。
 //!   测试开关: 环境变量 SORAHK_NO_AUTO_INJECT=1 时本线程空转。
 //!   日志: 同步写 SorahkDFO_vib.log (eprintln 在无控制台 GUI 里全部丢失)。
+//!   ★v24.28 中文路径: 远程加载用 LoadLibraryW + UTF-16 路径 (A 版按系统码页解码
+//!   UTF-8 字节会得到乱码), 并校验远程线程退出码, 加载失败不再"假成功"。
 
 
 #![allow(unsafe_op_in_unsafe_fn)]
@@ -503,12 +505,18 @@ pub unsafe fn inject_process(pid: u32, dll_path: &str) -> Result<(), String> {
         base
     };
 
-    // 3. 解析目标 kernel32 导出表 -> LoadLibraryA 的 32 位地址
-    let load_library_a = parse_export_addr(h_target, k32_base, "LoadLibraryA")?;
+    // 3. 解析目标 kernel32 导出表 -> LoadLibraryW 的 32 位地址
+    //    ★v24.28 必须用 W 版: 路径含中文时, LoadLibraryA 按系统 ANSI 码页 (GBK) 解码,
+    //    而我们写进去的是 Rust 的 UTF-8 字节 → 解码成乱码 → 加载静默失败 (震动接收失效)。
+    let load_library_w = parse_export_addr(h_target, k32_base, "LoadLibraryW")?;
 
-    // 4. 写 DLL 路径到目标进程
-    let mut path_bytes: Vec<u8> = dll_path.as_bytes().to_vec();
-    path_bytes.push(0); // ANSI NUL
+    // 4. 写 DLL 路径到目标进程 (UTF-16LE + 双 NUL, 与 LoadLibraryW 匹配)
+    let mut path_u16: Vec<u16> = dll_path.encode_utf16().collect();
+    path_u16.push(0); // 宽字符 NUL
+    let mut path_bytes: Vec<u8> = Vec::with_capacity(path_u16.len() * 2);
+    for w in &path_u16 {
+        path_bytes.extend_from_slice(&w.to_le_bytes());
+    }
     let remote = VirtualAllocEx(
         h_target,
         None,
@@ -536,7 +544,7 @@ pub unsafe fn inject_process(pid: u32, dll_path: &str) -> Result<(), String> {
     // 5. 远程线程: 入口 = 目标进程内 32 位 LoadLibraryA
     //    LPTHREAD_START_ROUTINE = Option<unsafe extern "system" fn(*mut c_void) -> u32>
     let start_routine: unsafe extern "system" fn(*mut core::ffi::c_void) -> u32 =
-        std::mem::transmute(load_library_a as usize);
+        std::mem::transmute(load_library_w as usize);
     let tid = windows::Win32::System::Threading::CreateRemoteThread(
         h_target,
         None,
@@ -553,11 +561,21 @@ pub unsafe fn inject_process(pid: u32, dll_path: &str) -> Result<(), String> {
                 h_thread,
                 10000,
             );
+            // ★v24.28 远程线程退出码 = LoadLibraryW 返回值 (HMODULE; 0 = 加载失败)。
+            // 旧版不查退出码, 路径编码错位时"假成功" —— 注入日志写着成功, 震动却死了。
+            let mut exit_code: u32 = 0;
+            let _ = windows::Win32::System::Threading::GetExitCodeThread(
+                h_thread, &mut exit_code,
+            );
             let _ = CloseHandle(h_thread);
-            // 清理远端缓冲(LoadLibraryA 已复制路径到内核)
+            // 清理远端缓冲(LoadLibraryW 已复制路径到内核)
             let _ = VirtualFreeEx(h_target, remote, 0, MEM_RELEASE);
             let _ = CloseHandle(h_target);
-            Ok(())
+            if exit_code == 0 {
+                Err("远程 LoadLibraryW 返回 0 —— DLL 加载失败 (路径无效或依赖缺失)".into())
+            } else {
+                Ok(())
+            }
         }
         Err(e) => {
             let _ = VirtualFreeEx(h_target, remote, 0, MEM_RELEASE);

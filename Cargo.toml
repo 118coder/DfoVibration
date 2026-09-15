@@ -34,6 +34,9 @@ windows = { version = "0.62.2", features = [
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
     "Win32_Devices_HumanInterfaceDevice",
+    # "Win32_Devices_DeviceAndDriverInstallation",  # ★v24.19b HidHide 下线, 专用 feature 一并注释
+    # "Win32_Storage_FileSystem",  # ★v24.19b HidHide 下线, 专用 feature 一并注释
+    # "Win32_System_IO",  # ★v24.19b HidHide 下线, 专用 feature 一并注释
     "Data_Xml_Dom",
     "UI_Notifications",
 ] }

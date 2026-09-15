@@ -134,16 +134,19 @@ impl SorahkGui {
                         ui.label(th.hint_text(
                             "选「S4 之后的新版本」: 使用现行震动方案 —— 清脆、无持续干扰,\n为本版本客户端的事件流校调 (推荐/默认)。",
                         ));
+                        /* ★v24.20 用户指定新增: 两个都能用, 只是算法口味不同 */
+                        ui.add_space(theme::SP_XS);
+                        ui.label(th.hint_text("选哪个版本都可以，算法不同，都是通用的。"));
                         ui.add_space(theme::SP_M);
                         ui.vertical_centered(|ui| {
                             let s1 = ui.add_sized(
                                 [260.0, 34.0],
-                                th.primary_button("🕹️ S1 ACT 老版本 (2008 客户端)"),
+                                th.primary_button("🕹️ S1 ACT 老版本 (2008 客户端 · 推荐)"),
                             );
                             ui.add_space(theme::SP_XS);
                             let s4 = ui.add_sized(
                                 [260.0, 34.0],
-                                th.secondary_button("🆕 S4 之后的新版本 (推荐)"),
+                                th.secondary_button("🆕 S4 之后的新版本"),
                             );
                             if s1.clicked() || s4.clicked() {
                                 let from = self.config.vib_legacy_client;

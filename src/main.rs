@@ -4,6 +4,8 @@
 mod config;
 mod gui;
 mod hid_layout;
+/* ★v24.19b 手柄隐藏暂时下线 —— 与 lib.rs 同步。 */
+// mod hidhide;
 mod i18n;
 mod input_manager;
 mod input_ownership;

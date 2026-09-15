@@ -7,7 +7,60 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.18** · **707 测试通过 (0 失败)** · **v24.11~v24.18 已全部上交** (2026-09-13: E 盘主线 `f8bf684`(v24.11~17) + `bb17d3e`(v24.18) → 经 D 盘 clone 推送, 远端 main = `bb94fdd`, 两侧工作树干净)。
+**当前状态**: 基线 = **v24.25 (收官排查: 日志节流 + 沙箱全链路 10/10)** · **707 测试通过 (0 失败)** · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`); **v24.19/a/b、v24.20/a 未 commit (等口令)**。
+
+> **⚡ v24.20a 补丁 (2026-09-15)**: 用户决策**不默认管理员运行** —— 交付 exe 撤销
+> highestAvailable manifest (`SORAHK_MANIFEST=1` 门槛保留, 默认不开); 90CN 场景改
+> **使用说明引导右键管理员** (【特别注意：90CN 客户端】块); auto_inject 访问被拒时
+> 提示右键管理员。exe md5 `582ae214b96e33af8625da69730fd988`。
+
+> **🎮 v24.20 多客户端震动适配 + 实时切换 (2026-09-15, 707 全绿)**:
+> ① `auto_inject.rs` 重写为**客户端形态表** `CLIENTS`: 老一代 (ACT1/4/5/40JP → OLD.dll,
+> 扫 DNF.exe/DNFACT4·5/DNF ACT4·5/ARAD.exe) + 新一代 (90CN → DfoVibration.dll, DNF.exe);
+> 路线门控 (只注同代 DLL) + us_extend_dll 自挂载守卫 (90US 不注入) + PID 集合按在场裁剪 +
+> `SORAHK_NO_AUTO_INJECT=1` 测试开关。**免管理员方案 v24.20a 改道**: manifest 已撤销 exe 默认普通权限,
+> 90CN 靠使用说明引导右键管理员 (v24.20 曾试 highestAvailable 静默提权, 实测可行但用户不要默认提权) —— 原设计: manifest 仅 `SORAHK_MANIFEST=1`
+> (sync_and_build.sh 交付构建) 时经 `resources/sorahk_manifest.rc` 嵌入; **普通 cargo
+> 构建/测试不带 manifest** (否则测试可执行文件提权才能启动, os error 740 断开发循环)。
+> 40JP/90CN 的外部 Loader 全部可退役。② 切换实时生效: `vibration.rs` 线程内 `legacy`
+> 曾只读一次 → 每轮刷新。③④ 问号界面推荐标记移到 S1 + 新增"选哪个版本都可以"句。
+> ⚠ 教训: ShellExecute 启动无法带自定义环境块 —— 对运行中真机客户端做验证必须用
+> 无 manifest 开发构建 + Popen(可带 kill-switch env), 否则会真实注入 (本版冒烟时踩过)。
+
+> **⏸ v24.19b 手柄隐藏暂时下线 (2026-09-14, 707 测试全绿)** — 用户决策: "相关功能和代码
+> **全部注释掉, 避免影响主功能**, 未来有空再启用。" **非开关方案**: `src/hidhide.rs` 整文件
+> 包 `/* */` (banner 写明 5 处重启接线), lib/main 的 `mod` 行、config 三字段、gui 三处
+> 接线、Cargo 三个专用 feature 全部注释 —— 功能彻底退出编译。旧配置的 `hidhide_*` 残留
+> 字段 serde 直接忽略 (无迁移); 用户侧无需操作 (实测其配置 hidhide_enabled=false、无
+> 快照、驱动状态 S0)。下线版真机验证 4/4 (`work/_e2e_hidhide_off.py`: 旧配置启动正常/
+> 全程驱动 S0/进程稳定)。**重启 = 按 hidhide.rs 文件头 banner 的 5 步取消注释**,
+> 内容冻结的是 v24.19a 真机 9/9 全 PASS 的实现。
+
+> **🎮 v24.19a 手柄隐藏真机适配补丁 (2026-09-14, 已整体注释冻结)** — 用户装好驱动后"检测不到"+
+> 真机 e2e 7/9 的四条根因全修 (详见 CHANGELOG v24.19a / 本档条目 73):
+> ① 官方发布版驱动 **1.4.181 无 2056/2057 会话黑名单** (master 才有, 实测 87) → `session_supported()`
+> 探测分流, 不支持则**降级持久黑名单 2051** (原黑名单∪手柄实例合并写, 快照恢复兜底, 语义等价);
+> ② 驱动按 **NT 映像路径**匹配 (`\Device\...`), 初版学的 WIN32 `C:\...` 永不匹配 →
+> `PROCESS_NAME_NATIVE` + `is_native_image_path()` 旧条目清除重学;
+> ③ 陈旧"未检测到驱动"报错随驱动到位自动清除 + **自动补开** (意图开而运行态未起, 驱动到位即补开);
+> ④ 交付目录旧 exe 重刷。另: 启动路径自动开启后**立即落盘**快照/学习表 (防断电丢自愈依据)。
+> ⚠ 手柄须在 **XInput 模式** (北通 X/D 切换: DInput 模式 = VID_20DD 用法页 255, 谁都看不到)。
+> **真机 e2e 已 9/9 全 PASS** (真驱动 1.4.181 + 真手柄: 白名单内 1167 看不到 / 白名单外 0
+> 正常 / taskkill 崩溃后重启自愈恢复驱动原状 / 配置快照清除), 剧本 `work/_e2e_hidhide.py`,
+> 基线探针不过会提示切模式后提前退出。
+
+> **🎮 v24.19 手柄隐藏 (HidHide 整合) (2026-09-14, 新增 `src/hidhide.rs`)**:
+> 解决"游戏检测到手柄 → 强制原生手柄模式 → 映射失效"。方案 = HidHide 过滤驱动 + **反向白名单**:
+> IOCTL 2055 置 inverse + 2049 白名单=游戏进程**完整路径** → 只有白名单游戏看不到手柄;
+> 本软件自身 (RawInput 映射 + XInput 震动都在宿主进程) 与其他程序完全不受影响。
+> 设备条目走 **IOCTL 2056 会话黑名单** (MULTI_SZ 实例路径, 属主=本进程 PID, 仅内核内存,
+> 退出/崩溃驱动自动清)。待隐藏实例 = RawInput 手柄 VID/PID → SetupAPI 全树扫描
+> (盖住 HIDClass + Xbox 的 XnaComposite/XboxComposite 三类栈)。
+> inverse/白名单/active 是驱动注册表全局位: 开启前快照存 `Config.toml.hidhide_snapshot`,
+> 关闭/退出写回; 崩溃遗留由下次启动 `startup_recovery` 自愈。
+> ⚠ 游戏已在运行时要**重启游戏**才生效 (拦的是设备打开, 已开的句柄不受影响);
+> ⚠ 白名单匹配按**完整路径** (忽略大小写), 而列表存进程名 → 游戏运行时自动学习
+> (`config.hidhide_learned_paths`), 学不到就无法开启 (UI 会列出未定位项)。
 
 > **🐞 v24.18 修「X+A 改 X 不生效」+ 五处体验调整 (2026-09-13, 707 测试全绿)**:
 > ① **键位编辑改为替换语义**: 原来确认捕获走追加版 `add_slot_target`(去重合并) → 已有 {X,A} 时再
@@ -2989,3 +3042,228 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     - 707 测试通过 / 0 失败 (703 + 2 条新增)。exe md5 **ebc7c149ca11ad33ba5bf46224f819e9**
       (9,287,168 字节)。
     - **未 commit / 未 push** (等口令)。
+
+73. **★v24.19 手柄隐藏 (HidHide 驱动整合) (2026-09-14, 723 测试全绿, 新增 `src/hidhide.rs`)**:
+
+    **A. 用户规格 (2026-09-14, 逐条落实)**
+    - 目标: 整合手柄隐藏能力, 解决游戏检测到物理手柄后强制进原生手柄模式、映射失效
+      (提高进程优先级无效 —— 只影响 CPU 调度, 不影响设备检测顺序)。
+    - 方案: HidHide 过滤驱动做**设备层**隐藏。作用域: 仅白名单游戏生效。生命周期:
+      **会话黑名单 IOCTL 2056**, 条目仅存内核内存, 软件退出自动清除, 不写注册表。
+      整合接口: 本软件是 Rust, 走 `\\.\HidHide` 直发 IOCTL 路线 (功能号 2048-2056;
+      .NET 的 NuGet 路线不适用)。约束: 不改系统/游戏文件、不全局劫持、关软件即恢复
+      (不卸载不重启)、玩家可自由开关 —— 全部满足。
+
+    **B. 驱动侧事实核对 (源码级, 走代理浅克隆 nefarius/HidHide 逐文件读)**
+    - 契约: `Shared/HidHideIoctlContract.h` — 设备类型 **32769**, 2048-2057 全部
+      METHOD_BUFFERED / FILE_READ_DATA。2056=`ADD_SESSION_BLACKLIST`(输入 MULTI_SZ
+      设备实例路径, 记录调用方 PID 为属主), 2057=`CLR_SESSION_BLACKLIST`(清本进程条目,
+      无缓冲)。进程退出回调 `SessionBlacklistCleanupForPid` 自动清条目 (Logic.c:105)。
+    - 裁决链 (Logic.c `OnDeviceFileCreate`): pid≠4 && active && 设备在黑名单(含会话) &&
+      **不在白名单** → ACCESS_DENIED。所以: ① 驱动 Active 位必须开; ② 白名单进程永远可见。
+    - 挂载: `Setup/install.cmd` 用 devcon 把 HidHide 注册为 **HIDClass + XnaComposite +
+      XboxComposite** 三类上层过滤 → Xbox 手柄的 XInput 栈也在过滤范围。
+    - 白名单匹配: **完整映像路径**, 忽略大小写 (Config.c `RtlCompareUnicodeString TRUE`) →
+      我们配置里存的进程名 (dnf.exe) 不能直接用, 必须解析成全路径。
+    - 控制设备 SDDL = `...WORLD_RWX` → **普通权限即可**, 宿主无需管理员。
+    - **本机未安装 HidHide** (服务/目录/注册表全无) → 功能做了"未装即引导"降级,
+      用户验收前需自行安装。
+
+    **C. 方案选型: 反向白名单 (inverse) 而非"自家加白 + 全局隐藏"**
+    - 关键架构事实: **震动从宿主进程发** (`vibration.rs::send_vibration` 扫 XInput 槽 0..4),
+      映射输入也在宿主 (RawInput) → 若走"全局隐藏 + 把宿主加进白名单", 游戏之外的一切
+      (Steam/其他软件) 也会在开隐藏期间看不到手柄, 违反"仅白名单游戏生效"。
+    - inverse 模式 (2055=true + 白名单=游戏全路径): **只有列表内进程被拒**, 其余全部
+      原样 —— 宿主的 RawInput/XInput 一根汗毛都不动, 作用域由驱动按进程强制执行,
+      无需前台轮询。代价: inverse/白名单是驱动全局位, 会被我们临时改写 → 用快照恢复兜底;
+      与其他同时操控 HidHide 的软件 (如 DS4Windows) 会互抢, 关软件即还原 (UI 有说明)。
+    - 设备条目: RawInput 枚举手柄 (UsagePage 1 / usage 4·5) 取 VID/PID →
+      `sweep_instances_by_vid_pid` 用 SetupAPI `DIGCF_PRESENT|DIGCF_ALLCLASSES` 全树
+      扫 `VID_xxxx&PID_xxxx` → HID 兄弟设备 + USB/XnaComposite 栈一并入会话黑名单。
+
+    **D. 生命周期 (enable / disable / 崩溃自愈)**
+    - enable 顺序: 快照(active/inverse/whitelist)→`hidhide_snapshot` 落盘 →
+      set_inverse(true) → set_whitelist(游戏全路径) → add_session_blacklist(实例) →
+      (若原本 inactive) set_active(true)。中途失败尽力回滚快照再报错。
+      顺序保证任何时刻不出现"条目已生效而作用域未就位"。
+    - disable / `on_exit`: clear_session_blacklist(2057) → 按快照写回白名单/inverse/active
+      → 清快照。关软件 = 手柄立即对所有人恢复可见。
+    - 崩溃: 条目驱动自动清; 全局位遗留是**惰性**的 (无黑名单设备时无任何效果), 下次启动
+      `startup_recovery` 读残留快照写回并清掉。
+    - 手柄热插拔: 白名单页每帧节流扫描 (10s), 实例集合变化时 2057+2056 重写。
+
+    **E. 配置与界面**
+    - 新增 `AppConfig` 字段: `hidhide_enabled`(意图) / `hidhide_snapshot`(Option, 崩溃自愈) /
+      `hidhide_learned_paths`(进程名→完整路径学习表, 游戏运行时自动学)。
+    - 白名单页新增卡 3「手柄隐藏 (HidHide)」(**单一入口**, 不在设置弹窗重复):
+      开关药丸 + 驱动在场红点提示 + 未定位进程名清单 + 生效中统计 + 原理说明。
+    - 前置校验: 白名单空 / 驱动未装 / 游戏全路径未定位 / 手柄未连接 → 拒开并给出引导文案。
+
+    **F. 测试与验证**
+    - 新增 8 条单测: IOCTL 黄金值逐码对账 / MULTI_SZ 双 NUL 编解码 (空列表=[0,0]) /
+      VID-PID 匹配串 / 快照 TOML 往返 / 无驱动时 toggle 行为 / 默认值。
+    - 723 通过 / 0 失败 (lib+bin 双目标; 8 条新测试计入两次)。
+    - 离屏截图 (临时把启动页切到白名单页, 拍完还原): 像素结构验证卡 3 渲染
+      (底部内容带 y=909/950 + 1123 个文字边缘像素); 本会话模型无图像输入, 视觉复核交给用户实测。
+    - cargo features 追加: `Win32_Devices_DeviceAndDriverInstallation` /
+      `Win32_Storage_FileSystem` / `Win32_System_IO`; lib.rs **和** main.rs 都要注册模块
+      (bin 目标的 `crate::` 与 lib 是两个 crate root —— 漏一边编不过)。
+
+    **G. 交付**
+    - exe md5 **62f7f16b98f68c7bdf9cbf8cea3fbac0** (9,337,856 字节), 已覆盖
+      `E:\网页小工具\DfoVibration V3版本\SorahkDFO-新UI版.exe`。
+    - **未 commit / 未 push** (等口令)。用户验收前需先装 HidHide 驱动 + 重启游戏一次。
+
+    **H. ★v24.19a 真机适配 (2026-09-14, 用户装好驱动后"检测不到" + e2e 7/9 → 全修)**
+    - **① 发布版驱动无会话黑名单**: 用户装的 HidHide 1.4.181 (github Releases) 实测 2056/2057
+      返回 **87** —— 会话黑名单是驱动 master 分支功能, 未发布。→ `session_supported()`
+      (零缓冲 2057 试探) 分流: 支持=2056 会话路线; 不支持=**降级持久黑名单 2051**
+      (`set_blacklist(merge_blacklist(快照原黑名单, 手柄实例))`, 忽略大小写并集)。
+      语义等价 (配合 inverse 白名单依旧只屏蔽列表内游戏), 区别仅是条目落在驱动注册表 →
+      退出/崩溃靠快照恢复兜底。**快照扩 `blacklist` 字段** (serde default, 兼容初版快照),
+      disable/on_exit/startup_recovery 连黑名单一起还原。
+    - **② 白名单必须写 NT 映像路径**: 驱动把 `PsSetLoadImageNotifyRoutine` 回调里的
+      **NT 路径** (`\Device\HarddiskVolumeX\...`) 存进白名单 BST 做比对; 初版学的是
+      `QueryFullProcessImageNameW(WIN32)` 的 `C:\...` → **永不匹配** (e2e 实测: 屏蔽进程
+      仍能看到手柄)。→ 改 `PROCESS_NAME_NATIVE`; 新增 `is_native_image_path()` (\Device\
+      前缀判据), 学习表旧格式条目在进程不运行时自动删除重学。
+    - **③ 陈旧报错 + 自动补开**: 驱动探测有 10s 节流缓存, 且 false→true 不清旧错误 →
+      用户装完驱动回页面红字仍挂着, 以为"还是检测不到" (即用户反馈的直接成因)。
+      → 扫描发现驱动到位时清掉"未检测到 HidHide"报错; 加**自动补开**: `hidhide_enabled`
+      开而 `runtime_on` 关 (装驱动前就开了开关的场景), 驱动到位后自动 enable 一次
+      (`auto_retrying` 标志防 enable→scan_now→enable 递归)。
+    - **④ 启动路径落盘**: `restore_intent` 只改内存, 崩溃时磁盘无快照则自愈失效 →
+      gui/mod.rs `new()` 里启动自动开启后**立即** save_to_file (快照或学习表脏即写);
+      自愈**消费**快照后也立即回写 (e2e 第 9 项暴露: 不回写则磁盘留陈旧快照,
+      每次启动都弹"已自动恢复"提示)。
+    - **⑤ 交付目录旧 exe**: 说明书指向的 `DfoVibration-Sorahk.exe` 还是 09-10 版 (无此功能)
+      → 本版重刷全部交付 exe。
+    - **真机 e2e** (`work/_e2e_hidhide.py`): 真驱动 1.4.181 + 北通 X360 手柄 (VID_20BC);
+      剧本=基线探针→启动自动开启→python(白名单内)看不到/powershell 看到→taskkill 崩溃
+      →残留验证→改意图重启→自愈恢复 S0→配置快照清除。**终轮 9/9 全 PASS** (覆盖用户全部
+      验收线: 白名单内检测不到 / 白名单外不受影响 / 退出即恢复 / 崩溃可自愈)。
+      脚本坑: XInput 未连接码是 **1167** (非 1161); 基线探针非 0 直接退出并提示
+      (手柄掉线或 **DInput 模式** —— 北通 X/D 切换后枚举为 VID_20DD 用法页 255,
+      XInput 与本软件全都看不到; 软件会正确报"未检测到已连接的手柄", e2e 崩溃日志实证)。
+    - 测试: 新增 4 条 → hidhide 模块 12 条 (1 条真机诊断 ignored); 全套
+      **729 通过 / 0 失败 / 6 忽略**。
+    - 交付: exe md5 **a5bf5dbfb3be8f1eeeaf18c1b4e88f53** (9,346,560 字节); 三个交付名
+      (`SorahkDFO-新UI版.exe` / `DfoVibration-Sorahk.exe` / `SorahkDFO.exe`) 全部重刷
+      (用户「副本」备份未动); 分发包 zip 重打包并校验 (369 条目)。**未 commit (等口令)**。
+
+    **I. ★v24.19b 功能暂时下线 (2026-09-14 用户决策: "代码全部注释掉, 避免影响主功能")**
+    - **非开关方案**: `src/hidhide.rs` 整文件包 `/* */` 块注释 (Rust 块注释可嵌套, 内层
+      注释无损), 文件头 banner 写明重启的 5 处接线步骤; `lib.rs`/`main.rs` 的 `mod hidhide;`、
+      `config.rs` 三字段 + Default 三条、`gui/mod.rs` 字段/启动块/初始化、
+      `whitelist_page.rs` 调用+整函数、`main_window.rs` on_exit 块、`Cargo.toml` 三个专用
+      feature (grep 确认无他用) —— **全部注释, 功能退出编译**。中途曾试过
+      `FEATURE_ENABLED` 常量开关方案, 用户澄清后已撤, 恢复了 v24.19a 原状再整体注释。
+    - 兼容: 旧配置残留 `hidhide_*` 字段/小节被 serde 忽略 (无 `deny_unknown_fields`),
+      实测正常启动; 用户侧无需操作 (其配置 hidhide_enabled=false、无快照、驱动实测 S0)。
+    - 测试: hidhide 22 条 (lib+bin 各 11) 随模块移除 → 全套 **707 通过 / 0 失败 / 4 忽略**;
+      零新增警告、源码零残留引用。下线版真机验证 `work/_e2e_hidhide_off.py` **4/4**
+      (旧配置启动存活 / 全程驱动 S0 / 关闭后仍 S0)。
+    - 交付: exe md5 **4a4be8c9bb1d39d33de4679248671237**; 交付名重刷 + zip 重打包。
+      **未 commit (等口令)**。重启功能时: 按 hidhide.rs banner 5 步取消注释 → 重建 →
+      重跑 `work/_e2e_hidhide.py` (真机 9/9 基线)。
+
+74. **★v24.20 多客户端震动适配 + S1/S4 实时切换 + 问号界面文案 (2026-09-15, 707 全绿)**:
+
+    **A. 用户规格 (逐条落实)**
+    1. 震动适配: 目标 `E:\DOF LX\DfoVibration_OLD_40JP` (客户端 ARAD.exe) 与
+       `E:\DOF LX\DfoVibration_90CN` (客户端 E:\Game\90CN\DNF.exe); 参照 ACT1/ACT4
+       实现方式; **不强制管理员**。2. 问号界面: S4 按钮「(推荐)」摘除; S1 按钮加「· 推荐」。
+       3. S4 说明句下新增「选哪个版本都可以，算法不同，都是通用的。」
+       4. S1↔S4 问号界面切换实时生效 (算法+震动反馈)。
+
+    **B. 现状盘点 (动手前的关键事实)**
+    - ACT1/ACT4/ACT5 早已实现: ACT4 客户端目录同时有 DNF.exe (宿主按名注入即覆盖);
+      ACT 系 install_*.bat 都把各版 DLL 统一改名部署成 `DfoVibration_OLD.dll`。
+    - 40JP: DLL (build_40jp.bat → DfoVibration_40JP.dll) 已完成, install 后以 OLD.dll
+      名部署; 缺的只是宿主认识 ARAD.exe (现由 DfoVibration_40JP_Loader.exe 注入)。
+    - 90CN: DLL 生产版 v6.0 已部署 (`E:\Game\90CN\DfoVibration.dll`, 协议 v2 shm
+      与 90US 完全同构); 缺的只是宿主注入 (现由嵌 requireAdministrator 的
+      DfoVibration_90CN_Loader.exe 注入 —— 正是"强制管理员"的来源)。
+    - **提权实测**: 90CN 客户端外挂 manifest=highestAvailable → 游戏进程已提权
+      (OpenProcess PROCESS_ALL_ACCESS err=5); 非提权宿主注入必败。
+    - **highestAvailable 静默性实测**: ShellExecuteEx + SEE_MASK_FLAG_NO_UI 对带
+      highestAvailable 外部 manifest 的探针 exe **成功启动** = 本机 (管理员账户,
+      ConsentPromptBehaviorAdmin=5) 静默提权无 UAC 弹窗。
+
+    **C. 实现 (全部在宿主 `SorahkDFO源码`)**
+    - `auto_inject.rs` 重写: `CLIENTS` 形态表 (进程名 × 路线 × DLL 名) —— 老一代
+      (OLD.dll): DNF.exe / DNFACT4.exe / DNF ACT4.exe / DNFACT5.exe / DNF ACT5.exe /
+      ARAD.exe; 新一代 (DfoVibration.dll): DNF.exe。路线门控只注同代;
+      客户端目录含 `us_extend_dll\DfoVibration.dll` (90US 自挂载) 绝不注入
+      (顺带修掉旧版 S4 路线把 OLD.dll 注进 DNF.exe 的双采集器隐患);
+      INJECTED_PIDS 按本轮在场裁剪 (重启重注入/失败重试); DLL 定位宿主目录→客户端目录;
+      `SORAHK_NO_AUTO_INJECT=1` 测试开关。
+    - **宿主 manifest highestAvailable** (`resources/sorahk.manifest` +
+      `sorahk_manifest.rc`): 管理员账户静默随权 → 注入通 + SendInput 对提权客户端通
+      (UIPI 隐患一并修); 标准账户不提权 = 永不强制管理员。**仅 SORAHK_MANIFEST=1
+      (sync_and_build.sh) 时嵌入** —— 普通 cargo 构建/测试不带 (否则测试可执行文件
+      os error 740 提权才能跑, 开发循环断; GNU 工具链也没有 /MANIFEST:NO)。
+    - `vibration.rs`: 线程内 `legacy` 曾线程启动读一次 (2332 行) → `let mut` +
+      每轮循环顶刷新; 切换 ≤6ms 生效 (参数槽/引擎字段本就每帧同步)。
+    - `guide.rs` + `settings_dialog.rs`: 推荐标记互换 + 新增一句 (4 处文案字节验证入包)。
+
+    **D. 教训**
+    - **ShellExecute 启动无法携带自定义环境块**: 冒烟测试用 ShellExecute 起交付构建,
+      kill-switch (SORAHK_NO_AUTO_INJECT) 没传进去 → 对运行中的 90CN 客户端真实注入了
+      一次 (生产 DLL 与用户 Loader 同路径文件, 无害但越权; 遗留一个提权宿主实例需用户手关)。
+      **规矩: 真机客户端在跑时, 验证一律用无 manifest 开发构建 + Popen (可带 env)。**
+
+    **E. ★v24.20a 修订 (2026-09-15 用户决策: 不默认管理员运行)**
+    - 交付 exe 撤销 highestAvailable manifest (回到 asInvoker; `SORAHK_MANIFEST=1`
+      门槛保留但默认不开 —— 恢复路径写进 build.rs/sync_and_build.sh 注释)。
+    - 90CN 场景 = 使用说明引导: 新增【特别注意：90CN 客户端】块
+      「如果要在90CN里面使用本软件适配震动，请务必右键管理员运行」; 其余版本无需管理员。
+    - auto_inject 注入遇访问被拒 (E_ACCESSDENIED) → 明确提示右键管理员运行。
+    - exe md5 **582ae214b96e33af8625da69730fd988**; 三交付名 + 分发包重刷校验通过。
+    - 90CN 侧联动: 90CN会话交接_20260915.md §八已补注 (v24.20a 改道版)。
+    - **未 commit (等口令)**。真机验收清单: ① 90CN: **右键管理员运行宿主** + 客户端 →
+      日志 `[auto_inject] DNF.exe pid=… injected …DfoVibration.dll (路线=S4+)` 震动通;
+      ② 40JP/ACT 系: 普通双击即可 (ARAD.exe 无 manifest 不提权); ③ 问号界面切 S1↔S4 →
+      算法立即换 (无需重启); ④ 两处按钮文案 + 新增句。
+
+
+
+75. **★v24.21 手柄编辑面板「完成修改」按钮 (2026-09-15, 709 全绿)**:
+    用户附截图反馈: 点图上的键进入单键编辑面板 (第 1 步) 后没有明确出口。新增
+    `GpEvent::FinishEdit` (任意编辑子步骤 → Idle, 与 Cancel 只回退一层语义分离,
+    单测锁定) + Selected 面板底部全宽主按钮「✓ 完成修改」(悬停提示可随时再点键进来改);
+    捕获临时状态清理提取 `gp_capture_cleanup()` (取消/完成共用)。exe md5
+    `eb5f49ac51f54f3d49eb3e3112122c9c`。未 commit (等口令)。
+
+76. **★v24.22 🐞修 v24.20 注入回归 (2026-09-15, 721 全绿, diagnosing-bugs 流程)**:
+    症状: 90CN (本机) + ACT4 (远端用户) 全部「未连接」, 管理员无效。根因: v24.20 路线门控
+    —— 只注入与所选路线同代的 DLL, 路线设错 (= 本机 S1 路线玩 90CN; ACT4 用户停在默认
+    S4) → 整条注入被跳过 (旧版无条件注入所以从未暴露)。修复: `pick_dll_to_inject` 纯函数
+    + 六场景单测 (先复刻缺陷看红 3 处, 再改**部署真值优先**: 客户端目录部署哪代注哪代,
+    路线仅定优先级; 90US 自挂载不注入; 宿主目录只兜底 OLD.dll —— 新一代文件名跨客户端
+    共用, 宿主目录同名文件不可信); 注入日志落盘 vib.log (eprintln 在无控制台 GUI 全丢,
+    本次排查无迹可寻的教训); 代次与路线不一致打【提示】。判定环纪律: 红(S-A/S-B/S-D)
+    → 绿(6/6) → 全套 721。exe md5 `647d3bf8e2c0e9c2d0efb2682c0e5681`。未 commit (等口令)。
+
+77. **★v24.23 注入智能识别 (2026-09-15, 735 全绿)**: 同名 DLL 免改名 —— 各 profile 构建
+    内嵌 target= 身份串 (实测 ACT1/ACT4/ACT5/40JP/90CN 各自命中且互不串扰), `dll_profile_tag`
+    读字节辨身份; 客户端身份 = 进程名直判 + DNF.exe 借目录 (单代在场才采信标签, 两代并存=
+    歧义交路线优先); 注入规则 = 匹配注入 / 全无标签按部署 (提示未验证) / **冲突拒绝且不退回
+    无标签候选**。13 场景单测。事故: 切片脚本误删文件中段 + sync 覆写构建副本 → 从 git 原件
+    全量重建 (work/_rebuild_auto_inject.py); 教训已录 CHANGELOG。exe md5
+    `7db9a7014225201eba84d7f4a0adb779`。未 commit (等口令)。
+
+78. **★v24.24 路线与 DLL 彻底解绑 (2026-09-15, 739 全绿)**: 用户要"S4 客户端 + S1 预设"。
+    现状确认: v24.22 起 DLL 注入跟部署走、与路线无关, 切路线即换预设/算法 (DLL 不动)。
+    本次移除最后一处路线影响: 同目录两代 DLL 并存且身份不明 → **拒绝 + 日志指引**
+    (原按路线裁决 = 版本绑定 DLL 且盲选可能注错崩游戏)。选择顺序: 身份匹配 → 目录
+    无标签 (部署真值优先) → 明确冲突拒绝 → 标签互相矛盾拒绝 → 两代**无标签**并存的
+    退化平局才按路线排序。15 场景决策单测。exe md5 `e71dd964ab88dbb38f3e6458fbea9a32`。
+    未 commit (等口令)。
+
+79. **★v24.25 收官排查 (2026-09-15, 739 全绿 + 沙箱 10/10)**: 通读重建后的 auto_inject.rs
+    + 沙箱全链路实测 (work/_sandbox_chain_test.py: 32 位替身客户端 + 真版 DLL)。修 3 处:
+    拒绝警告每实例一次 (原 ~40 行/分钟刷 vib.log)、注入失败按 (pid,错误) 去重、注释错挂。
+    实证: 90CN 标签识别→跨位注入→shm 握手→PID 去重 全链路通; ARAD+ACT4 版冲突→拒绝+
+    节流。记录在案: LoadLibraryA ANSI 路径依赖系统代码页 (预先存在, 中文系统实测可用)。
+    exe md5 `82946cd38de0573be5bc74276731bd11`。未 commit (等口令)。

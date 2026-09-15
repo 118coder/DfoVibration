@@ -2104,6 +2104,21 @@ impl SorahkGui {
                     self.gp_flow = self.gp_flow.transition(GpEvent::RequestDelete);
                 }
             });
+
+            /* ★v24.21 「完成修改」: 结束本键编辑 → 回正常界面 (右侧恢复快速校对/快速连接卡)。
+             * 悬停文案带操作路径 —— 这个页面所有出口都按"新手看得懂"标准写。 */
+            ui.add_space(12.0);
+            if ui
+                .add(th.primary_button("✓ 完成修改").min_size(egui::vec2(280.0, 36.0)))
+                .on_hover_text(
+                    "结束这个键的修改, 回到正常界面
+(随时点图上的任意键可以再进来改)",
+                )
+                .clicked()
+            {
+                self.gp_flow = self.gp_flow.transition(GpEvent::FinishEdit);
+                self.gp_capture_cleanup();
+            }
         });
     }
 
@@ -2397,6 +2412,11 @@ impl SorahkGui {
     /// 取消: **只回退一层**并关掉捕获通道 —— 保留手柄识别 (旧版"取消即退出识别"已废弃)。
     fn cancel_gp(&mut self) {
         self.gp_flow = self.gp_flow.transition(GpEvent::Cancel);
+        self.gp_capture_cleanup();
+    }
+
+    /// ★v24.21 捕获相关临时状态清理 (「取消」与「完成修改」共用)。
+    fn gp_capture_cleanup(&mut self) {
         self.capture_pressed_keys.clear();
         self.just_captured_input = false;
         self.gp_pad_capture.reset();

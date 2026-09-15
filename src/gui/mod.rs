@@ -119,6 +119,10 @@ pub struct SorahkGui {
     /// 白名单页: 添加输入草稿 + 错误提示 (会话内瞬态)
     new_whitelist_name: String,
     whitelist_error: Option<String>,
+    /* ★v24.19b 手柄隐藏暂时下线 —— 控制器字段注释 (代码见 src/hidhide.rs)。 */
+    // /// ★v24.19 手柄隐藏 (HidHide) 控制器 —— 仅 GUI 线程使用。
+    // /// 运行态/错误/已定位游戏路径都在这里; 持久化部分走 config.hidhide_*。
+    // pub hidhide: crate::hidhide::HidHideController,
     /// ★v20.3: 连发页「新增映射」置顶后滚动到编辑面板 (一次性标志)
     pub scroll_to_edit_row: bool,
     /// ★v20.3: 经典模式页当前子页签 (0=连发映射 1=通用型震动设定 2=全职业预设)
@@ -295,6 +299,24 @@ impl SorahkGui {
         let classic_mode = config.classic_mode && !config.minimal_mode;
         let minimal_vib_preset_job = config.minimal_vib_preset_job;
 
+        /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
+         * 原启动两步 (崩溃自愈 + 恢复意图) 与落盘块全部注释; 用户配置里没有遗留快照
+         * (实测驱动状态 S0、hidhide_enabled=false), 无需迁移。未来重启时还原此块。 */
+        // let hidhide_recovery = crate::hidhide::HidHideController::startup_recovery(&mut config);
+        // let mut hidhide = crate::hidhide::HidHideController::default();
+        // let mut hidhide_consumed_snapshot = false;
+        // if let Some(msg) = hidhide_recovery {
+        //     crate::util::crash_log("hidhide-recovery", &msg);
+        //     hidhide_consumed_snapshot = true;
+        // }
+        // hidhide.restore_intent(&mut config);
+        // if hidhide_consumed_snapshot
+        //     || config.hidhide_snapshot.is_some()
+        //     || hidhide.take_learned_dirty()
+        // {
+        //     let _ = config.save_to_file("Config.toml");
+        // }
+
         Self {
             app_state,
             config,
@@ -328,6 +350,7 @@ impl SorahkGui {
             modal_defer: 0,
             new_whitelist_name: String::new(),
             whitelist_error: None,
+            // hidhide,
             scroll_to_edit_row: false,
             classic_tab: 0,
             classic_mode,

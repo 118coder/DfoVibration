@@ -793,7 +793,7 @@ impl SorahkGui {
                                                         temp_config.dfo_player,
                                                         |ui| {
                                                             let routes =
-                                                                ["S4+ 新版本方案 (推荐)", "S1 ACT 老版本方案"];
+                                                                ["S4+ 新版本方案", "S1 ACT 老版本方案 (推荐)"];
                                                             let idx =
                                                                 if temp_config.vib_legacy_client {
                                                                     1

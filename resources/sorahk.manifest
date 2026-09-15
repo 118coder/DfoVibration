@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity name="DfoVibration.Sorahk" processorArchitecture="*" version="1.0.0.0" type="win32"/>
+  <description>DfoVibration-V3 Turbo &amp; Mapping Tool</description>
+  <!-- ★v24.20 highestAvailable: 与最高可提权客户端 (如 90CN 的 DNF.exe 外挂 manifest) 权限对齐 ——
+       管理员账户下宿主静默随权 (实测无 UAC 弹窗), 标准账户下不提权、绝无强制管理员;
+       否则对已提权客户端 OpenProcess(5) 注入失败 + SendInput 被 UIPI 静默丢弃 (连发/映射失效)。 -->
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <requestedExecutionLevel level="highestAvailable" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 / 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/>
+      <!-- Windows 8.1 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/>
+      <!-- Windows 8 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/>
+      <!-- Windows 7 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/>
+    </application>
+  </compatibility>
+</assembly>

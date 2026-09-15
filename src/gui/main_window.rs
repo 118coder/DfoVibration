@@ -361,6 +361,11 @@ impl eframe::App for SorahkGui {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
+         * 原"退出前恢复 HidHide 驱动原状"块注释; 用户配置无遗留快照 (驱动状态实测 S0)。 */
+        // if self.hidhide.is_on() || self.config.hidhide_snapshot.is_some() {
+        //     self.hidhide.disable(&mut self.config);
+        // }
         /* ★v24.18 用户要求"退出时的模式记忆": 极简/经典/完整在切换时本来就会落盘,
          * 这里在**真正退出**时再兜底存一次 (含窗口几何), 保证下次打开还是同一模式。
          * (点 x 只是收进托盘, 不会走到这里) */

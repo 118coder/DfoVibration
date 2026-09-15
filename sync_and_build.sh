@@ -13,4 +13,7 @@ cp "$SRC/Cargo.toml" "$DST/Cargo.toml"
 cp "$SRC/build.rs" "$DST/build.rs"
 cp -r "$SRC/tests/." "$DST/tests/" 2>/dev/null || true
 cd "$DST"
+# ★v24.20a (用户决策 2026-09-15): 宿主**不**嵌 highestAvailable manifest ——
+# 默认普通权限运行; 90CN 客户端由使用说明指引右键管理员运行。
+# 如未来要恢复静默提权: SORAHK_MANIFEST=1 cargo build (resources/sorahk_manifest.rc)。
 cargo build --release 2>&1 | tail -1

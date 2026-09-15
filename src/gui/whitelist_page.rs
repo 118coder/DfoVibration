@@ -159,5 +159,96 @@ impl SorahkGui {
         ui.label(th.hint_text(
             "修改实时保存并立即生效, 无需重启; 与「设置 → 白名单」编辑的是同一份列表。",
         ));
+
+        /* ★v24.19b: 手柄隐藏暂时下线 —— 卡片不渲染 (函数体已整体注释, 见下)。 */
+        // self.render_hidhide_card(ui, &th);
     }
+
+    /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
+     * 未来重启: 取消本函数与下方调用点的注释即可。 */
+    // /// ★v24.19 手柄隐藏 (HidHide) 卡片: 玩家开关 + 驱动/定位状态。
+    // ///
+    // /// 作用域就是上面的进程列表 —— 开启后**只有列表内的游戏**检测不到手柄
+    // /// (不进原生手柄模式, 映射/震动照常); 其他程序与本软件不受影响。
+    // fn render_hidhide_card(&mut self, ui: &mut egui::Ui, th: &Theme) {
+    // /* 页面每帧都会渲染: 节流扫描 (10 秒一次) ——
+    // * 学新路径 / 手柄热插拔后刷新驱动会话黑名单。 */
+    // self.hidhide.maybe_scan(&mut self.config);
+    // let learned_dirty = self.hidhide.take_learned_dirty();
+
+    // let on = self.hidhide.is_on();
+    // let driver_ok = self.hidhide.driver_installed();
+
+    // th.card(ui, Some("手柄隐藏 (HidHide)"), |ui| {
+    // ui.horizontal(|ui| {
+    // if ui
+    // .add(th.status_pill(
+    // if on { "隐藏 · 开启" } else { "隐藏 · 关闭" },
+    // if on { th.good } else { th.hint },
+    // if on { th.good_soft } else { th.faint },
+    // ))
+    // .clicked()
+    // {
+    // self.hidhide.toggle(&mut self.config);
+    // let _ = self.config.save_to_file("Config.toml");
+    // }
+    // ui.label(th.hint_text(if on {
+    // "列表内的游戏将检测不到手柄"
+    // } else {
+    // "点击开启: 对列表内的游戏隐藏手柄"
+    // }));
+    // });
+    // ui.add_space(theme::SP_XS);
+
+    // /* 驱动状态行 */
+    // if !driver_ok {
+    // ui.horizontal(|ui| {
+    // widgets::status_dot(ui, th.bad, true, 4.5);
+    // ui.label(th.hint_text(
+    // "未检测到 HidHide 驱动 —— 请先安装 (github.com/nefarius/HidHide)。装好后回到本页, 红点会在 10 秒内自动消失。",
+    // ));
+    // });
+    // } else if on {
+    // ui.horizontal(|ui| {
+    // widgets::status_dot(ui, th.good, true, 4.5);
+    // ui.label(th.hint_text(format!(
+    // "生效中: 已对 {} 个设备实例隐身, {} 个游戏在隐藏范围",
+    // self.hidhide.hidden_count(),
+    // self.hidhide.resolved_count(),
+    // )));
+    // });
+    // }
+
+    // /* 错误/引导行 */
+    // if let Some(err) = self.hidhide.error().map(|s| s.to_string()) {
+    // ui.label(egui::RichText::new(err).size(12.0).color(th.bad));
+    // }
+
+    // /* 未定位的进程名 */
+    // let unresolved: Vec<String> = self
+    // .hidhide
+    // .unresolved_names()
+    // .iter()
+    // .cloned()
+    // .collect::<Vec<_>>();
+    // if !unresolved.is_empty() {
+    // ui.label(th.hint_text(format!(
+    // "尚未定位完整路径: {} —— 启动一次该进程后会自动记住 (记得回来开启)",
+    // unresolved.join("、"),
+    // )));
+    // }
+
+    // ui.add_space(theme::SP_XS);
+    // ui.label(th.hint_text(
+    // "原理: HidHide 驱动在设备层对游戏隐身手柄, 游戏不再强制进入原生手柄模式。\
+    // 只影响上方列表内的进程; 退出本软件立即恢复, 不需要卸载或重启。\
+    // 若游戏已在运行, 需重启游戏才生效。",
+    // ));
+    // });
+
+    // /* 学习表有更新 → 落盘 (放在 card 外, 借来的 th 已还) */
+    // if learned_dirty {
+    // let _ = self.config.save_to_file("Config.toml");
+    // }
+    // }
 }

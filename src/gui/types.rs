@@ -144,6 +144,9 @@ pub enum GpEvent {
     ConfirmDelete,
     /// 取消: 只回退一层 (兼容 [`GpFlow::cancel`] 的语义)。
     Cancel,
+    /// ★v24.21 「完成修改」: 结束本键编辑, 从任意编辑子步骤直返
+    /// [`GpFlow::Idle`] (右侧恢复正常界面: 快速校对/快速连接卡)。
+    FinishEdit,
     /// 停止识别 / 离开页面 → 回 `Idle`。
     Reset,
     /// ★v22.4: 开始引导式一键校准 (total = 需要用户按下的键数)。
@@ -273,6 +276,8 @@ impl GpFlow {
                 _ => self.clone(),
             },
             E::Cancel => self.cancel(),
+            // ★v24.21 「完成修改」: 不管停在哪个编辑子步骤, 点完成即回正常界面
+            E::FinishEdit => GpFlow::Idle,
         }
     }
 }
@@ -466,6 +471,33 @@ mod tests {
         // 最后一步完成 → 回 Idle
         s = s.transition(GpEvent::CalibrationStepDone);
         assert_eq!(s, GpFlow::Idle);
+    }
+
+    #[test]
+    fn gp_flow_finish_edit_returns_to_idle_from_any_edit_step() {
+        // ★v24.21 「完成修改」按钮: 编辑流程的任意子步骤直返 Idle
+        assert_eq!(
+            GpFlow::Selected { slot: 3 }.transition(GpEvent::FinishEdit),
+            GpFlow::Idle
+        );
+        assert_eq!(
+            GpFlow::AwaitKb { slot: 3, keys: vec!["C".into()] }
+                .transition(GpEvent::FinishEdit),
+            GpFlow::Idle
+        );
+        assert_eq!(
+            GpFlow::AwaitPad { slot: 3 }.transition(GpEvent::FinishEdit),
+            GpFlow::Idle
+        );
+        assert_eq!(
+            GpFlow::MapDone { slot: 3 }.transition(GpEvent::FinishEdit),
+            GpFlow::Idle
+        );
+        // Cancel 语义不变: 仍只回退一层
+        assert_eq!(
+            GpFlow::Selected { slot: 3 }.transition(GpEvent::Cancel),
+            GpFlow::Selected { slot: 3 }
+        );
     }
 
     #[test]

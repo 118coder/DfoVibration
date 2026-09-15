@@ -31,7 +31,7 @@ const FONT_OTHER: u32 = 0x40;
  * "命中到了但没有震动"时, 此日志直接给出每条 FONT 事件的注入/丢弃决策与原因。 */
 static VIB_LOG_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-fn vib_log(msg: &str) {
+pub(crate) fn vib_log(msg: &str) {
     let path = VIB_LOG_PATH.get_or_init(|| {
         std::env::current_exe()
             .ok()
@@ -2328,8 +2328,10 @@ pub fn run(state: Arc<AppState>) {
              * (DLL 重启窗口每轮都判 invalid 时不再刷屏; crash.log 是 panic 日志,
              * 保持信噪比) */
             let mut ring_prev_ok = true;
-            /* ★S1 老方案: 路线开关 (评分/移动合成、计数口径、注入门控按路线分叉) */
-            let legacy = state.vib_legacy_client.load(Ordering::Relaxed);
+            /* ★S1 老方案: 路线开关 (评分/移动合成、计数口径、注入门控按路线分叉)。
+             * ★v24.20: 必须**每轮刷新** —— 曾只在线程启动读一次, 问号界面/设置里切
+             * S1↔S4 后算法 (死区分档、评分合并输出、计数口径) 一直停在旧路线, 直到重启。 */
+            let mut legacy = state.vib_legacy_client.load(Ordering::Relaxed);
             /* 输出闸门诊断: 翻转才记 [GATE] 行 (防刷屏), 见循环内注释 */
             let mut last_gate_state: Option<(bool, bool, bool)> = None;
 
@@ -2337,6 +2339,9 @@ pub fn run(state: Arc<AppState>) {
                 if state.should_exit.load(Ordering::Relaxed) {
                     break;
                 }
+
+                /* ★v24.20 路线开关每轮刷新 (见上方声明处注释) */
+                legacy = state.vib_legacy_client.load(Ordering::Relaxed);
 
                 let mut params: [u32; 60] = [0; 60];
                 for i in 0..60 {

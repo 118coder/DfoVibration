@@ -1,0 +1,3 @@
+// ★v24.20 交付构建专用 (build.rs 在 SORAHK_MANIFEST=1 时才编译本文件):
+// RT_MANIFEST(24) ID 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID → highestAvailable
+1 24 "sorahk.manifest"

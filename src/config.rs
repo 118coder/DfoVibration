@@ -1472,6 +1472,22 @@ pub struct AppConfig {    /// Display tray icon
     /// 同 `vibration`: 持久化在路线专属震动设定文件; ★v24.15 起不从 Config.toml 读。
     #[serde(skip)]
     pub vibration_presets: Vec<VibrationPreset>,
+    /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
+     * 旧配置文件里残留的 hidhide_* 字段/小节会被 serde 直接忽略, 无需迁移。 */
+    // /// ★v24.19 手柄隐藏 (HidHide) —— 玩家开关意图。
+    // /// 运行态由驱动是否在装、游戏路径能否定位决定 (见 `src/hidhide.rs`)。
+    // #[serde(default)]
+    // pub hidhide_enabled: bool,
+    // /// ★v24.19 开启隐藏前抓取的驱动全局状态快照 (active/inverse/whitelist)。
+    // /// 存在这里是为**崩溃自愈**: 正常退出会恢复并清掉; 残留即说明上次没退干净,
+    // /// 下次启动 `HidHideController::startup_recovery` 原样写回驱动。
+    // #[serde(default, skip_serializing_if = "Option::is_none")]
+    // pub hidhide_snapshot: Option<crate::hidhide::HidHideSnapshot>,
+    // /// ★v24.19 白名单进程名 → 可执行文件完整路径的学习表。
+    // /// HidHide 的进程匹配按完整路径 (忽略大小写) 判定, 而白名单存的是进程名;
+    // /// 游戏运行时自动学习一次, 之后不启动游戏也能定位。
+    // #[serde(default)]
+    // pub hidhide_learned_paths: std::collections::BTreeMap<String, String>,
 }
 
 /// HID device baseline configuration for button state detection.
@@ -1709,6 +1725,9 @@ impl Default for AppConfig {
             current_preset: String::new(),
             vibration: VibrationConfig::default(),
             vibration_presets: default_vibration_presets(),
+            // hidhide_enabled: false,
+            // hidhide_snapshot: None,
+            // hidhide_learned_paths: std::collections::BTreeMap::new(),
         }
     }
 }

@@ -1430,6 +1430,9 @@ pub struct AppConfig {    /// Display tray icon
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
     /// Process whitelist (empty means all processes)
+    /// 条目两种形态 (★结构优化: 支持同名不同版本的 exe 分别登记):
+    /// - 纯进程名 (如 `dnf.exe`): 匹配任意路径的同名进程;
+    /// - 完整路径 (如 `E:\games\A\DFO.exe`): 只匹配该路径的进程。
     #[serde(default)]
     pub process_whitelist: Vec<String>,
     /// 是否启用进程白名单过滤 (false = 全部放行, 列表保留不删)
@@ -1903,9 +1906,10 @@ impl AppConfig {
             config.event_duration = 2;
         }
 
-        // Deduplicate process whitelist
+        // Deduplicate process whitelist (忽略大小写去重 —— 匹配本身不分大小写,
+        // 大小写不同的重复条目留着只会让列表看起来脏)
         config.process_whitelist.sort();
-        config.process_whitelist.dedup();
+        config.process_whitelist.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
 
         /* ★v24.15: `vibration_presets` 现在是 `#[serde(skip)]` (不从 Config.toml 读),
          * 反序列化后是空表 —— 补上内置预设, 再由路线文件覆盖。
@@ -2663,6 +2667,28 @@ mod tests {
                 .process_whitelist
                 .contains(&"chrome.exe".to_string())
         );
+
+        cleanup_test_file(&path);
+    }
+
+    /// ★白名单结构优化: 同名不同版本 exe 的两条完整路径条目必须原样序列化往返
+    /// (TOML 基本多行字符串里反斜杠不能被转义吞掉)。
+    #[test]
+    fn test_process_whitelist_path_entries_serialization() {
+        let path = get_test_config_path("whitelist_paths");
+        cleanup_test_file(&path);
+
+        let entries = vec![
+            r"E:\games\A\DFO.exe".to_string(),
+            r"E:\games\B\DFO.exe".to_string(),
+        ];
+        let mut config = AppConfig::default();
+        config.process_whitelist = entries.clone();
+
+        config.save_to_file(&path).expect("Failed to save config");
+        let loaded = AppConfig::load_from_file(&path).expect("Failed to load config");
+
+        assert_eq!(loaded.process_whitelist, entries);
 
         cleanup_test_file(&path);
     }

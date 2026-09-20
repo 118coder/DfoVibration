@@ -643,7 +643,8 @@ pub struct AppState {
     /// ★S1 老方案总开关: true = 震动引擎走 S1 ACT1 老方案 (配老版 DLL 事件语义),
     /// false = S4+ 新方案 (现行)。设置里切换, 震动线程每轮读取, 即时生效。
     pub vib_legacy_client: std::sync::atomic::AtomicBool,
-    /// Cached foreground process name with timestamp
+    /// Cached foreground process **full image path** with timestamp
+    /// (★白名单路径条目按完整路径匹配, 文件名在匹配时从路径提取)
     cached_process_info: RwLock<(Option<String>, Instant)>,
     /// Currently pressed keys for combo detection
     pressed_keys: scc::HashSet<u32>,
@@ -2733,12 +2734,35 @@ impl AppState {
                 &mut size,
             ) {
                 Ok(_) => {
-                    let path = String::from_utf16_lossy(&buffer[..size as usize]);
-                    // Extract filename from full path
-                    path.split('\\').next_back().map(|s| s.to_lowercase())
+                    // ★返回完整映像路径 (不再截成文件名): 白名单路径条目按完整路径匹配,
+                    // 纯进程名条目在 whitelist_entry_matches 里从路径提取文件名比对。
+                    Some(String::from_utf16_lossy(&buffer[..size as usize]))
                 }
                 Err(_) => None,
             }
+        }
+    }
+
+    /// ★白名单条目匹配 (忽略大小写)。条目两种形态:
+    /// - 纯进程名 (如 `dnf.exe`): 匹配任意路径的同名进程 (老语义, 兼容旧配置);
+    /// - 完整路径 (含 `\` 或 `/`, 如 `E:\games\A\DFO.exe`): 只匹配该路径的进程 ——
+    ///   用于区分**同名不同版本**的 exe (A 版/B 版 DFO.exe 各登记一条, 互不干扰)。
+    fn whitelist_entry_matches(entry: &str, full_path: Option<&str>) -> bool {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            return false;
+        }
+        let Some(path) = full_path else {
+            return false;
+        };
+        if entry.contains('\\') || entry.contains('/') {
+            // 路径条目: 完整路径精确匹配
+            path.eq_ignore_ascii_case(entry)
+        } else {
+            // 进程名条目: 与路径尾段文件名比对
+            path.rsplit(['\\', '/'])
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case(entry))
         }
     }
 
@@ -2758,28 +2782,30 @@ impl AppState {
         const CACHE_DURATION_MS: u64 = 50;
         let now = Instant::now();
 
-        let process_name = {
+        let process_path = {
             let cache = util::read_guard(&self.cached_process_info);
-            let (cached_name, cached_time) = &*cache;
+            let (cached_path, cached_time) = &*cache;
 
             if likely(now.duration_since(*cached_time) < Duration::from_millis(CACHE_DURATION_MS)) {
-                // Cache hit: return cached name without write lock
-                cached_name.clone()
+                // Cache hit: return cached path without write lock
+                cached_path.clone()
             } else {
                 // Cache miss: need refresh
                 drop(cache);
-                let new_name = Self::get_foreground_process_name();
-                *util::write_guard(&self.cached_process_info) = (new_name.clone(), now);
+                let new_path = Self::get_foreground_process_name();
+                *util::write_guard(&self.cached_process_info) = (new_path.clone(), now);
 
-                new_name
+                new_path
             }
         };
 
-        // Check if process is in whitelist
-        if let Some(name) = process_name {
-            whitelist.iter().any(|p| p.to_lowercase() == name)
+        // Check if process is in whitelist (任一条目命中即放行)
+        if let Some(path) = process_path {
+            whitelist
+                .iter()
+                .any(|p| Self::whitelist_entry_matches(p, Some(&path)))
         } else {
-            // If we can't get process name, allow by default
+            // If we can't get process path, allow by default
             true
         }
     }
@@ -4645,6 +4671,37 @@ mod tests {
 
         // With empty whitelist, all processes should be whitelisted
         assert!(state.is_process_whitelisted());
+    }
+
+    /// ★白名单结构优化回归: 同名不同版本的两个 exe (A 版/B 版 DFO.exe) 必须能分别命中。
+    /// 旧结构只有进程名条目 → 无法区分; 路径条目只匹配登记过的那个版本。
+    #[test]
+    fn test_whitelist_entry_matches_two_versions_same_name() {
+        let path_a = r"E:\games\A\DFO.exe";
+        let path_b = r"E:\games\B\DFO.exe";
+
+        // 1) 路径条目精确匹配: A 版登记 → 只放行 A 版, B 版不命中
+        assert!(AppState::whitelist_entry_matches(path_a, Some(path_a)));
+        assert!(!AppState::whitelist_entry_matches(path_a, Some(path_b)));
+        // B 版登记为另一条 → 两个版本各有一条, 互不冲突 (旧结构下第二条加不进去)
+        assert!(AppState::whitelist_entry_matches(path_b, Some(path_b)));
+
+        // 2) 大小写不敏感 (手动输入/不同盘符风格)
+        assert!(AppState::whitelist_entry_matches(
+            r"e:\GAMES\a\dfo.exe",
+            Some(path_a)
+        ));
+
+        // 3) 纯进程名条目 (老语义): 任意路径的同名进程都放行
+        assert!(AppState::whitelist_entry_matches("dfo.exe", Some(path_a)));
+        assert!(AppState::whitelist_entry_matches("DFO.EXE", Some(path_b)));
+
+        // 4) 不同名的进程不被纯名条目误放行
+        assert!(!AppState::whitelist_entry_matches("dnf.exe", Some(path_a)));
+        // 5) 无前台路径 / 空条目 → 不命中 (放行决策由 is_process_whitelisted 兜底)
+        assert!(!AppState::whitelist_entry_matches("dfo.exe", None));
+        assert!(!AppState::whitelist_entry_matches("", Some(path_a)));
+        assert!(!AppState::whitelist_entry_matches("  ", Some(path_a)));
     }
 
     #[test]

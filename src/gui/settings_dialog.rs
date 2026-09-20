@@ -2016,10 +2016,11 @@ impl SorahkGui {
                                                 if ui.add_sized([84.0, 32.0], add_btn).clicked() {
                                                     let process_name = self.new_process_name.trim();
                                                     if !process_name.is_empty() {
-                                                        // Check for duplicate process
+                                                        // Check for duplicate process (整串忽略大小写)
                                                         if temp_config
                                                             .process_whitelist
-                                                            .contains(&process_name.to_string())
+                                                            .iter()
+                                                            .any(|x| x.eq_ignore_ascii_case(process_name))
                                                         {
                                                             self.duplicate_process_error = Some(
                                                                 t.duplicate_process_error()
@@ -2055,14 +2056,15 @@ impl SorahkGui {
                                                         .add_filter("Executable", &["exe"])
                                                         .set_title("Select Process")
                                                         .pick_file()
-                                                        && let Some(filename) = path.file_name()
                                                     {
-                                                        let process_name =
-                                                            filename.to_string_lossy().to_string();
-                                                        // Check for duplicate process
+                                                        /* ★登记完整路径 (不再截成文件名):
+                                                         * 同名不同版本的 exe 可各登记一条, 按路径精确匹配。 */
+                                                        let entry = path.to_string_lossy().to_string();
+                                                        // Check for duplicate process (整串忽略大小写)
                                                         if temp_config
                                                             .process_whitelist
-                                                            .contains(&process_name)
+                                                            .iter()
+                                                            .any(|x| x.eq_ignore_ascii_case(&entry))
                                                         {
                                                             self.duplicate_process_error = Some(
                                                                 t.duplicate_process_error()
@@ -2073,7 +2075,7 @@ impl SorahkGui {
                                                             self.duplicate_process_error = None;
                                                             temp_config
                                                                 .process_whitelist
-                                                                .push(process_name);
+                                                                .push(entry);
                                                         }
                                                     }
                                                 }

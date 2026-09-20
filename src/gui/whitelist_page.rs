@@ -39,6 +39,11 @@ impl SorahkGui {
             ui.label(th.hint_text(
                 "白名单防止连发热键在其他程序里误触: 比如只添加 dnf.exe, 切到浏览器时连发自动暂停。",
             ));
+            ui.add_space(theme::SP_XS);
+            ui.label(th.hint_text(
+                "条目可以是进程名 (匹配任意位置的同名程序) 或完整路径 (只匹配该文件 ——\
+                 有两个同名但版本不同的 exe 时, 用「浏览…」分别登记各自的完整路径即可)。",
+            ));
         });
 
         /* 卡2: 进程列表 (标题行右侧计数徽章) */
@@ -55,7 +60,7 @@ impl SorahkGui {
                     th.text_input(
                         ui,
                         &mut self.new_whitelist_name,
-                        "进程名, 如 dnf.exe",
+                        "进程名或完整路径",
                         220.0,
                         egui::Id::new("new_whitelist_name"),
                     );
@@ -83,18 +88,20 @@ impl SorahkGui {
                             .add_filter("Executable", &["exe"])
                             .set_title("选择进程的可执行文件")
                             .pick_file()
-                            && let Some(filename) = path.file_name()
                         {
-                            let name = filename.to_string_lossy().to_string();
+                            /* ★登记完整路径 (不再截成文件名): 同名不同版本的 exe
+                             * (如 A 版/B 版 DFO.exe) 可各登记一条, 按路径精确匹配。 */
+                            let entry = path.to_string_lossy().to_string();
                             if self
                                 .config
                                 .process_whitelist
                                 .iter()
-                                .any(|x| x.eq_ignore_ascii_case(&name))
+                                .any(|x| x.eq_ignore_ascii_case(&entry))
                             {
-                                self.whitelist_error = Some(format!("「{}」已在白名单中", name));
+                                self.whitelist_error =
+                                    Some(format!("「{}」已在白名单中", entry));
                             } else {
-                                self.config.process_whitelist.push(name);
+                                self.config.process_whitelist.push(entry);
                                 self.whitelist_error = None;
                                 let _ = self.config.save_to_file("Config.toml");
                                 let _ = self.app_state.reload_config(self.config.clone());
@@ -119,12 +126,23 @@ impl SorahkGui {
                     let mut remove: Option<usize> = None;
                     for (i, name) in self.config.process_whitelist.iter().enumerate() {
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(name)
-                                    .size(13.0)
-                                    .color(th.text)
-                                    .family(Theme::font_bold()),
-                            );
+                            ui.vertical(|ui| {
+                                /* 路径条目: 文件名粗体 + 小字路径; 纯进程名: 只显示名字 */
+                                let filename = name.rsplit(['\\', '/']).next().unwrap_or(name);
+                                ui.label(
+                                    egui::RichText::new(filename)
+                                        .size(13.0)
+                                        .color(th.text)
+                                        .family(Theme::font_bold()),
+                                );
+                                if filename.len() < name.len() {
+                                    ui.label(
+                                        egui::RichText::new(name)
+                                            .size(11.0)
+                                            .color(th.text_weak),
+                                    );
+                                }
+                            });
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {

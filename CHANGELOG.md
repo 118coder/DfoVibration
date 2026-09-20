@@ -1,3 +1,34 @@
+v24.29 (2026-09-21)
+===================
+🛠 用户需求: **白名单结构优化** —— "假设我有两个 DFO.exe (A 版/B 版, 版本差别过大),
+一个加入白名单后另一个添加不进去, 导致其中一个版本失效"。诊断: 白名单
+`process_whitelist` 是纯进程名列表, 两个 UI 入口 (白名单页 + 设置对话框) 都按名
+去重、"浏览"只取文件名, 第二个同名 exe 被「已在白名单中」挡掉; 且条目结构无法
+表达"哪个路径的哪个版本"。
+
+- **结构优化 = 条目语义扩展为两种形态** (仍是 `Vec<String>`, **旧配置零迁移**):
+  * 纯进程名 (`dnf.exe`) → 匹配**任意路径**的同名进程 (老语义不变);
+  * 完整路径 (`E:\games\A\DFO.exe`, 含 `\` 或 `/`) → **只匹配该路径**的进程 ——
+    同名不同版本的 exe 用「浏览…」各登记一条, 互不冲突、各自动生效。
+- 匹配重构 (`state.rs`): 抽纯函数 `whitelist_entry_matches(entry, full_path)`
+  (路径条目整串忽略大小写比对 / 名字条目与路径尾段比对); 前台进程缓存
+  `cached_process_info` 改存**完整映像路径** (`get_foreground_process_name`
+  不再截成文件名), 文件名在匹配时提取。`is_process_whitelisted` 行为对旧
+  纯名配置完全不变 (任一条目命中即放行, 空/取不到路径仍全放行)。
+- UI 两入口同步 (`whitelist_page.rs` + `settings_dialog.rs`): 「浏览…」登记
+  **完整路径**; 去重改**整串忽略大小写** (同名不同路径不再误报重复); 白名单页
+  路径条目显示为 "文件名粗体 + 小字完整路径", 输入框/说明文案更新。
+- config: `load_from_file` 去重升级为忽略大小写 (`dedup_by`); 字段文档写明
+  两种条目形态。
+- 测试: 新增 `test_whitelist_entry_matches_two_versions_same_name`
+  (两版本场景: 路径条目各命中各的 / 纯名条目两个都放行 / 大小写 / 空条目) +
+  `test_process_whitelist_path_entries_serialization` (两条路径原样往返);
+  全套 **743 通过 / 0 失败**。字节级验证: 新文案串在 exe 内命中。
+- ⚠ 未来重启手柄隐藏 (hidhide.rs, 现整体注释) 时注意: 其"学习表"按进程名索引,
+  路径条目需要改为按整串/按路径学习, 不能直接塞进 `hidhide_learned_paths`。
+- exe md5 **0c3b6c39d2ed599ec926b761de53eb19**; 三交付名重刷
+  (旧版备份 `release_backup\SorahkDFO-新UI版_v24.28_before_whitelist_paths_20260921.exe`)。
+
 v24.28 (2026-09-15)
 ===================
 🐞 玩家反馈: 宿主放进**中文目录**后 DLL 震动接收失效 (未连接)。diagnosing-bugs 判定环

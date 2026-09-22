@@ -163,7 +163,7 @@ pub fn render_about_dialog(
                         egui::Button::new(
                             egui::RichText::new(t.error_close_button())
                                 .size(15.0)
-                                .color(egui::Color32::WHITE)
+                                .color(th.on_emphasis)
                                 .strong(),
                         )
                         .fill(accent_color)

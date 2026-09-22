@@ -242,7 +242,7 @@ impl MouseDirectionDialog {
                             egui::Button::new(
                                 egui::RichText::new(t.cancel_close_button())
                                     .size(14.0)
-                                    .color(egui::Color32::WHITE),
+                                    .color(Theme::new(dark_mode).on_emphasis),
                             )
                             .fill(title_color)
                             .corner_radius(12.0),

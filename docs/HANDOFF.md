@@ -7,7 +7,17 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.29 (🛠白名单结构优化: 条目支持完整路径, 同名不同版本 exe 可分别登记)** · **v24.29 未 commit (等口令; exe md5 0c3b6c39, 三交付名已重刷, 旧版备份 release_backup\SorahkDFO-新UI版_v24.28_before_whitelist_paths_20260921.exe; 743 测试通过 0 失败)** · **v24.28 已上交** (2026-09-15: E 主线 cc870fa → 经 D 盘 clone 推送, 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (2026-09-15: E 主线 604db7a → 经 D 盘 clone 推送, 远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (2026-09-15: E 盘主线 661800d → 经 D 盘 clone 推送, 远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`); **v24.19/a/b、v24.20/a 未 commit (等口令)**。
+**当前状态**: 基线 = **v24.30 (🎨深色配色重制 v5 "Graphite Indigo": 中性石墨骨架 + 靛蓝点缀 + 修 31 处白字压浅底)** · **v24.30 未 commit (等口令; exe md5 b90a753e, 三交付名已重刷, 旧版备份 release_backup\SorahkDFO-新UI版_v24.29_before_palette_v5_20260923.exe; 743 测试通过 0 失败; 逐页截图目视验收)** · **v24.29 已上交** (2026-09-21: E 主线 33e72ae → 经 D 盘 clone 推送, 远端 main = 1ea68e4; exe md5 0c3b6c39; 稳定版备份 `release_backup\SorahkDFO-新UI版_v24.29_白名单路径条目_20260921_稳定版.exe`; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: E 主线 cc870fa → 经 D 盘 clone 推送, 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (2026-09-15: E 主线 604db7a → 经 D 盘 clone 推送, 远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (2026-09-15: E 盘主线 661800d → 经 D 盘 clone 推送, 远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`); **v24.19/a/b、v24.20/a 未 commit (等口令)**。
+
+> **🎨 v24.30 深色配色重制 v5 (2026-09-23, 743 全绿 + 逐页截图验收)**: 用户"深色页面不好看"
+> → v4 三阶灰全带紫调整屏发糊、强调紫大面积饱和块、语义色互相打架。本版**只重做深色**
+> (亮色不动): 骨架中性冷灰 (bg #0C0F15 / card #1B202B / 层间步进 1.07~1.19), 强调改靛蓝族
+> (#818CF8 只作小元素 / **btn_primary #4F55E8 深档承担大面积行动区**)。
+> **新增令牌 `on_emphasis`** (深色=近黑): 修掉 31 处"白字压浅色实底" (暂停/恢复/确认/页签滑块/
+> 键位徽章/设备弹窗按钮, 原先 ~2:1 看不清), 亮色观感零变化。
+> ⚠ 纪律: 改色板必跑 `work/_palette_check.py` (对比度 + 层间步进); 视觉验收用
+> `work/_shot_pages.ps1` (PrintWindow 逐页截图, **必须带 SORAHK_NO_AUTO_INJECT=1**,
+> 否则会对真机客户端真注入)。规范见 `design.md` §2.1 + v5 附录。
 
 > **🛠 v24.29 白名单结构优化 (2026-09-21, 743 全绿)**: 用户场景 = **两个同名不同版本的
 > exe (A 版/B 版 DFO.exe)**, 旧白名单纯进程名列表按名去重 → 第二个被「已在白名单中」
@@ -1570,34 +1580,47 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
       已验证); 改工作副本 Config.toml 窗口高度无效 (egui 钳到屏幕)。
     - exe 已交付 (v20.9.1, md5 581da914...)。
 
-42. **★GitHub 上交流程启用 (2026-09-10, 用户装 GitHub Desktop, 口令触发制)**:
-    - **触发口令**: 用户说**【测试通过，上交到仓库】** → 执行本节流程并**直接 push 到
-      GitHub**。其余任何时刻都不要 push (用户实测确认后才上交)。
-    - **环境事实 (09-10 实地考察)**:
+42. **★GitHub 上交流程 (2026-09-10 启用; 2026-09-23 改为分支 + PR 流程, 用户指定)**:
+    - **触发口令**: 用户说**【测试通过，上传到仓库】/【测试通过，上交到仓库】** → 执行本节
+      流程。其余任何时刻都不要 push (用户实测确认后才上传)。
+    - **★绝对守则 (2026-09-23 用户明令)**: **一律走「分支 + PR + 合并 + 删除分支」，
+      禁止直接 push/commit 到 main**。理由 (用户原话): "比起直接提交, PR 感觉更好" ——
+      PR 有变更集边界、可回看、可在 GitHub 上留痕。合并完成后**必须删除该分支**
+      (远端 + 本地), 保持仓库只有 main 一条活跃线。
+      ⚠ 唯一例外: 用户本人经 GitHub Desktop 的操作 (不干预)。
+    - **环境事实 (09-10 实地考察 + 09-23 复核)**:
       * GitHub Desktop exe: `C:\Users\12290\AppData\Local\GitHubDesktop\GitHubDesktop.exe`
       * GitHub 仓库: `https://github.com/118coder/DfoVibration` (origin, 用户本人账号)
       * **D 盘 clone ("本地仓库")**: `D:\Program Files\Gitgub\DfoVibration`
-        (注意 Gitgub 是用户目录实际拼写, 勿"纠正"); 09-10 时 HEAD=661987d"修复窗口问题",
-        是用户经 GitHub Desktop 手动提交的另一条线, 落后 E 盘主线多个版本。
+        (注意 Gitgub 是用户目录实际拼写, 勿"纠正")
       * **E 盘开发主线** (`E:\网页小工具\DfoVibration V3版本\SorahkDFO源码`): **无 remote**,
         是唯一事实来源 (source of truth); 所有开发 commit 在这里。
+      * **gh CLI 未安装** → 建 PR/合并走 **GitHub REST API + curl**; token 用
+        `git credential fill` (protocol=https host=github.com) 现场取, **只在变量里,
+        绝不落盘/不回显** (GitHub Desktop 已存该凭据, push 也走同一份)。
     - **上交流程 (口令后逐步执行)**:
       1. E 盘主线确认干净: `git -C <E盘repo> status --short` 应为空 (未提交改动先按
          惯例 commit)。
-      2. **同步到 D 盘 clone**: 按 E 盘 `git ls-files` 清单逐文件覆盖复制到 D 盘
-         (排除 .git); 然后删掉 D 盘工作区里 E 盘跟踪清单之外的多余文件 (保持两边
-         文件集合一致; 用 `git -C <D盘> status` 检查增删符合预期)。⚠ D 盘在
-         "Program Files" 下, 写文件可能要管理员权限 —— 若 cp 被拒, 提示用户给
-         GitHubDesktop/终端管理员权限, 或经 GitHub Desktop 界面操作。
+      2. **同步到 D 盘 clone**: `python work/_sync_to_d.py` (按 E 盘 `git ls-files`
+         清单逐文件覆盖 + 删多余文件; 用 `git -C <D盘> status` 检查增删符合预期)。
+         ⚠ D 盘在 "Program Files" 下, 写文件可能要管理员权限。
       3. **生成更新记录**: ① `CHANGELOG.md` 顶部追加本次版本段 (标题 = 版本号+日期,
-         要点按 Feature/Fix 分组, 中文); ② commit message 完整记录本次变更
-         (沿用 E 盘主线 commit 要点)。docs/HANDOFF.md 随源码一并推上去 (本身就是
-         无缝对接文档)。
-      4. **提交**: `git -C "D:\Program Files\Gitgub\DfoVibration" add -A` →
-         `git commit -m "..."`。
-      5. **拉取推送**: `git pull --rebase origin main` (远程若有用户新提交, rebase
-         到其上; 冲突时以 E 盘主线内容为准) → `git push origin main`。
-      6. **回执**: 汇报 push 的 commit 哈希 + 更新记录要点 + GitHub 仓库链接。
+         要点按 Feature/Fix 分组, 中文); ② commit message 完整记录本次变更;
+         ③ `docs/HANDOFF.md` (含本条) 随源码一并上传。
+      4. **开分支提交**: `git -C <D盘> checkout -b release/vX.Y-主题` →
+         `git add -A` → `git commit -m "..."`。
+         (分支命名: `release/vX.Y-主题` 用于交付版, `feat/…`/`fix/…` 用于中间改动)
+      5. **推分支**: `git -C <D盘> push -u origin release/vX.Y-主题`。
+      6. **建 PR**: `POST /repos/118coder/DfoVibration/pulls`
+         body = {title, head: <分支>, base: "main", body: <变更要点>}。
+      7. **合并 PR**: `PUT /repos/118coder/DfoVibration/pulls/<n>/merge`
+         body = {merge_method: "merge"} (保留合并提交, 便于回看变更集) → 记下 merge SHA。
+      8. **删除分支**: `DELETE /repos/118coder/DfoVibration/git/refs/heads/<分支>`
+         → `git -C <D盘> checkout main` → `git pull origin main` →
+         `git branch -D <分支>` (本地) 。
+      9. **回写 E 主线**: HANDOFF 快速接手卡更新"已上交 (远端 main = <merge SHA>)"→
+         E 盘 commit 一条 `HANDOFF: 更新上传状态` (本地主线留档, 下次随内容同步)。
+      10. **回执**: 汇报 PR 号 + 合并 commit + 更新记录要点 + 仓库链接。
     - **分支名注意**: 实际执行时先 `git -C <D盘> branch --show-current` 确认主分支名
       (main/master 以实际为准, 上文按 main 书写)。
     - **为什么中转 D 盘而不给 E 盘加 remote**: 用户明确要求"更新到本地仓库然后使用
@@ -3297,6 +3320,24 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     移除。连发页新 spinner「组合键每键间隔」。exe md5
     `f1f3885c94526755930ee6721c532c77`。未 push (等口令)。
 
+83. **★v24.29 白名单结构优化 (2026-09-21, 743 全绿, 用户实测通过) + ★v24.30 深色配色重制 v5
+    (2026-09-23, 743 全绿, 逐页截图验收) —— 两次均经 GitHub PR 流程上交**:
+    - **v24.29 (白名单)**: 旧结构 = 纯进程名列表按名去重 → 同名不同版本 exe (A/B 版 DFO.exe)
+      第二条加不进去。现条目语义扩展 (仍 `Vec<String>`, 旧配置零迁移): 纯名 = 任意路径同名进程;
+      含 `\`/`/` 的完整路径 = 只匹配该路径。匹配抽纯函数 `state::whitelist_entry_matches`,
+      前台进程缓存改存完整映像路径; 两 UI 入口 (白名单页 + 设置对话框) 浏览登记完整路径、
+      去重整串忽略大小写。判据 = 新增两版本场景回归测试。**用户实测通过** —— 顺带定位到
+      其真实场景: DFO60US 启动器实际拉起 `DFO_fixed_v3.exe` (启动器二进制内引用 3 次),
+      而白名单登记的是同目录另一个 `DFO.exe` (2010 原版) → 版本不同名同, 正是本版解决的场景。
+    - **v24.30 (配色)**: 用户"深色页面不好看" → v4 三阶灰全带紫调 (色相 250°/饱和 25%) 整屏糊、
+      强调紫大面积饱和块、语义色互斗。v5 "Graphite Indigo": 骨架中性冷灰 (bg #0C0F15 /
+      card #1B202B, 层间步进 1.07~1.19), 强调靛蓝族 (亮档 #818CF8 只作小元素 /
+      **深档 #4F55E8 承担大面积行动区**); 新增令牌 **`on_emphasis`** 修掉 31 处
+      "白字压浅色实底" (暂停/恢复/确认/页签滑块/键位徽章/设备弹窗按钮, 原 ~2:1 看不清);
+      亮色主题零变化。工具: `work/_palette_check.py` (对比度 + 层间步进核算) +
+      `work/_shot_pages.ps1` (PrintWindow 逐页截图, **必须带 SORAHK_NO_AUTO_INJECT=1**)。
+    - **上传流程改为分支 + PR** (用户 09-23 指定, 见第 42 条绝对守则): 开
+      `release/vX.Y-主题` 分支 → push → API 建 PR → merge → 删分支 (远端+本地)。
 82. **★v24.28 🐞修中文目录注入失效 (2026-09-15, 741 全绿 + 沙箱判定环)**: 玩家报
     宿主放中文目录 → 震动接收失效。判定环: 沙箱 --dir-suffix 参数化, 中文目录红
     (injected 假成功 + 无 shm; ASCII 同代码 10/10) → 差异变量锁定路径编码。根因:

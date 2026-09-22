@@ -327,7 +327,7 @@ impl HidActivationDialog {
                             let retry_btn = egui::Button::new(
                                 egui::RichText::new(t.hid_activation_retry())
                                     .size(15.0)
-                                    .color(egui::Color32::WHITE),
+                                    .color(Theme::new(dark_mode).on_emphasis),
                             )
                             .fill(accent_color)
                             .corner_radius(12.0);
@@ -353,7 +353,7 @@ impl HidActivationDialog {
                         let cancel_btn = egui::Button::new(
                             egui::RichText::new(t.hid_activation_cancel())
                                 .size(15.0)
-                                .color(egui::Color32::WHITE)
+                                .color(Theme::new(dark_mode).on_emphasis)
                                 .strong(),
                         )
                         .fill(accent_color)

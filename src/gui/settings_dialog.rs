@@ -467,7 +467,7 @@ impl SorahkGui {
                                                     let confirm_btn = egui::Button::new(
                                                         egui::RichText::new("✓")
                                                             .size(14.0)
-                                                            .color(egui::Color32::WHITE),
+                                                            .color(Theme::new(self.dark_mode).on_emphasis),
                                                     )
                                                     .fill(Theme::new(self.dark_mode).good)
                                                     .corner_radius(8.0);
@@ -566,7 +566,7 @@ impl SorahkGui {
                                                         let confirm_btn = egui::Button::new(
                                                             egui::RichText::new("✓")
                                                                 .size(14.0)
-                                                                .color(egui::Color32::WHITE),
+                                                                .color(Theme::new(self.dark_mode).on_emphasis),
                                                         )
                                                         .fill(Theme::new(self.dark_mode).good)
                                                         .corner_radius(8.0);
@@ -1055,7 +1055,7 @@ impl SorahkGui {
                                                             // Button 1: Add target key with capture
                                                             let add_target_btn = egui::Button::new(
                                                                 egui::RichText::new("+")
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(16.0),
                                                             )
                                                             .fill(Theme::new(self.dark_mode).accent)
@@ -1215,7 +1215,7 @@ impl SorahkGui {
                                                             // Button 2: Mouse movement direction
                                                             let move_btn = egui::Button::new(
                                                                 egui::RichText::new("⌖ 方向")
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(13.0),
                                                             )
                                                             .fill(Theme::new(self.dark_mode).accent_hover)
@@ -1234,7 +1234,7 @@ impl SorahkGui {
                                                             // Button 3: Mouse scroll direction
                                                             let scroll_btn = egui::Button::new(
                                                                 egui::RichText::new("🎡 滚动")
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(13.0),
                                                             )
                                                             .fill(Theme::new(self.dark_mode).good)
@@ -1259,7 +1259,7 @@ impl SorahkGui {
                                                                 if turbo_enabled { "⚡ 连发" } else { "○ 连发" };
                                                             let turbo_btn = egui::Button::new(
                                                                 egui::RichText::new(turbo_icon)
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(12.0),
                                                             )
                                                             .fill(turbo_color)
@@ -1288,7 +1288,7 @@ impl SorahkGui {
                                                                 if double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
                                                             let double_tap_btn = egui::Button::new(
                                                                 egui::RichText::new(double_tap_icon)
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(12.0),
                                                             )
                                                             .fill(double_tap_color)
@@ -1323,7 +1323,7 @@ impl SorahkGui {
                                                                 if run_enabled { "🏃 重推奔跑:开" } else { "🏃 重推奔跑" };
                                                             let run_btn = egui::Button::new(
                                                                 egui::RichText::new(run_icon)
-                                                                    .color(egui::Color32::WHITE)
+                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
                                                                     .size(12.0),
                                                             )
                                                             .fill(run_color)
@@ -1548,7 +1548,7 @@ impl SorahkGui {
                                                         // Button 1: Add target key
                                                         let add_target_btn = egui::Button::new(
                                                             egui::RichText::new("+")
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(16.0),
                                                         )
                                                         .fill(Theme::new(self.dark_mode).accent)
@@ -1707,7 +1707,7 @@ impl SorahkGui {
                                                         // Button 2: Mouse movement direction
                                                         let move_btn = egui::Button::new(
                                                             egui::RichText::new("⌖ 方向")
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(13.0),
                                                         )
                                                         .fill(Theme::new(self.dark_mode).accent_hover)
@@ -1726,7 +1726,7 @@ impl SorahkGui {
                                                         // Button 3: Mouse scroll direction
                                                         let scroll_btn = egui::Button::new(
                                                             egui::RichText::new("🎡 滚动")
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(13.0),
                                                         )
                                                         .fill(Theme::new(self.dark_mode).good)
@@ -1751,7 +1751,7 @@ impl SorahkGui {
                                                             if new_turbo_enabled { "⚡ 连发" } else { "○ 连发" };
                                                         let new_turbo_btn = egui::Button::new(
                                                             egui::RichText::new(new_turbo_icon)
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(12.0),
                                                         )
                                                         .fill(new_turbo_color)
@@ -1779,7 +1779,7 @@ impl SorahkGui {
                                                             if new_double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
                                                         let new_double_tap_btn = egui::Button::new(
                                                             egui::RichText::new(new_double_tap_icon)
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(12.0),
                                                         )
                                                         .fill(new_double_tap_color)
@@ -1823,7 +1823,7 @@ impl SorahkGui {
                                                     ui.horizontal(|ui| {
                                                         let add_btn = egui::Button::new(
                                                             egui::RichText::new(t.add_button_text())
-                                                                .color(egui::Color32::WHITE)
+                                                                .color(Theme::new(self.dark_mode).on_emphasis)
                                                                 .size(14.0)
                                                                 .strong(),
                                                         )
@@ -2006,7 +2006,7 @@ impl SorahkGui {
 
                                                 let add_btn = egui::Button::new(
                                                     egui::RichText::new(t.add_button_text())
-                                                        .color(egui::Color32::WHITE)
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
                                                         .size(12.0)
                                                         .strong(),
                                                 )
@@ -2042,7 +2042,7 @@ impl SorahkGui {
                                                 // Browse button for selecting process
                                                 let browse_btn = egui::Button::new(
                                                     egui::RichText::new(t.browse_button())
-                                                        .color(egui::Color32::WHITE)
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
                                                         .size(12.0)
                                                         .strong(),
                                                 )

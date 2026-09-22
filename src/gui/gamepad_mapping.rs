@@ -1077,7 +1077,9 @@ impl SorahkGui {
                         for &i in &row {
                             let (slot_id, label, full, selected) = &chips[i];
                             let (fg, bg) = if *selected {
-                                (egui::Color32::WHITE, th.accent)
+                                /* ★v5 配色: 选中映射块改用深档主色 (白字 5.5:1) ——
+                                 * 亮档强调色作大面积饱和填充会发飘。 */
+                                (egui::Color32::WHITE, th.btn_primary)
                             } else {
                                 (th.target_fg, th.target_bg)
                             };
@@ -1395,7 +1397,9 @@ impl SorahkGui {
                     egui::pos2(thumb_x, seg_rect.top() + 3.0),
                     egui::vec2(thumb_w, seg_h - 6.0),
                 );
-                ui.painter().rect_filled(thumb, 6, th.accent);
+                /* ★v5: 分段滑块是"大面积行动区" —— 用深档主色 (白字 5.5:1);
+                 * 亮档 accent 压白字只有 2.2:1, 之前那块页签看着发白。 */
+                ui.painter().rect_filled(thumb, 6, th.btn_primary);
                 let unselected = |a: f32| -> egui::Color32 {
                     let c = th.text_weak;
                     egui::Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a as u8)
@@ -1885,7 +1889,8 @@ impl SorahkGui {
             .unwrap_or("?");
         th.panel(ui, None, |ui| {
             ui.horizontal(|ui| {
-                th.badge(ui, "快速校对手柄按键", egui::Color32::WHITE, th.accent);
+                /* ★v5 配色: 标题徽章用"柔底 + 强调文字" (旧为白字压饱和紫底, 太吵) */
+                th.badge(ui, "快速校对手柄按键", th.accent_text, th.accent_soft);
                 ui.add_space(6.0);
                 ui.label(
                     egui::RichText::new(format!("{}/{}", step + 1, total))
@@ -2602,7 +2607,7 @@ impl SorahkGui {
 /// ★v22.0: 步骤标记 —— 「第 N 步」小徽章 + 一句话标题 (一步一步来)。
 fn step_header(ui: &mut egui::Ui, th: &Theme, step: u8, title: &str) {
     ui.horizontal(|ui| {
-        th.badge(ui, &format!("第 {step} 步"), egui::Color32::WHITE, th.accent);
+        th.badge(ui, &format!("第 {step} 步"), th.accent_text, th.accent_soft);
         ui.add_space(6.0);
         ui.label(
             egui::RichText::new(title)
@@ -2650,7 +2655,8 @@ fn render_slot_empty_state(ui: &mut egui::Ui, th: &Theme, identified: bool) -> E
                                 .strong()
                                 .color(egui::Color32::WHITE),
                         )
-                        .fill(th.accent)
+                        /* ★v5 配色: 大块行动按钮用深档主色 (亮档强调色大面积填充会发飘) */
+                        .fill(th.btn_primary)
                         .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL)),
                     )
                     .on_hover_text("按提示把手柄上全部热点校对一遍 (约 20 秒), 自动记住键位")

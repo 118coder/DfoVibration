@@ -146,9 +146,14 @@ impl SorahkGui {
                         "删除预设"
                     };
                     let del_btn = egui::Button::new(
-                        egui::RichText::new(del_label).size(13.0).color(egui::Color32::WHITE),
+                        /* ★v5: 武装态用深红 btn_danger (白字 4.7:1); rose-400 浅底压白字只有 2.4:1 */
+                        egui::RichText::new(del_label).size(13.0).color(if self.page_preset_delete_arm {
+                            egui::Color32::WHITE
+                        } else {
+                            th.btn_secondary_text
+                        }),
                     )
-                    .fill(if self.page_preset_delete_arm { th.bad } else { th.faint })
+                    .fill(if self.page_preset_delete_arm { th.btn_danger } else { th.faint })
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL));
                     if ui.add(del_btn).clicked() {
                         if self.page_preset_delete_arm {
@@ -181,7 +186,8 @@ impl SorahkGui {
                         );
                         if ui
                             .add(egui::Button::new(
-                                egui::RichText::new("✓ 确认").size(13.0).color(egui::Color32::WHITE),
+                                /* ★v5: 绿是浅色实底 → 近黑文字 */
+                                egui::RichText::new("✓ 确认").size(13.0).color(th.on_emphasis),
                             )
                             .fill(th.good)
                             .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL)))
@@ -660,7 +666,8 @@ impl SorahkGui {
                         (pause_label.as_str(), th.warn)
                     };
                     let toggle_btn = egui::Button::new(
-                        egui::RichText::new(label).size(13.0).color(egui::Color32::WHITE).strong(),
+                        /* ★v5: 琥珀(暂停)/绿(恢复)都是浅色实底 —— 白字仅 ~2:1, 改近黑 on_emphasis */
+                        egui::RichText::new(label).size(13.0).color(th.on_emphasis).strong(),
                     )
                     .fill(color)
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL))

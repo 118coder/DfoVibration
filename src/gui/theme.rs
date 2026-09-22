@@ -1,14 +1,21 @@
-//! 统一设计系统 (Design System) v4 — "Violet Night 霓虹紫夜空" (ui-ux-pro-max 检索方向: 霓虹紫 + 深靛夜空)。
+//! 统一设计系统 (Design System) v5 — "Graphite Indigo 石墨靛蓝" (深色重做: 中性石墨骨架 + 靛蓝点缀)。
 //! 规范文档: 源码根目录 design.md (新页面开发前必读)。
 //!
 //! 设计原则 (源自 egui 生态侦察 + Fluent/Linear 规范研究 + 设计审计):
-//! 1. 三阶灰度骨架: bg(最深) → surface(侧栏/顶栏) → card(卡片) → card_alt(嵌套), 蓝调深灰,
-//!    相邻层亮度差 ≥1.15 (Linear/Raycast 标准);
-//! 2. 单一强调色: 全 UI 只有一个 indigo accent, 只出现在选中态/主按钮/激活滑块/状态点;
+//! 1. 三阶灰度骨架: bg(最深) → surface(侧栏/顶栏) → card(卡片) → card_alt(嵌套), **中性冷灰**,
+//!    相邻层亮度差 ≥1.07 (近黑区间的实际可辨步进; 分层感靠"步进 + hairline 描边"共同承担);
+//! 2. 单一强调色: 全 UI 只有一个靛蓝 accent (与亮色主题同族), 只出现在选中态/主按钮/激活滑块/状态点;
+//!    **禁止大面积饱和填充** —— 大块行动区用深档 btn_primary, 状态徽章用 accent_text + 柔底;
 //! 3. 语义色低饱和 (Radix dark-11 系), 仅作状态标注, 不参与装饰;
 //! 4. 8pt 间距网格 + 同心圆角族 (6/8/10/12);
 //! 5. 对比度达标: 正文 ≥7:1, 12px 小字 ≥4.5:1 (微软雅黑 12px 起步才可读, egui 无 hinting);
+//!    ⚠ 改深色色板必跑 `work/_palette_check.py` 复核 (文字三层 + 层间步进);
 //! 6. 一切颜色/字号/间距从这里取, 业务代码禁止散落字面量。
+//!
+//! v4→v5 变更要点 (用户反馈"深色页面不好看"): v4 三阶灰全部带紫调 (色相 250° 饱和 ~25%),
+//! 整屏发糊发闷; 且强调紫以大面积饱和块出现 (大按钮/页签/徽章白字压紫底)。v5 骨架改中性冷灰
+//! (色相 ~220° 饱和 <15%), 强调改靛蓝族 (#818CF8 / 深档 #4F55E8 与亮色主题同色),
+//! 柔底 alpha 提亮一档, 语义色收敛到 400 档。
 
 use eframe::egui;
 
@@ -91,6 +98,9 @@ pub struct Theme {
     pub btn_secondary: egui::Color32,
     pub btn_secondary_text: egui::Color32,
     pub btn_danger: egui::Color32,
+    /// ★v5: **浅色实底上的文字色** (warning/success/亮档强调等浅色填充)。
+    /// 深色主题 = 近黑, 亮色主题 = 白。白字压浅底在暗色下只有 ~2:1 —— 一律用这个令牌。
+    pub on_emphasis: egui::Color32,
     // ── 马达语义 ──
     pub motor_l: egui::Color32,
     pub motor_r: egui::Color32,
@@ -111,46 +121,47 @@ impl Theme {
         egui::FontFamily::Name("Bold".into())
     }
 
-    /// 暗色: 深靛夜空三阶 + 霓虹紫强调 (v4, 设计系统检索方向)。
+    /// 暗色: 中性石墨三阶 + 靛蓝强调 (v5, 用户反馈深色发糊后重做)。
     pub fn dark() -> Self {
         Self {
             dark: true,
-            bg: egui::Color32::from_rgb(15, 15, 35),        // #0F0F23 深靛夜空
-            surface: egui::Color32::from_rgb(22, 21, 43),   // #16152B
-            card: egui::Color32::from_rgb(30, 28, 53),      // #1E1C35 (raised)
-            card_alt: egui::Color32::from_rgb(39, 37, 64),  // #272540
-            faint: egui::Color32::from_rgb(44, 42, 72),     // #2C2A48 (悬停层)
-            extreme: egui::Color32::from_rgb(10, 10, 26),   // #0A0A1A
-            stroke: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 22),        // 白 8.6% 分隔/描边
-            stroke_strong: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 50), // 白 20% 悬停/浮层
-            accent: egui::Color32::from_rgb(139, 92, 246),    // #8B5CF6 霓虹紫 (暗底更亮)
-            accent_hover: egui::Color32::from_rgb(167, 139, 250), // #A78BFA
-            accent_soft: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 46), // subtle bg
-            accent_text: egui::Color32::from_rgb(196, 181, 253), // #C4B5FD
-            title: egui::Color32::from_rgb(244, 242, 251),  // #F4F2FB
-            heading: egui::Color32::from_rgb(226, 222, 239), // #E2DEEF
-            text: egui::Color32::from_rgb(200, 196, 220),   // #C8C4DC
-            text_weak: egui::Color32::from_rgb(162, 157, 189), // #A29DBD
-            hint: egui::Color32::from_rgb(139, 134, 168),   // #8B86A8 (card 上 ≥5:1)
+            bg: egui::Color32::from_rgb(12, 15, 21),        // #0C0F15 石墨夜空
+            surface: egui::Color32::from_rgb(19, 23, 32),   // #131720 侧栏/顶栏
+            card: egui::Color32::from_rgb(27, 32, 43),      // #1B202B (raised)
+            card_alt: egui::Color32::from_rgb(34, 40, 53),  // #222835 嵌套面板
+            faint: egui::Color32::from_rgb(45, 52, 69),     // #2D3445 (悬停层)
+            extreme: egui::Color32::from_rgb(7, 9, 13),     // #07090D 输入框井
+            stroke: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26),        // 白 10% 分隔/描边
+            stroke_strong: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 56), // 白 22% 悬停/浮层
+            accent: egui::Color32::from_rgb(129, 140, 248),    // #818CF8 靛蓝 (card 上 6.0:1)
+            accent_hover: egui::Color32::from_rgb(165, 180, 252), // #A5B4FC
+            accent_soft: egui::Color32::from_rgba_unmultiplied(129, 140, 248, 46), // subtle bg
+            accent_text: egui::Color32::from_rgb(165, 180, 252), // #A5B4FC (card 上 9.0:1)
+            title: egui::Color32::from_rgb(245, 247, 250),  // #F5F7FA
+            heading: egui::Color32::from_rgb(228, 232, 239), // #E4E8EF
+            text: egui::Color32::from_rgb(198, 204, 216),   // #C6CCD8 (card 上 10.1:1)
+            text_weak: egui::Color32::from_rgb(155, 163, 178), // #9BA3B2
+            hint: egui::Color32::from_rgb(140, 148, 164),   // #8C94A4 (card 上 5.4:1 / 嵌套 4.8:1)
             good: egui::Color32::from_rgb(52, 211, 153),    // emerald-400
-            good_soft: egui::Color32::from_rgba_unmultiplied(52, 211, 153, 26),
-            bad: egui::Color32::from_rgb(244, 63, 94),      // #F43F5E (rose-500)
-            bad_soft: egui::Color32::from_rgba_unmultiplied(244, 63, 94, 26),
+            good_soft: egui::Color32::from_rgba_unmultiplied(52, 211, 153, 28),
+            bad: egui::Color32::from_rgb(251, 113, 133),    // rose-400 (中性底上更柔)
+            bad_soft: egui::Color32::from_rgba_unmultiplied(251, 113, 133, 28),
             warn: egui::Color32::from_rgb(251, 191, 36),    // amber-400
-            warn_soft: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 26),
+            warn_soft: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 28),
             info: egui::Color32::from_rgb(56, 189, 248),    // sky-400
             trigger_fg: egui::Color32::from_rgb(252, 211, 77),  // amber-300
-            trigger_bg: egui::Color32::from_rgba_unmultiplied(252, 211, 77, 24),
+            trigger_bg: egui::Color32::from_rgba_unmultiplied(252, 211, 77, 26),
             target_fg: egui::Color32::from_rgb(125, 211, 252),  // sky-300
-            target_bg: egui::Color32::from_rgba_unmultiplied(125, 211, 252, 22),
+            target_bg: egui::Color32::from_rgba_unmultiplied(125, 211, 252, 24),
             gamepad_fg: egui::Color32::from_rgb(196, 181, 253),              // #C4B5FD 紫
-            gamepad_bg: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 18),
+            gamepad_bg: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 20),
             mouse_fg: egui::Color32::from_rgb(253, 186, 116),                // orange-300
-            mouse_bg: egui::Color32::from_rgba_unmultiplied(251, 146, 60, 16),
-            btn_primary: egui::Color32::from_rgb(124, 58, 237), // #7C3AED (白字 5.9:1)
-            btn_secondary: egui::Color32::from_rgb(44, 42, 72), // faint
-            btn_secondary_text: egui::Color32::from_rgb(214, 210, 232),
+            mouse_bg: egui::Color32::from_rgba_unmultiplied(251, 146, 60, 18),
+            btn_primary: egui::Color32::from_rgb(79, 85, 232), // #4F55E8 (白字 5.5:1, 与亮色主题同色)
+            btn_secondary: egui::Color32::from_rgb(45, 52, 69), // faint
+            btn_secondary_text: egui::Color32::from_rgb(214, 219, 230),
             btn_danger: egui::Color32::from_rgb(225, 29, 72), // #E11D48 (白字 4.7:1)
+            on_emphasis: egui::Color32::from_rgb(13, 16, 22), // #0D1016 浅底上的近黑文字
             motor_l: egui::Color32::from_rgb(251, 146, 60),   // orange-400
             motor_r: egui::Color32::from_rgb(248, 113, 113),  // red-400
         }
@@ -196,6 +207,7 @@ impl Theme {
             btn_secondary: egui::Color32::from_rgb(231, 233, 238),
             btn_secondary_text: egui::Color32::from_rgb(74, 80, 96),
             btn_danger: egui::Color32::from_rgb(225, 29, 72),
+            on_emphasis: egui::Color32::WHITE, // 亮色: 浅底上继续用白字 (与既有观感一致)
             motor_l: egui::Color32::from_rgb(234, 88, 12),    // orange-600
             motor_r: egui::Color32::from_rgb(220, 38, 38),    // red-600
         }

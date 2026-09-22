@@ -283,7 +283,7 @@ impl DeviceManagerDialog {
                                     let refresh_btn = egui::Button::new(
                                         egui::RichText::new(t.refresh_button())
                                             .size(13.0)
-                                            .color(egui::Color32::WHITE),
+                                            .color(Theme::new(dark_mode).on_emphasis),
                                     )
                                     .fill(accent_color)
                                     .corner_radius(12.0)
@@ -334,7 +334,7 @@ impl DeviceManagerDialog {
                             egui::Button::new(
                                 egui::RichText::new(t.device_manager_close_button())
                                     .size(15.0)
-                                    .color(egui::Color32::WHITE)
+                                    .color(Theme::new(dark_mode).on_emphasis)
                                     .strong(),
                             )
                             .fill(accent_color)
@@ -485,7 +485,7 @@ impl DeviceManagerDialog {
                         let settings_btn = egui::Button::new(
                             egui::RichText::new(btn_text)
                                 .size(12.0)
-                                .color(egui::Color32::WHITE),
+                                .color(Theme::new(dark_mode).on_emphasis),
                         )
                         .fill(Theme::new(dark_mode).accent)
                         .corner_radius(10.0)
@@ -511,7 +511,7 @@ impl DeviceManagerDialog {
                             let reactivate_btn = egui::Button::new(
                                 egui::RichText::new(t.reactivate_button())
                                     .size(12.0)
-                                    .color(egui::Color32::WHITE),
+                                    .color(Theme::new(dark_mode).on_emphasis),
                             )
                             .fill(Theme::new(dark_mode).good)
                             .corner_radius(10.0)
@@ -610,7 +610,7 @@ impl DeviceManagerDialog {
                         ui.horizontal(|ui| {
                             let test_btn = egui::Button::new(
                                 egui::RichText::new(t.test_vibration_button())
-                                    .color(egui::Color32::WHITE),
+                                    .color(Theme::new(dark_mode).on_emphasis),
                             )
                             .fill(Theme::new(dark_mode).good)
                             .corner_radius(10.0)
@@ -621,10 +621,12 @@ impl DeviceManagerDialog {
                             }
 
                             let stop_btn = egui::Button::new(
+                                /* ★v5: 破坏性动作走深红 btn_danger + 白字 (4.7:1);
+                                 * rose-400 浅底压黑字虽然能读, 但观感不像"危险" */
                                 egui::RichText::new(t.stop_vibration_button())
                                     .color(egui::Color32::WHITE),
                             )
-                            .fill(Theme::new(dark_mode).bad)
+                            .fill(Theme::new(dark_mode).btn_danger)
                             .corner_radius(10.0)
                             .min_size(egui::vec2(0.0, 32.0));
 
@@ -790,7 +792,7 @@ impl DeviceManagerDialog {
                         let filter_btn = egui::Button::new(
                             egui::RichText::new(filter_text)
                                 .size(12.0)
-                                .color(egui::Color32::WHITE),
+                                .color(Theme::new(dark_mode).on_emphasis),
                         )
                         .fill(filter_bg)
                         .corner_radius(12.0)
@@ -944,7 +946,7 @@ impl DeviceManagerDialog {
                             let reactivate_btn = egui::Button::new(
                                 egui::RichText::new(t.reactivate_button())
                                     .size(12.0)
-                                    .color(egui::Color32::WHITE),
+                                    .color(Theme::new(dark_mode).on_emphasis),
                             )
                             .fill(Theme::new(dark_mode).good)
                             .corner_radius(10.0)

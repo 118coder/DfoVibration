@@ -624,8 +624,10 @@ pub fn slot_targets(config: &AppConfig, slot: &GamepadSlot) -> Vec<String> {
     }
 }
 
-/// 使用 resvg 将内嵌手柄 SVG 渲染为 egui 纹理 (2x 超采样, HiDPI 清晰)。
-pub fn load_gamepad_texture(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
+/// ★v24.36 光栅化手柄 SVG → egui 图像 (纯 CPU, **可在后台线程执行**)。
+/// 手柄 SVG 不含 `<text>` (纯几何路径), 因此**不需要** `load_system_fonts()`
+/// —— 旧代码在这里白扫了一遍全系统字体 (首次进页额外 ~100ms+)。
+pub(crate) fn gamepad_color_image(dark: bool) -> Option<egui::ColorImage> {
     // 双主题变体: 亮色 = resources/gamepad-light.svg (仅 style 颜色不同, 几何一致,
     // 热点坐标共用同一 viewBox)
     let svg_data: &[u8] = if dark {
@@ -634,8 +636,7 @@ pub fn load_gamepad_texture(ctx: &egui::Context, dark: bool) -> Option<egui::Tex
         include_bytes!("../../resources/gamepad-light.svg")
     };
 
-    let mut opt = resvg::usvg::Options::default();
-    opt.fontdb_mut().load_system_fonts();
+    let opt = resvg::usvg::Options::default();
     let tree = resvg::usvg::Tree::from_data(svg_data, &opt).ok()?;
 
     let size = tree.size().to_int_size();
@@ -648,7 +649,16 @@ pub fn load_gamepad_texture(ctx: &egui::Context, dark: bool) -> Option<egui::Tex
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let image_size = [pixmap.width() as usize, pixmap.height() as usize];
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(image_size, pixmap.data());
+    /* ★v24.36 性能: tiny_skia 输出即预乘 RGBA, 直通避免逐像素反预乘 */
+    Some(egui::ColorImage::from_rgba_premultiplied(
+        image_size,
+        pixmap.data(),
+    ))
+}
+
+/// 使用 resvg 将内嵌手柄 SVG 渲染为 egui 纹理 (2x 超采样, HiDPI 清晰)。
+pub fn load_gamepad_texture(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
+    let color_image = gamepad_color_image(dark)?;
     Some(ctx.load_texture(
         if dark { "gamepad_svg_dark" } else { "gamepad_svg_light" },
         color_image,
@@ -683,8 +693,9 @@ impl SorahkGui {
                 }
             }
         }
-        // 主题切换时重渲染对应变体 (按 dark 标记缓存)
-        if self.gamepad_texture.is_none() || self.gamepad_texture_dark != self.dark_mode {
+        /* ★v24.36 性能: 正常由启动预热线程备好 (首帧零成本); 主题切换期间沿用旧
+         * 纹理, 后台重渲染完成后自动替换 —— 既不卡一下也不闪空白。 */
+        if self.gamepad_texture.is_none() {
             self.gamepad_texture = load_gamepad_texture(ctx, self.dark_mode);
             self.gamepad_texture_dark = self.dark_mode;
         }
@@ -2038,6 +2049,33 @@ impl SorahkGui {
                 } else {
                     for t in &targets {
                         th.target_badge(ui, t);
+                    }
+                }
+                /* ★v24.35 序列接管明示: 该槽位挂了序列宏时键盘按键不生效;
+                 * 序列本身坏了 (解析失败 = 整条不生效) 时给红字, 别说成"已接管" */
+                let slot_seq_text = find_slot_mapping_index(&self.config, slot)
+                    .map(|i| self.config.mappings[i].sequence_text.trim().to_string())
+                    .unwrap_or_default();
+                if !slot_seq_text.is_empty() {
+                    let macros: std::collections::HashMap<String, String> = self
+                        .config
+                        .universal_macros
+                        .iter()
+                        .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                        .collect();
+                    if crate::sequence::parse_sequence(&slot_seq_text, &macros).is_err() {
+                        ui.label(
+                            egui::RichText::new("✗ 序列宏解析失败 — 本条映射不生效")
+                                .size(12.0)
+                                .color(th.bad),
+                        )
+                        .on_hover_text("展开下方「更多设置」修正序列 (或清空它恢复键盘按键)");
+                    } else if !targets.is_empty() {
+                        ui.label(
+                            egui::RichText::new("🔒 已由序列宏接管 (下方「更多设置」)")
+                                .size(12.0)
+                                .color(th.warn),
+                        );
                     }
                 }
             });

@@ -39,6 +39,9 @@ struct DevRuntime {
     phys_held: bool,
     /// ★v24.31 抬起映射: 触发键抬起时额外发送的动作 (None = 旧行为)
     release_action: Option<crate::state::OutputAction>,
+    /// ★v24.35 序列条目标记: action 是占位键, 从未注入 ——
+    /// 按住期的重复按下只吞掉 (边沿触发一次), Released 只发 release_action。
+    is_sequence: bool,
 }
 
 struct WorkerPool {
@@ -408,6 +411,10 @@ impl KeyboardHook {
                     // (暂停期间闸门吞掉了 Released, 清缓存后它永远不会再送达)。
                     // 连发条目直接丢弃 —— 停止连发本身就是暂停的正确语义。
                     for (_, rt) in device_states.drain() {
+                        // ★v24.35: 序列条目的 action 是占位键 (从未注入), 无需补松开
+                        if rt.is_sequence {
+                            continue;
+                        }
                         // ★v24.31: 锁定条目即使连发也在"按住"注入键 —— 暂停必须补松开防卡键
                         if !rt.turbo || rt.locked {
                             state.simulate_release(&rt.action);
@@ -440,6 +447,10 @@ impl KeyboardHook {
         /* ★v24.31 审计: 退出前补松开 —— 锁定/非连发条目的注入键不能悬空到进程死后 (防卡键) */
         if !device_states.is_empty() {
             for (_, rt) in device_states.drain() {
+                // ★v24.35: 序列条目的 action 是占位键 (从未注入), 无需补松开
+                if rt.is_sequence {
+                    continue;
+                }
                 if !rt.turbo || rt.locked {
                     state.simulate_release(&rt.action);
                 }
@@ -556,6 +567,11 @@ impl KeyboardHook {
                 if let Some(rt) =
                     device_states.get_mut(&device)
                 {
+                    /* ★v24.35 序列条目: 按住期间的重复按下 (键盘自动重复/手柄
+                     * 重复上报) 一律吞掉 —— 序列只按"按下沿"触发一次。 */
+                    if rt.is_sequence {
+                        return;
+                    }
                     if rt.turbo {
                         // 快速连按保护: 设备已在连发中时, 冗余的 Pressed(按住期间键盘自动重复、
                         // 或手柄/双连接上报的重复按下)不再叠加完整注入周期 ——
@@ -597,8 +613,11 @@ impl KeyboardHook {
                             state.sequence_ctl(ctl);
                             return;
                         }
-                        /* ★v24.31 序列宏: 独立线程执行 (绝不占输入 worker);
-                         * 同一设备上一条没跑完时忽略本次触发。 */
+                        /* ★v24.35 序列宏: 独立线程执行 (绝不占输入 worker);
+                         * 同一设备上一条没跑完时忽略本次触发。
+                         * ★v24.35 边沿触发: 序列条目也登记占位 DevRuntime ——
+                         * 按住期间的键盘自动重复走快路径被吞掉 (不再"跑完一轮
+                         * 立刻再来一轮"的变相连发), 抬起时移除并发送抬起映射。 */
                         if let Some(steps) = &mapping.sequence {
                             if let Ok(run) = state.register_sequence_run(&device) {
                                 let st = Arc::clone(state);
@@ -608,6 +627,24 @@ impl KeyboardHook {
                                     .name("seq-runner".into())
                                     .spawn(move || crate::sequence::run_sequence(st, dev, steps, run));
                             }
+                            device_states.insert(
+                                device,
+                                DevRuntime {
+                                    last_time: now,
+                                    interval: mapping.interval,
+                                    duration: mapping.event_duration,
+                                    action: crate::state::OutputAction::KeyboardKey(0), // 占位: 永不注入
+                                    turbo: false,
+                                    run_gap: 0,
+                                    run_recheck: false,
+                                    revision: state.mappings_revision(),
+                                    lock_enabled: false,
+                                    locked: false,
+                                    phys_held: true,
+                                    release_action: mapping.release_action.clone(),
+                                    is_sequence: true,
+                                },
+                            );
                             return;
                         }
                         let target_action_clone = mapping.target_action.clone();
@@ -636,6 +673,7 @@ impl KeyboardHook {
                                 locked: lock_enabled,
                                 phys_held: true,
                                 release_action: mapping.release_action.clone(),
+                                is_sequence: false,
                             },
                         );
 
@@ -702,6 +740,11 @@ impl KeyboardHook {
                 }
                 // For non-turbo mode, simulate release event
                 let release_fire = device_states.get(&device).and_then(|rt| {
+                    /* ★v24.35 序列条目: 占位键从未注入 (无键可松), 只发抬起映射 ——
+                     * 「按下出连招、抬起收招」自此在序列模式下也成立。 */
+                    if rt.is_sequence {
+                        return rt.release_action.clone().map(|ra| (ra, rt.duration));
+                    }
                     if !rt.turbo {
                         state.simulate_release(&rt.action);
                     }
@@ -732,6 +775,15 @@ impl KeyboardHook {
 
         // Iterate over cached device states
         for (_device, rt) in device_states.iter_mut() {
+            /* ★v24.35 序列条目: 无连发/锁语义, 只需在配置重载后强制作废 ——
+             * 否则一次丢失的"抬起"会让该触发键被永久吞掉 (再按走快路径被判为
+             * 按住重复)。占位键从未注入, 无需补松开。 */
+            if rt.is_sequence {
+                if rt.revision != revision_now {
+                    stale_locked.push(_device.clone());
+                }
+                continue;
+            }
             /* ★v24.31 锁定防卡键: 配置重载后, 旧修订号的锁定条目强制解锁松开
              * (映射已被改掉/删掉, 注入键再按着就永远悬空) */
             if rt.locked && rt.revision != revision_now {
@@ -1505,5 +1557,108 @@ mod tests {
         let unmapped_device = InputDevice::Keyboard(0x5A); // 'Z' key
         let no_mapping = state.get_input_mapping(&unmapped_device);
         assert!(no_mapping.is_none(), "Unmapped key should return None");
+    }
+
+    /// ★v24.35 序列条目边沿触发回归: 按下建档占位条目 (is_sequence) →
+    /// 按住期自动重复只吞掉 (条目保留) → 抬起移除条目。
+    /// (旧行为: 不建档 → 重复按下每次走慢路径, 序列跑完立即重跑 = 变相连发)
+    #[test]
+    fn test_sequence_entry_edge_trigger_lifecycle() {
+        use crate::config::KeyMapping;
+        use smallvec::SmallVec;
+
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            sequence_text: "A⏱2".to_string(),
+            release_targets: SmallVec::from_vec(vec!["SPACE".to_string()]),
+            trigger_key: "F8".to_string(),
+            target_keys: SmallVec::new(), // 纯序列映射
+            interval: Some(10),
+            event_duration: Some(5),
+            turbo_enabled: true, // 会被序列压制
+            move_speed: 10,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            note: String::new(),
+        }];
+        let state = Arc::new(AppState::new(config).unwrap());
+        let device = AppState::input_name_to_device("F8").unwrap();
+
+        let mut ds: HashMap<InputDevice, DevRuntime> = HashMap::new();
+        // 首次按下 → 派生 seq-runner + 登记占位条目
+        KeyboardHook::handle_input_event(&state, &mut ds, InputEvent::Pressed(device.clone()));
+        let rt = ds.get(&device).expect("序列条目应登记占位 DevRuntime");
+        assert!(rt.is_sequence);
+        assert!(!rt.turbo, "序列条目连发必须停用");
+        assert!(rt.release_action.is_some(), "抬起映射应随条目携带");
+        assert!(!rt.lock_enabled);
+
+        // 按住期间的自动重复 → 走快路径被吞掉, 条目原样保留
+        KeyboardHook::handle_input_event(&state, &mut ds, InputEvent::Pressed(device.clone()));
+        assert!(ds.contains_key(&device), "重复按下不得移除/重建条目");
+        assert!(ds.get(&device).unwrap().is_sequence);
+
+        // 抬起 → 移除条目 (下次按下才会重新触发序列)
+        KeyboardHook::handle_input_event(&state, &mut ds, InputEvent::Released(device.clone()));
+        assert!(!ds.contains_key(&device), "抬起应移除序列占位条目");
+
+        // 等后台 seq-runner 跑完 (2ms hold, 防止泄漏断言干扰)
+        std::thread::sleep(Duration::from_millis(80));
+    }
+
+    /// ★v24.35 序列条目防"永久吞掉": 配置 reload (修订号 +1) 后, 驻留的序列占位
+    /// 条目必须在 handle_timeout 里被清掉 —— 否则一次丢失的抬起会让该触发键永远
+    /// 走快路径被吞 (序列再也触发不了, 只能重启)。
+    #[test]
+    fn test_sequence_entry_dropped_on_config_reload() {
+        use crate::config::KeyMapping;
+        use smallvec::SmallVec;
+
+        fn cfg() -> AppConfig {
+            let mut config = AppConfig::default();
+            config.mappings = vec![KeyMapping {
+                sequence_text: "A⏱2".to_string(),
+                release_targets: SmallVec::new(),
+                trigger_key: "F8".to_string(),
+                target_keys: SmallVec::new(),
+                interval: Some(10),
+                event_duration: Some(5),
+                turbo_enabled: false,
+                move_speed: 10,
+                double_tap_enabled: false,
+                double_tap_gap_ms: 50,
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
+                lock_enabled: false,
+                note: String::new(),
+            }];
+            config
+        }
+
+        let state = Arc::new(AppState::new(cfg()).unwrap());
+        let device = AppState::input_name_to_device("F8").unwrap();
+        let mut ds: HashMap<InputDevice, DevRuntime> = HashMap::new();
+
+        // 按下建档 (抬起事件"丢失" → 条目驻留)
+        KeyboardHook::handle_input_event(&state, &mut ds, InputEvent::Pressed(device.clone()));
+        assert!(ds.contains_key(&device));
+
+        // 模拟配置热重载 (修订号 +1)
+        state.reload_config(cfg()).unwrap();
+        KeyboardHook::handle_timeout(&state, &mut ds);
+        assert!(
+            !ds.contains_key(&device),
+            "配置 reload 后旧修订号的序列占位条目必须被清除"
+        );
+
+        // 清理后该触发键能重新触发序列
+        KeyboardHook::handle_input_event(&state, &mut ds, InputEvent::Pressed(device.clone()));
+        assert!(ds.get(&device).map(|rt| rt.is_sequence).unwrap_or(false));
+        std::thread::sleep(Duration::from_millis(80));
     }
 }

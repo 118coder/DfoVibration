@@ -51,6 +51,12 @@ impl eframe::App for SorahkGui {
             }
         }
 
+        /* ★v24.36 性能: SVG 纹理后台预热 —— 键盘/手柄 SVG 的光栅化
+         * (全系统字体扫描 + 2x 渲染 750 万像素) 从"首次进页那一帧"挪到后台线程,
+         * 消除用户反馈的「切到连发映射页会卡一下」。此处只做非阻塞的启动与收编。 */
+        self.ensure_texture_prewarm(ctx);
+        self.poll_texture_prewarm();
+
         // Check for HID device activation requests
         if self.hid_activation_dialog.is_none() {
             let requests = self.app_state.poll_hid_activation_requests();

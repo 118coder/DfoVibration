@@ -3316,8 +3316,11 @@ impl AppState {
                 continue;
             }
 
-            /* ★v24.31 序列宏: sequence_text 非空时接管输出。解析失败退回普通目标键
-             * (记日志, 不阻断加载)。序列条目上 连发/锁定/双击/奔跑 全部停用。 */
+            /* ★v24.35 序列宏: sequence_text 非空时接管输出。序列条目上
+             * 连发/锁定/双击/奔跑 全部停用。
+             * ★v24.35 冲突修复: 解析失败**不再静默回退目标键** —— 回退会让行为
+             * 突变 (连招变单按) 且 GUI 仍显示旧序列; 更糟的是「目标键空 + 序列坏」
+             * 时占位 KeyboardKey(0) 会真被 simulate_press 注入。整条跳过 + 日志。 */
             let sequence: Option<Arc<[ResolvedStep]>> =
                 if mapping.sequence_text.trim().is_empty() {
                     None
@@ -3365,18 +3368,18 @@ impl AppState {
                                 Some(Arc::from(resolved.into_boxed_slice()))
                             } else {
                                 eprintln!(
-                                    "[config] 序列解析失败, 退回普通目标键: {:?}",
+                                    "[config] 序列解析失败, 本条映射不生效 (不回退目标键): {:?}",
                                     mapping.trigger_key
                                 );
-                                None
+                                continue;
                             }
                         }
                         Err(e) => {
                             eprintln!(
-                                "[config] 序列语法错误 ({e}), 退回普通目标键: {:?}",
+                                "[config] 序列语法错误 ({e}), 本条映射不生效 (不回退目标键): {:?}",
                                 mapping.trigger_key
                             );
-                            None
+                            continue;
                         }
                     }
                 };
@@ -3397,7 +3400,6 @@ impl AppState {
                         && !mapping.run_enabled
                         && sequence.is_none(),
                     double_tap_gap_ms: mapping.double_tap_gap_ms,
-                    run_enabled: mapping.run_enabled,
                     run_threshold: mapping.run_threshold.clamp(50, 95),
                     run_recheck: mapping.run_recheck,
                     /* ★v24.31 锁定与奔跑互斥: 奔跑有自己的按住语义, 双开语义打架;
@@ -3406,6 +3408,9 @@ impl AppState {
                         && !mapping.run_enabled
                         && !mapping.double_tap_enabled
                         && sequence.is_none(),
+                    /* ★v24.35 补漏: 重推奔跑同样与序列互斥 —— 运行时序列分支提前
+                     * return 奔跑本就不会执行, 数据层双真只会造成 GUI 误显示 */
+                    run_enabled: mapping.run_enabled && sequence.is_none(),
                     sequence,
                     sequence_ctl: None,
                     /* ★v24.31 抬起映射: 解析失败逐条跳过并记日志, 不阻断整表加载 */
@@ -4432,6 +4437,64 @@ mod tests {
         assert!(!info.double_tap_enabled);
         assert!(!info.lock_enabled);
         assert!(info.sequence_ctl.is_none());
+    }
+
+    /// ★v24.35 冲突修复回归: 序列解析失败 → 整条映射**不生效** (不再静默回退
+    /// 目标键模式 —— 回退会造成行为突变 + 占位 KeyboardKey(0) 被真注入)。
+    #[test]
+    fn test_create_input_mappings_sequence_parse_failure_skips_mapping() {
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            trigger_key: "F8".to_string(),
+            target_keys: SmallVec::from_vec(vec!["A".to_string()]), // 有目标键也不回退
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            sequence_text: "宏(不存在的宏)".to_string(), // 引用未定义宏 → 解析失败
+            release_targets: SmallVec::new(),
+            note: String::new(),
+        }];
+        let map = AppState::create_input_mappings(&config).expect("单条脏数据不得阻断加载");
+        let device = AppState::input_name_to_device("F8").unwrap();
+        assert!(
+            map.get(&device).is_none(),
+            "解析失败的序列映射必须整条跳过, 不回退目标键"
+        );
+    }
+
+    /// ★v24.35 补漏回归: 重推奔跑与序列互斥 (数据层压制, 防 GUI 双真误显示)。
+    #[test]
+    fn test_create_input_mappings_sequence_suppresses_run() {
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            trigger_key: "F8".to_string(),
+            target_keys: SmallVec::from_vec(vec!["A".to_string()]),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: true, // 会被序列压制
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            sequence_text: "A⏱50".to_string(),
+            release_targets: SmallVec::new(),
+            note: String::new(),
+        }];
+        let map = AppState::create_input_mappings(&config).unwrap();
+        let device = AppState::input_name_to_device("F8").unwrap();
+        let info = map.get(&device).expect("映射应存在");
+        assert!(info.sequence.is_some());
+        assert!(!info.run_enabled, "序列条目上重推奔跑必须停用");
     }
 
     /// ★v24.31 审计回归: 序列控制键建档 (不注入, worker 拦截切全局暂停状态)。

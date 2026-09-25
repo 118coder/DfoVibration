@@ -943,6 +943,9 @@ impl SorahkGui {
         }
         let mut remove_target: Option<usize> = None;
         let mut request_delete = false;
+        /* ★v24.35 序列接管明示: 序列非空时目标键/连发/双击/奔跑/锁定 在引擎侧
+         * 全部被压制, GUI 必须同步灰掉并提示, 消除「设置了却悄悄不生效」的双轨状态 */
+        let seq_active = !self.config.mappings[idx].sequence_text.trim().is_empty();
 
         egui::Frame::NONE
             .fill(th.card_alt)
@@ -1007,6 +1010,17 @@ impl SorahkGui {
                     if targets.is_empty() {
                         ui.label(th.hint_text("尚未设置目标键"));
                     }
+                    /* ★v24.35 序列接管明示: 目标键在序列模式下不生效 */
+                    if seq_active && !targets.is_empty() {
+                        ui.label(
+                            egui::RichText::new("🔒 已由序列宏接管 —— 按下触发键时目标键不生效")
+                                .size(12.0)
+                                .color(th.warn),
+                        )
+                        .on_hover_text(
+                            "序列宏非空时输出由序列完全接管。\n目标键保留只是数据未删, 引擎不会模拟它们。\n如需目标键生效: 清空序列 (序列编辑器「清空」按钮)。",
+                        );
+                    }
                     let capturing = matches!(
                         self.key_capture_mode,
                         KeyCaptureMode::MappingTarget(i) if i == idx
@@ -1016,9 +1030,12 @@ impl SorahkGui {
                     } else {
                         "＋ 添加目标"
                     };
-                    if ui.add(th.secondary_button(btn_text)).clicked() && !capturing {
-                        self.start_mapping_capture(idx, false);
-                    }
+                    /* ★v24.35 序列模式下目标键不生效, 捕获按钮灰掉 (chips 仍可移除) */
+                    ui.add_enabled_ui(!seq_active, |ui| {
+                        if ui.add(th.secondary_button(btn_text)).clicked() && !capturing {
+                            self.start_mapping_capture(idx, false);
+                        }
+                    });
                 });
                 ui.add_space(theme::SP_S);
 
@@ -1048,6 +1065,14 @@ impl SorahkGui {
                             "例: 触发键是 J, 抬起键设 SPACE → 松开 J 时自动按一下空格"
                         ),
                     ));
+                    }
+                    /* ★v24.35: 抬起映射在序列模式下同样生效 (按下跑连招, 抬起收招) */
+                    if seq_active && !release_targets.is_empty() {
+                        ui.label(
+                            egui::RichText::new("✓ 序列模式下生效: 松开触发键时发送 (收招/取消)")
+                                .size(12.0)
+                                .color(th.good),
+                        );
                     }
                     let capturing = matches!(
                         self.key_capture_mode,
@@ -1098,13 +1123,26 @@ impl SorahkGui {
                     }
                     ui.label(th.weak("ms"));
                     ui.add_space(theme::SP_L);
-                    if ui.checkbox(&mut turbo, "连发").changed() {
-                        self.config.mappings[idx].turbo_enabled = turbo;
+                    /* ★v24.35 序列接管: 序列模式下连发不生效, 灰掉 */
+                    ui.add_enabled_ui(!seq_active, |ui| {
+                        if ui.checkbox(&mut turbo, "连发").changed() {
+                            self.config.mappings[idx].turbo_enabled = turbo;
+                        }
+                    });
+                    if seq_active {
+                        ui.label(
+                            egui::RichText::new("🔒 连发/锁定/简易奔跑/重推奔跑 已由序列宏接管")
+                                .size(12.0)
+                                .color(th.warn),
+                        )
+                        .on_hover_text(
+                            "序列宏自己管理按键节奏, 连发/锁定/双击/奔跑在其生效期间全部停用。\n清空序列后恢复。",
+                        );
                     }
                     ui.add_space(theme::SP_L);
                     /* ★v24.31 锁定 Lock: 按一下=按住不松, 再按一下=松开; 可与连发叠加。
                      * 与 简易奔跑/重推奔跑 互斥 (奔跑有自身的按住语义, 引擎侧同样压制)。 */
-                    ui.add_enabled_ui(!run_enabled && !double_tap, |ui| {
+                    ui.add_enabled_ui(!run_enabled && !double_tap && !seq_active, |ui| {
                         let mut lock = self.config.mappings[idx].lock_enabled;
                         let resp = ui
                             .checkbox(&mut lock, "锁定")
@@ -1119,8 +1157,9 @@ impl SorahkGui {
                     });
                     ui.add_space(theme::SP_L);
                     /* ★v20.3: 简易奔跑补齐到连发页 (原只在设置弹窗有)
-                     * ★v21.5: 与重推奔跑互斥 —— 重推奔跑勾选时此项灰掉 (不允许勾选) */
-                    ui.add_enabled_ui(!run_enabled, |ui| {
+                     * ★v21.5: 与重推奔跑互斥 —— 重推奔跑勾选时此项灰掉 (不允许勾选)
+                     * ★v24.35: 序列接管时同样灰掉 */
+                    ui.add_enabled_ui(!run_enabled && !seq_active, |ui| {
                         let resp = ui
                             .checkbox(&mut double_tap, "简易奔跑")
                             .on_hover_text(if run_enabled {
@@ -1176,8 +1215,9 @@ impl SorahkGui {
                  * 松开再按下 (游戏判定双击→奔跑)。勾选后本条的 连发/简易奔跑 不生效。 */
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("重推奔跑"));
-                    /* ★v21.5: 与简易奔跑互斥 —— 简易奔跑勾选时此项灰掉 (不允许勾选) */
-                    ui.add_enabled_ui(!double_tap, |ui| {
+                    /* ★v21.5: 与简易奔跑互斥 —— 简易奔跑勾选时此项灰掉 (不允许勾选)
+                     * ★v24.35: 序列接管时同样灰掉 */
+                    ui.add_enabled_ui(!double_tap && !seq_active, |ui| {
                         let resp = ui
                             .checkbox(&mut run_enabled, "")
                             .on_hover_text(if double_tap {
@@ -1471,6 +1511,20 @@ impl SorahkGui {
         ui.horizontal_wrapped(|ui| {
             ui.label(th.weak("序列宏"));
 
+            /* ★v24.35 解析失败红条: 引擎侧不再回退目标键, 整条映射不生效 ——
+             * 必须让用户当场看到, 否则「按了没反应」无从排查 */
+            if !seq_now.trim().is_empty() {
+                if let Err(e) = &parse_result {
+                    ui.label(
+                        egui::RichText::new(format!("✗ 序列解析失败: {e} —— 本条映射当前不生效!"))
+                            .size(12.5)
+                            .color(th.bad),
+                    )
+                    .on_hover_text(
+                        "引擎不再回退到目标键模式 (防行为突变)。\n常见原因: 语法错 / 引用的通用宏被改名或删除。\n修正后自动恢复; 或点下方「清空序列」退回普通目标键模式。",
+                    );
+                }
+            }
             /* ● 录制 / ■ 停止 (GetAsyncKeyState 轮询线程, 不依赖 LL 钩子) */
             if recording {
                 ui.label(

@@ -151,17 +151,56 @@ fn key_map_state(config: &crate::config::AppConfig, name: &str) -> KeyMapState {
     KeyMapState::Free
 }
 
-/// 使用 resvg 渲染键盘 SVG 为 egui 纹理 (2x 超采样, 双主题变体)。
-pub fn load_keyboard_texture(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
-    let svg_data: &[u8] = if dark {
-        include_bytes!("../../resources/keyboard.svg")
-    } else {
-        include_bytes!("../../resources/keyboard-light.svg")
-    };
+/// ★v24.36 进程级缓存: 本机字体库。
+/// 实测 `load_system_fonts()` 单次 ~449ms (键盘 SVG 有 102 个 `<text>` 键帽字形,
+/// resvg 必须解析它才能成形), 而渲染本身只要 12ms —— 缓存后主题切换/重复渲染零负担。
+static SYSTEM_FONTDB: std::sync::OnceLock<Option<std::sync::Arc<resvg::usvg::fontdb::Database>>> =
+    std::sync::OnceLock::new();
+/// ★v24.36 解析后的 SVG 树缓存 (双主题各一棵)。实测 usvg 解析 ~407ms, 同样是一次性成本。
+static TREE_LIGHT: std::sync::OnceLock<Option<std::sync::Arc<resvg::usvg::Tree>>> =
+    std::sync::OnceLock::new();
+static TREE_DARK: std::sync::OnceLock<Option<std::sync::Arc<resvg::usvg::Tree>>> =
+    std::sync::OnceLock::new();
 
-    let mut opt = resvg::usvg::Options::default();
-    opt.fontdb_mut().load_system_fonts();
-    let tree = resvg::usvg::Tree::from_data(svg_data, &opt).ok()?;
+/// 取 (并首次构建) 本机字体库。
+fn system_fontdb() -> Option<std::sync::Arc<resvg::usvg::fontdb::Database>> {
+    SYSTEM_FONTDB
+        .get_or_init(|| {
+            let mut db = resvg::usvg::fontdb::Database::new();
+            db.load_system_fonts();
+            Some(std::sync::Arc::new(db))
+        })
+        .clone()
+}
+
+/// 取 (并首次解析) 指定主题的 SVG 树。首次 ~407ms, 之后 clone Arc 即返回。
+fn keyboard_tree(dark: bool) -> Option<std::sync::Arc<resvg::usvg::Tree>> {
+    let cell = if dark { &TREE_DARK } else { &TREE_LIGHT };
+    cell.get_or_init(|| {
+        let svg_data: &[u8] = if dark {
+            include_bytes!("../../resources/keyboard.svg")
+        } else {
+            include_bytes!("../../resources/keyboard-light.svg")
+        };
+        let mut opt = resvg::usvg::Options::default();
+        if let Some(db) = system_fontdb() {
+            opt.fontdb = db;
+        }
+        resvg::usvg::Tree::from_data(svg_data, &opt)
+            .ok()
+            .map(std::sync::Arc::new)
+    })
+    .clone()
+}
+
+/// ★v24.36 光栅化键盘 SVG → egui 图像 (纯 CPU, **可在后台线程执行**)。
+///
+/// 这里是"首次进连发页卡一下"的全部重活: `load_system_fonts()` 要枚举解析本机
+/// 全部字体 (SVG 里有 102 个 `<text>` 键帽字形), 再在 2x 倍率下渲染
+/// 2240×840 ≈ 750 万像素。抽成独立函数后由启动预热线程在**主线程之外**完成,
+/// 且字体库/解析树都走进程级缓存 (重复调用只剩 ~12ms 的像素渲染)。
+pub(crate) fn keyboard_color_image(dark: bool) -> Option<egui::ColorImage> {
+    let tree = keyboard_tree(dark)?;
 
     let size = tree.size().to_int_size();
     let width = (size.width() as f32 * RENDER_SCALE) as u32;
@@ -171,7 +210,19 @@ pub fn load_keyboard_texture(ctx: &egui::Context, dark: bool) -> Option<egui::Te
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
     let image_size = [pixmap.width() as usize, pixmap.height() as usize];
-    let color_image = egui::ColorImage::from_rgba_unmultiplied(image_size, pixmap.data());
+    /* ★v24.36 性能: tiny_skia 输出本就是**预乘** RGBA, 直接 from_rgba_premultiplied
+     * —— 旧写法 from_rgba_unmultiplied 会对 750 万像素逐个做"除 alpha"反预乘,
+     * 再由 egui 乘回去 (纯浪费 + 半透明边缘精度损失)。 */
+    Some(egui::ColorImage::from_rgba_premultiplied(
+        image_size,
+        pixmap.data(),
+    ))
+}
+
+/// 使用 resvg 渲染键盘 SVG 为 egui 纹理 (2x 超采样, 双主题变体)。
+/// 预热已就绪时页面直接命中缓存, 不会走到这里 (见 SorahkGui::poll_texture_prewarm)。
+pub fn load_keyboard_texture(ctx: &egui::Context, dark: bool) -> Option<egui::TextureHandle> {
+    let color_image = keyboard_color_image(dark)?;
     Some(ctx.load_texture(
         if dark { "keyboard_svg_dark" } else { "keyboard_svg_light" },
         color_image,
@@ -184,8 +235,10 @@ impl SorahkGui {
     pub(crate) fn render_keyboard_quick_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let th = Theme::new(self.dark_mode);
 
-        // 主题切换时重渲染 (按 dark 标记缓存)
-        if self.keyboard_texture.is_none() || self.keyboard_texture_dark != self.dark_mode {
+        /* ★v24.36 性能: 正常情况下纹理已由启动预热线程备好 (页面首帧零成本)。
+         * 仅当预热尚未就绪/失败时才在此同步兜底; 主题不匹配时**继续用旧纹理**
+         * (预热线程随后会替换), 避免"卡一下"或空白帧。 */
+        if self.keyboard_texture.is_none() {
             self.keyboard_texture = load_keyboard_texture(ctx, self.dark_mode);
             self.keyboard_texture_dark = self.dark_mode;
         }
@@ -278,34 +331,6 @@ impl SorahkGui {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                     }
 
-                    let hover = if marked_remove {
-                        format!(
-                            "{} — 将移除 (确认后生效), 再次点击取消",
-                            key.label
-                        )
-                    } else {
-                        match state {
-                            KeyMapState::SameName => format!(
-                                "{} — 已有同名连发 ({}→{}), 点击标记移除 (确认后生效)",
-                                key.label, key.name, key.name
-                            ),
-                            KeyMapState::OtherTarget => format!(
-                                "{} — 已被其他映射占用 (确认时可选择覆盖)",
-                                key.label
-                            ),
-                            KeyMapState::Free => {
-                                if selected {
-                                    format!("{} — 已选中 (点击取消)", key.label)
-                                } else {
-                                    format!(
-                                        "{} — 点击选中 (将添加 {}→{} 连发)",
-                                        key.label, key.name, key.name
-                                    )
-                                }
-                            }
-                        }
-                    };
-
                     if resp.clicked() && state == KeyMapState::SameName {
                         /* ★绿键: 切换移除标记 (点「确认修改连发」才真正删除) */
                         if marked_remove {
@@ -323,7 +348,37 @@ impl SorahkGui {
                             self.kbd_selected.push(key.name.to_string());
                         }
                     }
-                    resp.on_hover_text(hover);
+
+                    /* ★v24.36 性能: 悬停提示按需构造 —— 旧写法给 102 个键**每帧**
+                     * 都 format! 一个 String (60fps 下每秒 6000+ 次无谓分配),
+                     * 只有真悬停的那一个才需要。 */
+                    if resp.hovered() {
+                        let hover = if marked_remove {
+                            format!("{} — 将移除 (确认后生效), 再次点击取消", key.label)
+                        } else {
+                            match state {
+                                KeyMapState::SameName => format!(
+                                    "{} — 已有同名连发 ({}→{}), 点击标记移除 (确认后生效)",
+                                    key.label, key.name, key.name
+                                ),
+                                KeyMapState::OtherTarget => format!(
+                                    "{} — 已被其他映射占用 (确认时可选择覆盖)",
+                                    key.label
+                                ),
+                                KeyMapState::Free => {
+                                    if selected {
+                                        format!("{} — 已选中 (点击取消)", key.label)
+                                    } else {
+                                        format!(
+                                            "{} — 点击选中 (将添加 {}→{} 连发)",
+                                            key.label, key.name, key.name
+                                        )
+                                    }
+                                }
+                            }
+                        };
+                        resp.on_hover_text(hover);
+                    }
                 }
 
                 ui.add_space(8.0);
@@ -668,5 +723,94 @@ mod tests {
         let (removed, added) = apply_pending_changes(&mut cfg, &["Z".to_string()], &[]);
         assert_eq!((removed, added), (0, 0));
         assert_eq!(cfg.mappings.len(), 2); // D + H
+    }
+
+    /// ★v24.36 光栅化回归 + 性能口径: 尺寸/VG 不变量正确, 且**不触碰 UI 线程即可完成**
+    /// (预热线程就是靠这条性质把首次进页的卡顿挪走的)。耗时仅打印, 不作断言。
+    #[test]
+    fn svg_raster_is_correct_and_thread_ready() {
+        use std::time::Instant;
+
+        let t = Instant::now();
+        let kb = super::keyboard_color_image(false).expect("键盘 SVG 应能光栅化");
+        let kb_ms = t.elapsed().as_millis();
+        // viewBox 1120×420 @2x
+        assert_eq!(kb.size, [2240, 840], "键盘纹理尺寸应为 viewBox 的 2 倍");
+
+        let t = Instant::now();
+        let gp = crate::gui::gamepad_mapping::gamepad_color_image(false)
+            .expect("手柄 SVG 应能光栅化");
+        let gp_ms = t.elapsed().as_millis();
+        assert_eq!(gp.size, [1090, 802], "手柄纹理尺寸应为 viewBox 的 2 倍");
+
+        /* 预乘不变量: 每个通道 ≤ alpha。用 from_rgba_premultiplied 直通时必然成立,
+         * 若误喂未预乘数据 (或改回 unmultiplied 转换出错) 会立刻红。 */
+        for img in [&kb, &gp] {
+            assert!(
+                img.pixels
+                    .iter()
+                    .all(|p| p.r() <= p.a() && p.g() <= p.a() && p.b() <= p.a()),
+                "像素必须是预乘 RGBA (通道值不得超过 alpha)"
+            );
+            assert!(
+                img.pixels.iter().any(|p| p.a() == 255),
+                "图像应含不透明像素 (否则等于没渲染出来)"
+            );
+        }
+
+        /* 跨线程可用性: 预热线程在后台调用同一套 API (ctx 是 Send+Sync, 纹理句柄
+         * 经 channel 回传) —— 这里用真实线程跑一遍, 保证该路径不会在运行时炸。 */
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let ctx_bg = ctx.clone();
+        std::thread::spawn(move || {
+            let tex = super::load_keyboard_texture(&ctx_bg, false);
+            let _ = tx.send(tex.is_some());
+        });
+        let got = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("后台线程应能完成纹理创建");
+        assert!(got, "后台线程应成功创建纹理句柄");
+
+        eprintln!(
+            "[perf] SVG 光栅化(含一次性冷启动): keyboard={kb_ms}ms gamepad={gp_ms}ms (已移出 UI 线程)"
+        );
+
+        /* 缓存命中路径: 字体库 + 解析树都走进程级缓存 → 只剩像素渲染。
+         * 这是主题切换/重复渲染的真实成本 (旧实现每次都是上面那个 800ms+)。 */
+        let mut warm_ms = u128::MAX;
+        for _ in 0..3 {
+            let t = Instant::now();
+            let _ = super::keyboard_color_image(true).expect("缓存路径应能出图");
+            warm_ms = warm_ms.min(t.elapsed().as_millis());
+        }
+        eprintln!("[perf] 缓存命中: keyboard={warm_ms}ms (旧实现每次 ~870ms)");
+        assert!(
+            warm_ms < 300,
+            "缓存命中路径应远快于冷启动 (实测 {warm_ms}ms, 冷启动 ~870ms) —— 缓存被破坏了?"
+        );
+
+        /* 耗时分段 (只打印, 供性能回归对照): 字体库扫描 / SVG 解析(含 102 个
+         * text 字形匹配) / 纯像素渲染 */
+        let t = Instant::now();
+        let mut db = resvg::usvg::fontdb::Database::new();
+        db.load_system_fonts();
+        let font_ms = t.elapsed().as_millis();
+        let t = Instant::now();
+        let mut opt = resvg::usvg::Options::default();
+        opt.fontdb = std::sync::Arc::new(db);
+        let tree = resvg::usvg::Tree::from_data(
+            include_bytes!("../../resources/keyboard.svg"),
+            &opt,
+        )
+        .expect("解析应成功");
+        let parse_ms = t.elapsed().as_millis();
+        let t = Instant::now();
+        let mut pm = resvg::tiny_skia::Pixmap::new(2240, 840).unwrap();
+        resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(2.0, 2.0), &mut pm.as_mut());
+        let render_ms = t.elapsed().as_millis();
+        eprintln!(
+            "[perf] 冷启动分段: 系统字体库={font_ms}ms SVG解析={parse_ms}ms 像素渲染={render_ms}ms"
+        );
     }
 }

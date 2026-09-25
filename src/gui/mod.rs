@@ -53,6 +53,12 @@ enum ParsedSwitchKey {
     },
 }
 
+/// ★v24.36 后台预热的 SVG 纹理回传消息 (带主题标记; 主题已变则丢弃)。
+pub enum PrewarmTex {
+    Keyboard(bool, Option<egui::TextureHandle>),
+    Gamepad(bool, Option<egui::TextureHandle>),
+}
+
 /// Main GUI application structure.
 ///
 /// Manages the application window state, dialogs, and user interactions.
@@ -203,6 +209,11 @@ pub struct SorahkGui {
     /// ★v24.33 键盘快捷连发: 键盘纹理 (双主题缓存)
     keyboard_texture: Option<egui::TextureHandle>,
     keyboard_texture_dark: bool,
+    /// ★v24.36 SVG 纹理预热: 后台线程回传通道 + 已请求的主题。
+    /// 键盘 SVG 有 102 个 `<text>` 字形 (需扫描全系统字体) + 2x 光栅化
+    /// 750 万像素 —— 曾是"首次进连发页卡一下"的根因, 现在启动阶段就在后台做完。
+    tex_prewarm_rx: Option<std::sync::mpsc::Receiver<PrewarmTex>>,
+    tex_prewarm_dark: Option<bool>,
     /// ★v24.33 键盘卡片: 已选按键 (待「确认修改连发」添加)
     kbd_selected: Vec<String>,
     /// ★v24.33 键盘卡片: 待覆盖的冲突按键 (确认对话框打开中)
@@ -343,6 +354,8 @@ impl SorahkGui {
             active_page: Page::Gamepad,
             gamepad_texture: None,
             gamepad_texture_dark: false,
+            tex_prewarm_rx: None,
+            tex_prewarm_dark: None,
             gp_flow: GpFlow::Idle,
             gp_cleanup_done: false,
             vib_preset_idx: 0,
@@ -459,6 +472,74 @@ impl SorahkGui {
             preset_rename_input: String::new(),
             cached_dark_style,
             cached_light_style,
+        }
+    }
+
+    /* ═══════════ ★v24.36 SVG 纹理后台预热 (消除首次进页卡顿) ═══════════ */
+
+    /// 启动/主题切换时, 在**后台线程**完成键盘与手柄 SVG 的光栅化。
+    ///
+    /// 背景: 键盘 SVG 有 102 个 `<text>` 键帽字形, resvg 必须
+    /// `load_system_fonts()` (枚举并解析本机全部字体), 再按 2x 渲染
+    /// 2240×840 ≈ 750 万像素 —— 原实现在"首次进入连发页"的那一帧同步做完,
+    /// 于是表现为卡一下。现在把这段重活整体挪出 UI 线程, 页面首帧直接命中缓存。
+    /// 主题切换同理: 后台重渲染, 期间旧纹理继续显示 (不阻塞、不空白)。
+    pub(crate) fn ensure_texture_prewarm(&mut self, ctx: &egui::Context) {
+        if self.tex_prewarm_dark == Some(self.dark_mode) {
+            return;
+        }
+        self.tex_prewarm_dark = Some(self.dark_mode);
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.tex_prewarm_rx = Some(rx);
+        let ctx = ctx.clone();
+        let dark = self.dark_mode;
+        let spawned = std::thread::Builder::new()
+            .name("svg-prewarm".into())
+            .spawn(move || {
+                /* 手柄先来 (体积小、依赖少), 键盘随后 (重活) —— 谁先好谁先上屏 */
+                let gp = crate::gui::gamepad_mapping::load_gamepad_texture(&ctx, dark);
+                let _ = tx.send(PrewarmTex::Gamepad(dark, gp));
+                ctx.request_repaint();
+                let kb = crate::gui::keyboard_quick::load_keyboard_texture(&ctx, dark);
+                let _ = tx.send(PrewarmTex::Keyboard(dark, kb));
+                ctx.request_repaint();
+            });
+        if spawned.is_err() {
+            /* 线程创建失败 → 退回页面内的同步渲染兜底 */
+            self.tex_prewarm_rx = None;
+            self.tex_prewarm_dark = None;
+        }
+    }
+
+    /// 收编后台预热结果 (每帧非阻塞轮询; 主题已变则丢弃)。
+    pub(crate) fn poll_texture_prewarm(&mut self) {
+        let Some(rx) = &self.tex_prewarm_rx else {
+            return;
+        };
+        loop {
+            match rx.try_recv() {
+                Ok(PrewarmTex::Keyboard(dark, tex)) => {
+                    if dark == self.dark_mode {
+                        if let Some(t) = tex {
+                            self.keyboard_texture = Some(t);
+                            self.keyboard_texture_dark = dark;
+                        }
+                    }
+                }
+                Ok(PrewarmTex::Gamepad(dark, tex)) => {
+                    if dark == self.dark_mode {
+                        if let Some(t) = tex {
+                            self.gamepad_texture = Some(t);
+                            self.gamepad_texture_dark = dark;
+                        }
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.tex_prewarm_rx = None;
+                    break;
+                }
+            }
         }
     }
 

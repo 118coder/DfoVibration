@@ -31,13 +31,30 @@ const FONT_OTHER: u32 = 0x40;
  * "命中到了但没有震动"时, 此日志直接给出每条 FONT 事件的注入/丢弃决策与原因。 */
 static VIB_LOG_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
+/* ★v24.31 日志轮转 (QKeyMapper 同款): 100MB × 10 个 ≈ 1GB 上限, 防止单文件无限增长。
+ * 字节数用原子计数器累计 (避免每行日志都 stat 文件); 进程重启时按文件实际大小校准。 */
+const VIB_LOG_ROTATE_BYTES: u64 = 100 * 1024 * 1024;
+const VIB_LOG_KEEP: usize = 10;
+static VIB_LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 pub(crate) fn vib_log(msg: &str) {
     let path = VIB_LOG_PATH.get_or_init(|| {
-        std::env::current_exe()
+        let p = std::env::current_exe()
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("SorahkDFO_vib.log")))
-            .unwrap_or_else(|| std::path::PathBuf::from("SorahkDFO_vib.log"))
+            .unwrap_or_else(|| std::path::PathBuf::from("SorahkDFO_vib.log"));
+        // 首次使用按文件真实大小校准计数器 (进程重启不丢轮转节奏)
+        let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+        VIB_LOG_BYTES.store(size, std::sync::atomic::Ordering::Relaxed);
+        p
     });
+    // 轮转检查: 常路径只花一次原子读; 真超限才做移位 (罕见)
+    let size =
+        VIB_LOG_BYTES.fetch_add(msg.len() as u64 + 24, std::sync::atomic::Ordering::Relaxed);
+    if size >= VIB_LOG_ROTATE_BYTES {
+        crate::util::rotate_log_if_needed(path, VIB_LOG_ROTATE_BYTES, VIB_LOG_KEEP);
+        VIB_LOG_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write;
         let _ = writeln!(f, "[{}] {}", now_ms(), msg);

@@ -348,6 +348,7 @@ impl eframe::App for SorahkGui {
         if !self.show_settings_dialog {
             self.handle_gamepad_flow(ctx);
             self.handle_turbo_edit_capture(ctx);
+            self.handle_sequence_step_capture(ctx);
             self.handle_preset_switch_capture(ctx);
         }
 

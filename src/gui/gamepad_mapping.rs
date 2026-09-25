@@ -506,6 +506,8 @@ pub fn set_slot_trigger(config: &mut AppConfig, slot: &GamepadSlot, trigger: Str
         idx
     } else {
         config.mappings.push(KeyMapping {
+            release_targets: Default::default(),
+            sequence_text: String::new(),
             trigger_key: trigger,
             target_keys: Default::default(),
             interval: None,
@@ -520,6 +522,7 @@ pub fn set_slot_trigger(config: &mut AppConfig, slot: &GamepadSlot, trigger: Str
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: slot_note(slot.label),
         });
         config.mappings.len() - 1
@@ -2514,7 +2517,7 @@ impl SorahkGui {
     fn render_slot_advanced(
         &mut self,
         ui: &mut egui::Ui,
-        _th: &Theme,
+        th: &Theme,
         slot: &'static GamepadSlot,
     ) {
         let Some(idx) = find_slot_mapping_index(&self.config, slot) else {
@@ -2575,6 +2578,21 @@ impl SorahkGui {
                         eprintln!("Failed to reload config after slot advanced edit: {e}");
                     }
                 }
+            });
+
+            /* ★v24.32 序列宏 (连招): 手柄键也能挂序列 —— 按下 = 依次自动按键盘键 */
+            ui.add_space(6.0);
+            egui::CollapsingHeader::new(
+                egui::RichText::new("序列宏 (按一下自动打一套连招)").size(13.0),
+            )
+            .id_salt(("gp_slot_sequence", slot.id))
+            .show(ui, |ui| {
+                ui.label(th.hint_text(
+                    "例: 手柄按一下 B = 自动依次按 下、右、Z (顺序指令技)
+                     录制或逐步添加; 触发键就是当前手柄键, 输出是键盘动作",
+                ));
+                ui.add_space(4.0);
+                self.render_sequence_steps_editor(ui, idx, th);
             });
     }
 
@@ -2714,6 +2732,8 @@ mod live_highlight_tests {
     fn find_slot_mapping_matches_only_system_note() {
         use crate::config::KeyMapping;
         let mk = |trigger: &str, note: &str| KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: trigger.to_string(),
             target_keys: Default::default(),
             interval: None,
@@ -2725,6 +2745,7 @@ mod live_highlight_tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: note.to_string(),
         };
         let slot = get_slot(19).unwrap(); // A 键
@@ -2743,6 +2764,8 @@ mod live_highlight_tests {
     fn migrate_slot_notes_renames_and_dedupes() {
         use crate::config::KeyMapping;
         let mk = |trigger: &str, note: &str| KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: trigger.to_string(),
             target_keys: vec!["Q".to_string()].into(),
             interval: None,
@@ -2754,6 +2777,7 @@ mod live_highlight_tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: note.to_string(),
         };
         let mut cfg = AppConfig::default();

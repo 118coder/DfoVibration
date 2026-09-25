@@ -31,6 +31,8 @@ fn test_state_pause_toggle() {
 fn test_state_input_mapping_lookup() {
     let mut config = AppConfig::default();
     config.mappings = vec![KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: "A".to_string(),
         target_keys: SmallVec::from_vec(vec!["B".to_string()]),
         interval: Some(10),
@@ -42,6 +44,7 @@ fn test_state_input_mapping_lookup() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
     }];
 
@@ -63,6 +66,8 @@ fn test_state_input_mapping_lookup() {
 #[test]
 fn test_run_mappings_lookup_for_stick_directions() {
     let mk = |trigger: &str, target: &str, run: bool, dbl: bool| KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: trigger.to_string(),
         target_keys: SmallVec::from_vec(vec![target.to_string()]),
         interval: None,
@@ -74,6 +79,7 @@ fn test_run_mappings_lookup_for_stick_directions() {
         run_enabled: run,
         run_threshold: 80,
         run_recheck: true,
+        lock_enabled: false,
         note: String::new(),
     };
     let mut config = AppConfig::default();
@@ -188,6 +194,8 @@ fn test_state_multiple_mappings() {
     let mut config = AppConfig::default();
     config.mappings = vec![
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["1".to_string()]),
             interval: Some(10),
@@ -199,9 +207,12 @@ fn test_state_multiple_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "B".to_string(),
             target_keys: SmallVec::from_vec(vec!["2".to_string()]),
             interval: Some(15),
@@ -213,9 +224,12 @@ fn test_state_multiple_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "C".to_string(),
             target_keys: SmallVec::from_vec(vec!["3".to_string()]),
             interval: None,
@@ -227,6 +241,7 @@ fn test_state_multiple_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
     ];
@@ -264,6 +279,8 @@ fn test_state_nonexistent_mapping() {
 fn test_state_config_reload_clears_mappings() {
     let mut config = AppConfig::default();
     config.mappings = vec![KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: "A".to_string(),
         target_keys: SmallVec::from_vec(vec!["B".to_string()]),
         interval: Some(10),
@@ -275,6 +292,7 @@ fn test_state_config_reload_clears_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
     }];
 
@@ -296,6 +314,8 @@ fn test_state_turbo_enabled_in_mapping() {
     let mut config = AppConfig::default();
     config.mappings = vec![
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["1".to_string()]),
             interval: Some(10),
@@ -307,9 +327,12 @@ fn test_state_turbo_enabled_in_mapping() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "B".to_string(),
             target_keys: SmallVec::from_vec(vec!["2".to_string()]),
             interval: Some(10),
@@ -321,6 +344,7 @@ fn test_state_turbo_enabled_in_mapping() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
     ];

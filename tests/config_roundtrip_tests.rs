@@ -44,6 +44,8 @@ fn cleanup(cfg_path: &PathBuf) {
 /// 所有字段均取非默认值的映射 (Option 字段取 Some 路径)
 fn distinct_mapping(trigger: &str, gap: u64) -> KeyMapping {
     KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: trigger.to_string(),
         target_keys: SmallVec::from_vec(vec!["F6".to_string(), "F7".to_string()]),
         interval: Some(37),
@@ -55,6 +57,7 @@ fn distinct_mapping(trigger: &str, gap: u64) -> KeyMapping {
         run_enabled: true,
         run_threshold: 73,
         run_recheck: false,
+        lock_enabled: false,
         note: format!("备注-{trigger}"),
     }
 }
@@ -62,6 +65,8 @@ fn distinct_mapping(trigger: &str, gap: u64) -> KeyMapping {
 /// Option 字段取 None 路径的映射 (覆盖模板的条件行分支)
 fn none_options_mapping() -> KeyMapping {
     KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: "LALT+9".to_string(),
         target_keys: SmallVec::from_vec(vec!["NUMPAD0".to_string()]),
         interval: None,
@@ -73,6 +78,7 @@ fn none_options_mapping() -> KeyMapping {
         run_enabled: false,
         run_threshold: 80,
         run_recheck: true,
+        lock_enabled: false,
         note: String::new(),
     }
 }

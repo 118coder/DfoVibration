@@ -205,6 +205,15 @@ impl SorahkGui {
                                 mapping.add_target_key(input_name.clone());
                             }
                         }
+                        KeyCaptureMode::MappingRelease(idx) => {
+                            /* ★v24.31 抬起映射: 设置弹窗的捕获落到抬起目标 (编辑面板同款语义) */
+                            if let Some(mapping) = temp_config.mappings.get_mut(idx) {
+                                mapping.add_release_key(input_name.clone());
+                            }
+                        }
+                        KeyCaptureMode::SequenceStepKey(_, _) => {
+                            /* ★v24.32 序列步骤捕获只在连发页编辑面板处理 */
+                        }
                         KeyCaptureMode::NewMappingTrigger => {
                             self.new_mapping_trigger = input_name.clone();
                         }
@@ -1869,6 +1878,8 @@ impl SorahkGui {
                                                                 let turbo_enabled = self.new_mapping_turbo;
 
                                                                 temp_config.mappings.push(KeyMapping {
+                                                                    release_targets: Default::default(),
+                                                                    sequence_text: String::new(),
                                                                     trigger_key: trigger_upper,
                                                                     target_keys: self.new_mapping_target_keys.iter()
                                                                         .map(|k| k.to_uppercase())
@@ -1882,6 +1893,7 @@ impl SorahkGui {
                                                                     run_enabled: false,
                                                                     run_threshold: 80,
                                                                     run_recheck: true,
+                                                                    lock_enabled: false,
                                                                     note: self.new_mapping_note.clone(),
                                                                 });
 

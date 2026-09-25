@@ -15,6 +15,7 @@ mod auto_inject;
 mod mouse;
 mod rawinput;
 mod safety;
+mod sequence;
 mod signal;
 mod state;
 mod tray;

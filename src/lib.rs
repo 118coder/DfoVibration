@@ -15,6 +15,7 @@ pub mod input_ownership;
 pub mod job_presets;
 pub mod auto_inject;
 pub mod rawinput;
+pub mod sequence;
 pub mod state;
 pub mod util;
 pub mod vibration;

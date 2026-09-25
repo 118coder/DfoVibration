@@ -9,6 +9,7 @@ pub mod device_manager_dialog;
 mod error_dialog;
 mod fonts;
 mod gamepad_mapping;
+mod keyboard_quick;
 mod hid_activation_dialog;
 mod guide;
 mod main_window;
@@ -199,6 +200,17 @@ pub struct SorahkGui {
     seq_record_hint: Option<(String, std::time::Instant)>,
     /// ★v24.32 通用宏引用选择器展开状态 (序列编辑器里点「＋ 引用通用宏」)
     seq_macro_picker_open: bool,
+    /// ★v24.33 键盘快捷连发: 键盘纹理 (双主题缓存)
+    keyboard_texture: Option<egui::TextureHandle>,
+    keyboard_texture_dark: bool,
+    /// ★v24.33 键盘卡片: 已选按键 (待「确认修改连发」添加)
+    kbd_selected: Vec<String>,
+    /// ★v24.33 键盘卡片: 待覆盖的冲突按键 (确认对话框打开中)
+    kbd_conflicts: Option<Vec<String>>,
+    /// ★v24.33 键盘卡片: 非冲突的待添加按键 (覆盖/跳过时一并处理)
+    kbd_pending_free: Vec<String>,
+    /// ★v24.33 键盘卡片: 点绿键标记移除的同名映射 (点「确认修改连发」才生效)
+    kbd_removals: Vec<String>,
     /// New mapping target key input (single key for capture)
     new_mapping_target: String,
     /// New mapping target keys (multiple keys)
@@ -399,6 +411,12 @@ impl SorahkGui {
             new_macro_text: String::new(),
             seq_record_hint: None,
             seq_macro_picker_open: false,
+            keyboard_texture: None,
+            keyboard_texture_dark: false,
+            kbd_selected: Vec::new(),
+            kbd_conflicts: None,
+            kbd_pending_free: Vec::new(),
+            kbd_removals: Vec::new(),
             new_mapping_target: String::new(),
             new_mapping_target_keys: Vec::new(),
             new_mapping_interval: String::new(),

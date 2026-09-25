@@ -18,6 +18,8 @@ impl SorahkGui {
             self.render_classic_vib_quickbar(ui);
         }
         self.render_turbo_preset_manager(ui);
+        /* ★v24.33 键盘快捷连发 (用户要求: 预设管理下方 / 连发映射上方) */
+        self.render_keyboard_quick_card(ui, ctx);
         self.render_turbo_mappings(ui);
         self.render_universal_macros_card(ui);
         self.render_turbo_params(ui, ctx);

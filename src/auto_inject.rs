@@ -6,12 +6,12 @@
 //!   * 不需要手动运行 Loader; 宿主默认普通权限 (90CN 客户端自提权 → 见使用说明右键管理员);
 //!   * 客户端一启动, **正确版本**的采集 DLL 自动进入游戏进程 -> 事件流直达宿主。
 //!
-//! ★v24.23 智能识别 (本版核心): 同名 DLL 多客户端共用 (OLD.dll 被 ACT1/4/5/40JP 共用,
+//! ★v24.23 智能识别 (本版核心): 同名 DLL 多客户端共用 (OLD.dll 被 ACT1/4/5/40JP/60US 共用,
 //! DfoVibration.dll 被 90US/90CN 共用), 不改名怎么分辨? —— **各版构建在字节里自证身份**
-//! (内嵌 "target=…" 日志串: ACT1/ACT4/ACT5/40JP/90CN, 实测每版命中 1~3 次):
-//!   1. 客户端身份: 进程名直判 (ARAD.exe→40JP, DNFACT4·5→ACT4/5); DNF.exe 一名多客 →
-//!      借客户端目录判 (us_extend_dll→90US 不注入; 有新一代 DLL→90CN; 目录 OLD 的
-//!      内嵌标签→该标签);
+//! (内嵌 "target=…" 日志串: ACT1/ACT4/ACT5/40JP/90CN/90US/60US, 实测每版命中 1~3 次):
+//!   1. 客户端身份: 进程名直判 (ARAD.exe→40JP, DNFACT4·5→ACT4/5, DFO.exe·DFO_fixed_v3.exe→60US);
+//!      DNF.exe 一名多客 → 借客户端目录判 (us_extend_dll→90US 不注入; 有新一代 DLL→90CN;
+//!      目录 OLD 的内嵌标签→该标签);
 //!   2. 候选 = 实际存在的 DLL (客户端目录两代 + 宿主目录 OLD 兜底) 逐一读标签;
 //!   3. 身份匹配者注入; 全部无标签 → 按部署位置注入 (日志提示未验证);
 //!      **身份冲突 → 拒绝注入** (错版 DLL hook 错地址, 轻则无信号重则崩游戏;
@@ -69,13 +69,15 @@ const CLIENTS: &[Client] = &[
     Client { process: "DNFACT5.exe" },  // ACT5 备用名
     Client { process: "DNF ACT5.exe" }, // ACT5 备用名
     Client { process: "ARAD.exe" },     // 40JP
+    Client { process: "DFO.exe" },      // ★v24.34 60US 启动器/原版客户端 (DLL 签名守卫防误注)
+    Client { process: "DFO_fixed_v3.exe" }, // ★v24.34 60US 实测真身 (启动器实际拉起, v24.29 白名单轮确认)
 ];
 
 /// 客户端目录出现该文件 = 90US 挂载形态, 宿主绝不注入 (自挂载已含采集 DLL)。
 const US_EXTEND_MARKER: &str = "us_extend_dll\\DfoVibration.dll";
 
 /// 已知客户端身份标签 (各 profile 构建在 "target=…" 日志串里自证身份; 旧版构建无标签)。
-const PROFILE_TAGS: &[&str] = &["ACT1", "ACT4", "ACT5", "40JP", "90CN", "90US"];
+const PROFILE_TAGS: &[&str] = &["ACT1", "ACT4", "ACT5", "40JP", "90CN", "90US", "60US"];
 
 /// 字节串计数 (Vec<u8> 没有现成的 matches)。
 fn count_subst(hay: &[u8], needle: &[u8]) -> usize {
@@ -104,6 +106,9 @@ fn client_kind_from_process(process: &str) -> Option<&'static str> {
         "ARAD.exe" => Some("40JP"),
         "DNFACT4.exe" | "DNF ACT4.exe" => Some("ACT4"),
         "DNFACT5.exe" | "DNF ACT5.exe" => Some("ACT5"),
+        // ★v24.34 60US: DFO_fixed_v3.exe 是实测真身; DFO.exe 是启动器/原版客户端
+        // ( DLL 内 8 字节签名守卫兜底, 误注时 hook 拒装不崩溃 )
+        "DFO.exe" | "DFO_fixed_v3.exe" => Some("60US"),
         _ => None,
     }
 }
@@ -701,7 +706,7 @@ pub fn host_dir_dll() -> bool {
 
 #[cfg(test)]
 mod decision_tests {
-    use super::{DllCand, pick_dll_to_inject};
+    use super::{DllCand, client_kind_from_process, pick_dll_to_inject};
 
     fn cands(list: &[(&'static str, bool, Option<&'static str>)]) -> Vec<DllCand> {
         list.iter()
@@ -877,5 +882,47 @@ mod decision_tests {
             pick_dll_to_inject(&c, false, Some("40JP"), false, None, true),
             None
         );
+    }
+
+    /// U-A ★v24.34 60US 接入: 进程名直判身份 (DFO_fixed_v3.exe / DFO.exe → "60US"),
+    /// 目录 OLD.dll 内嵌 target=60US (实测部署版含 60US×3、无其他标签) → 身份匹配注入
+    #[test]
+    fn ua_60us_identity_match_injects() {
+        let c = cands(&[(OLD, false, Some("60US"))]);
+        // 真身 DFO_fixed_v3.exe
+        assert_eq!(
+            pick_dll_to_inject(&c, false, Some("60US"), false, None, true),
+            Some((OLD, false))
+        );
+        // 路线 S4+ 也不影响 (身份解绑原则)
+        assert_eq!(
+            pick_dll_to_inject(&c, false, Some("60US"), false, None, false),
+            Some((OLD, false))
+        );
+    }
+
+    /// U-B 60US 目录混入别代 DLL: 身份冲突 → 拒绝 (宁可不注不可注错)
+    #[test]
+    fn ub_60us_conflict_refuses() {
+        let c = cands(&[(OLD, false, Some("ACT5")), (NEW, false, Some("60US"))]);
+        assert_eq!(
+            pick_dll_to_inject(&c, false, Some("60US"), false, None, true),
+            Some((NEW, false)),
+            "同代 NEW 命中 60US 标签时仍注入"
+        );
+        let c2 = cands(&[(OLD, false, Some("ACT5"))]);
+        assert_eq!(
+            pick_dll_to_inject(&c2, false, Some("60US"), false, None, true),
+            None
+        );
+    }
+
+    /// U-C client_kind_from_process: 60US 两个进程名直判; DNF.exe 仍返回 None (一名多客)
+    #[test]
+    fn uc_60us_process_kind() {
+        assert_eq!(client_kind_from_process("DFO_fixed_v3.exe"), Some("60US"));
+        assert_eq!(client_kind_from_process("DFO.exe"), Some("60US"));
+        assert_eq!(client_kind_from_process("DNF.exe"), None);
+        assert_eq!(client_kind_from_process("ARAD.exe"), Some("40JP"));
     }
 }

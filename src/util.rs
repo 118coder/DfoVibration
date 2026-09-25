@@ -143,14 +143,57 @@ pub fn crash_log_path() -> std::path::PathBuf {
         .join("SorahkDFO_crash.log")
 }
 
+/// ★v24.31 日志轮转 (QKeyMapper 同款策略): 追加前若超过 max_bytes, 把
+/// `name.log` → `name.1.log` → … → `name.<keep>.log` 依次移位, 最老的删除。
+/// 调用方负责"写前轮转"; 失败一律静默 (日志轮转绝不能反过来弄崩业务)。
+pub fn rotate_log_if_needed(path: &std::path::Path, max_bytes: u64, keep: usize) {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return; // 文件还不存在
+    };
+    if meta.len() < max_bytes {
+        return;
+    }
+    // 最老的先删: name.<keep>.log (stem 不含扩展名: SorahkDFO_vib.log → SorahkDFO_vib.1.log)
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "log".to_string());
+    let dir = path.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    let rotated = |i: usize| dir.join(format!("{stem}.{i}.log"));
+    if keep > 0 {
+        let _ = std::fs::remove_file(rotated(keep));
+        for i in (1..keep).rev() {
+            let _ = std::fs::rename(rotated(i), rotated(i + 1));
+        }
+        let _ = std::fs::rename(path, rotated(1));
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// 进程启动时刻 (崩溃诊断里算 uptime 用)。
+static START_TIME: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
 /// 追加一条异常日志(每次打开-追加-关闭, 不持有文件句柄, 可跨线程安全调用)。
+/// ★v24.31: 写前轮转 (10MB × 5); 每条附带进程 uptime + 版本号, 崩溃现场更好定位。
 pub fn crash_log(context: &str, detail: &str) {
+    const CRASH_ROTATE_BYTES: u64 = 10 * 1024 * 1024;
+    const CRASH_KEEP: usize = 5;
+    rotate_log_if_needed(&crash_log_path(), CRASH_ROTATE_BYTES, CRASH_KEEP);
+
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let thread = std::thread::current().name().unwrap_or("<unnamed>").to_string();
-    let line = format!("[{ts}] [thread:{thread}] [{context}] {detail}\n");
+    let uptime = START_TIME
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs();
+    let line = format!(
+        "[{ts}] [thread:{thread}] [uptime:{uptime}s] [v:{}] [{context}] {detail}\n",
+        env!("CARGO_PKG_VERSION"),
+    );
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -475,5 +518,32 @@ mod tests {
         }
         assert_eq!(normalize_key_combo(""), "");
         assert_eq!(normalize_key_combo("   "), "");
+    }
+
+    /// ★v24.31 日志轮转: 超限移位 + 最老删除 + 未超限不动。
+    #[test]
+    fn rotate_log_shifts_and_drops_oldest() {
+        let dir = std::env::temp_dir().join(format!("sorahk_rot_test_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("t.log");
+        let rotated = |i: usize| dir.join(format!("t.{i}.log"));
+
+        // 预置: .1 与 .2 已存在 (模拟历史轮转), 主文件未超限 → 不动
+        std::fs::write(rotated(1), b"old1").unwrap();
+        std::fs::write(rotated(2), b"older2").unwrap();
+        std::fs::write(&log, b"tiny").unwrap();
+        rotate_log_if_needed(&log, 100, 3);
+        assert!(log.exists() && std::fs::read(&log).unwrap() == b"tiny");
+        assert!(rotated(1).exists() && rotated(2).exists());
+
+        // 主文件超限 → 主→.1, 旧.1→.2, 旧.2→.3? keep=2 时旧 .2 被删
+        std::fs::write(&log, vec![b'x'; 200]).unwrap();
+        rotate_log_if_needed(&log, 100, 2);
+        assert!(!log.exists(), "轮转后主文件应移走, 下次写入重建");
+        assert_eq!(std::fs::read(rotated(1)).unwrap(), vec![b'x'; 200]);
+        assert_eq!(std::fs::read(rotated(2)).unwrap(), b"old1");
+        assert!(!rotated(3).exists(), "keep=2 时最老的 .2 之前的应被删");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

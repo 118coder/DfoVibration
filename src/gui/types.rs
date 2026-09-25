@@ -76,6 +76,11 @@ pub enum KeyCaptureMode {
     ToggleKey,
     MappingTrigger(usize),
     MappingTarget(usize),
+    /// ★v24.31 抬起映射: 捕获「抬起时发送」的目标键
+    MappingRelease(usize),
+    /// ★v24.32 序列宏可视化编辑: 捕获某一步骤的按键 (映射 idx, 步骤 idx;
+    /// 步骤 idx == 当前步数 表示"新建步骤")
+    SequenceStepKey(usize, usize),
     NewMappingTrigger,
     NewMappingTarget,
     /// ★v21.7 预设管理: 捕获「预设切换键」—— 键盘任意键 **或** 手柄任意键 (含原始 HID 报文)

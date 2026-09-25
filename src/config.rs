@@ -1413,6 +1413,9 @@ pub struct AppConfig {    /// Display tray icon
     pub switch_key: String,
     /// Key mapping configurations
     pub mappings: Vec<KeyMapping>,
+    /// ★v24.31 通用宏库: 序列宏文本里用 `宏(名字)` 引用 (所有映射共用)
+    #[serde(default)]
+    pub universal_macros: Vec<UniversalMacro>,
     /// Input timeout in milliseconds
     #[serde(default = "default_input_timeout")]
     pub input_timeout: u64,
@@ -1521,6 +1524,13 @@ pub struct Preset {
     pub switch_key: String,
 }
 
+/// ★v24.31 通用宏 (名字 + 序列文本; 大小写不敏感引用)
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct UniversalMacro {
+    pub name: String,
+    pub text: String,
+}
+
 /// Key mapping configuration for trigger-target pairs.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct KeyMapping {
@@ -1561,6 +1571,19 @@ pub struct KeyMapping {
     /// 走路中只补一次"松开→按下"仍判定走路 (用户实测); 默认 true。
     #[serde(default = "default_run_recheck")]
     pub run_recheck: bool,
+    /// ★v24.31 锁定 Lock: 按一下 = 持续按住注入键不松 (挂机/长按类技能),
+    /// 再按一下 = 松开。可与连发叠加 (锁定期间连发持续循环);
+    /// 与 简易奔跑/重推奔跑 互斥 (奔跑有自身的按住语义, 引擎侧压制)。
+    #[serde(default)]
+    pub lock_enabled: bool,
+    /// ★v24.31 按键序列宏: 非空时整条映射按序列执行 (见 sequence.rs 语法说明)。
+    /// 序列接管输出语义 —— 连发/锁定/双击/奔跑在本条上全部停用。
+    #[serde(default)]
+    pub sequence_text: String,
+    /// ★v24.31 抬起映射: 触发键**抬起**时额外发送的这组键 (收招/取消/点按区分)。
+    /// 空 = 不发送 (旧行为)。发送语义 = 完整 按下→时长→抬起 周期, 时长用本条映射的时长。
+    #[serde(default = "default_target_keys")]
+    pub release_targets: SmallVec<[String; 4]>,
     /// User note/remark for this mapping
     #[serde(default)]
     pub note: String,
@@ -1621,6 +1644,26 @@ impl KeyMapping {
     /// Clears all target keys
     pub fn clear_target_keys(&mut self) {
         self.target_keys.clear();
+    }
+
+    /// ★v24.31 添加抬起映射目标键 (与 add_target_key 同一套规范化)
+    pub fn add_release_key(&mut self, key: String) {
+        if key.trim().is_empty() {
+            return;
+        }
+        let mut parts: Vec<String> = self.release_targets.to_vec();
+        parts.extend(crate::util::key_combo_parts(&key));
+        self.release_targets = crate::util::normalize_combo_parts(&parts).into();
+    }
+
+    /// ★v24.31 移除抬起映射目标键
+    pub fn remove_release_key(&mut self, key: &str) {
+        self.release_targets.retain(|k| k != key);
+    }
+
+    /// ★v24.31 清空抬起映射目标键 (恢复旧行为)
+    pub fn clear_release_keys(&mut self) {
+        self.release_targets.clear();
     }
 
     /// Gets target keys as display string (comma separated)
@@ -1706,6 +1749,8 @@ impl Default for AppConfig {
             vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {
+                release_targets: Default::default(),
+                sequence_text: String::new(),
                 trigger_key: "Q".to_string(),
                 target_keys: SmallVec::from_vec(vec!["Q".to_string()]),
                 interval: None,
@@ -1717,8 +1762,10 @@ impl Default for AppConfig {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
                 note: String::new(),
             }],
+            universal_macros: Vec::new(),
             input_timeout: default_input_timeout(),
             interval: default_interval(),
             event_duration: default_event_duration(),
@@ -2599,6 +2646,8 @@ mod tests {
     fn test_key_mapping_with_overrides() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(10),
@@ -2610,6 +2659,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -2624,6 +2674,8 @@ mod tests {
     fn test_key_mapping_without_overrides() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "C".to_string(),
             target_keys: SmallVec::from_vec(vec!["D".to_string()]),
             interval: None,
@@ -2634,6 +2686,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -2727,6 +2780,8 @@ mod tests {
         config.mappings = vec![
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "A".to_string(),
                 target_keys: SmallVec::from_vec(vec!["1".to_string()]),
                 interval: Some(10),
@@ -2737,11 +2792,14 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "B".to_string(),
                 target_keys: SmallVec::from_vec(vec!["2".to_string()]),
                 interval: None,
@@ -2752,11 +2810,14 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "F1".to_string(),
                 target_keys: SmallVec::from_vec(vec!["SPACE".to_string()]),
                 interval: Some(20),
@@ -2767,6 +2828,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
@@ -2968,6 +3030,8 @@ mod tests {
     fn test_multiple_target_keys_single() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: None,
@@ -2979,6 +3043,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -2991,6 +3056,8 @@ mod tests {
     fn test_multiple_target_keys_multiple() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["MOUSE_UP".to_string(), "MOUSE_LEFT".to_string()]),
             interval: None,
@@ -3001,6 +3068,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3013,6 +3081,8 @@ mod tests {
     fn test_multiple_target_keys_empty() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::new(),
             interval: None,
@@ -3023,6 +3093,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3035,6 +3106,8 @@ mod tests {
     fn test_add_target_key() {
         let mut mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: None,
@@ -3045,6 +3118,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3065,6 +3139,8 @@ mod tests {
     fn test_remove_target_key() {
         let mut mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec![
                 "B".to_string(),
@@ -3079,6 +3155,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3093,6 +3170,8 @@ mod tests {
     fn test_clear_target_keys() {
         let mut mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string(), "C".to_string()]),
             interval: None,
@@ -3103,6 +3182,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3120,6 +3200,8 @@ mod tests {
         config.mappings = vec![
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "Q".to_string(),
                 target_keys: SmallVec::from_vec(vec![
                     "MOUSE_UP".to_string(),
@@ -3133,11 +3215,14 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "E".to_string(),
                 target_keys: SmallVec::from_vec(vec![
                     "MOUSE_UP".to_string(),
@@ -3151,6 +3236,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
@@ -3194,6 +3280,8 @@ mod tests {
     fn test_get_target_keys() {
         let mapping = 
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string(), "C".to_string()]),
             interval: None,
@@ -3204,6 +3292,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         };
@@ -3222,6 +3311,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::new(),
             interval: None,
@@ -3232,6 +3323,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         }];
@@ -3253,6 +3345,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec![
                 "1".to_string(),
@@ -3270,6 +3364,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
 
             note: String::new(),
         }];

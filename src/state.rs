@@ -494,6 +494,34 @@ pub enum OutputAction {
     /// Multiple simultaneous actions for handling combined inputs
     /// Uses SmallVec with inline capacity of 4 to reduce allocations
     MultipleActions(Arc<SmallVec<[OutputAction; 4]>>),
+    /// ★v24.31 序列控制键 (Toggle/Pause/Continue) —— worker 拦截, 永不被模拟
+    SequenceControl(SequenceCtl),
+}
+
+/// ★v24.31 序列控制类型 (特殊映射键: KeySequenceToggle / KeySequencePause / KeySequenceContinue)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SequenceCtl {
+    Toggle,
+    Pause,
+    Continue,
+}
+
+/// ★v24.31 序列的一步 (已解析成动作; actions 空 = 纯等待步)
+#[derive(Debug, Clone)]
+pub struct ResolvedStep {
+    pub actions: SmallVec<[OutputAction; 2]>,
+    pub hold_ms: u64,
+}
+
+/// ★v24.31 一条正在执行的序列 (按设备去重; 停止由控制/UI 置位)
+pub struct SequenceRun {
+    pub stop: std::sync::atomic::AtomicBool,
+}
+
+/// ★v24.31 按键录制状态 (钩子线程写, GUI 读走)
+struct KeyRecordState {
+    start: Instant,
+    events: Vec<crate::sequence::RecordedKey>,
 }
 
 /// Configuration for a single input mapping.
@@ -517,6 +545,14 @@ pub struct InputMappingInfo {
     pub run_threshold: u8,
     /// ★v21.1 重推再检测: true = 重推时模拟完整双击序列 (松开→敲→松开→再按住)
     pub run_recheck: bool,
+    /// ★v24.31 锁定 Lock (引擎侧已压制 奔跑/简易奔跑 的组合)
+    pub lock_enabled: bool,
+    /// ★v24.31 抬起映射: 触发键抬起时额外发送的动作 (None = 旧行为)
+    pub release_action: Option<OutputAction>,
+    /// ★v24.31 序列宏 (Some = 整条映射按序列执行; 连发/锁定/双击/奔跑全部停用)
+    pub sequence: Option<Arc<[ResolvedStep]>>,
+    /// ★v24.31 序列控制键 (Some = 本条是 KeySequenceToggle/Pause/Continue, 不注入)
+    pub sequence_ctl: Option<SequenceCtl>,
 }
 
 /// ★v21.7b 第三方手柄实时状态 —— 供手柄映射页 SVG 热点"按下即亮"。
@@ -646,6 +682,17 @@ pub struct AppState {
     /// Cached foreground process **full image path** with timestamp
     /// (★白名单路径条目按完整路径匹配, 文件名在匹配时从路径提取)
     cached_process_info: RwLock<(Option<String>, Instant)>,
+    /// ★v24.31 映射配置修订号: reload_config 时 +1。worker 里"锁定"的注入键
+    /// 在配置变更后强制解锁松开 (映射已改/已删, 再按着就永远悬空 = 卡键)。
+    mappings_revision: std::sync::atomic::AtomicU64,
+    /// ★v24.31 序列宏: 全局暂停 (KeySequenceToggle/Pause/Continue 切换)
+    pub sequence_paused: std::sync::atomic::AtomicBool,
+    /// ★v24.31 按设备登记的执行中序列 (同一设备上一条没跑完时忽略新触发)
+    sequence_runs: std::sync::Mutex<HashMap<InputDevice, Arc<SequenceRun>>>,
+    /// ★v24.31 按键录制 (序列宏"录制"功能; 钩子线程写入, GUI 取走转序列文本)
+    key_record: std::sync::Mutex<Option<KeyRecordState>>,
+    /// ★v24.31 录制中标志 (钩子热路径的廉价检查)
+    pub key_record_active: std::sync::atomic::AtomicBool,
     /// Currently pressed keys for combo detection
     pressed_keys: scc::HashSet<u32>,
     /// Active combo triggers (multiple combos can be active simultaneously)
@@ -1030,6 +1077,11 @@ impl AppState {
             worker_pool: OnceLock::new(),
             notification_sender: std::sync::Mutex::new(None),
             cached_process_info: RwLock::new((None, Instant::now())),
+            mappings_revision: std::sync::atomic::AtomicU64::new(0),
+            sequence_paused: std::sync::atomic::AtomicBool::new(false),
+            sequence_runs: std::sync::Mutex::new(HashMap::new()),
+            key_record: std::sync::Mutex::new(None),
+            key_record_active: std::sync::atomic::AtomicBool::new(false),
             pressed_keys: scc::HashSet::new(),
             active_combo_triggers: scc::HashMap::new(),
             cached_turbo_keyboard,
@@ -1468,6 +1520,9 @@ impl AppState {
         if let Ok(mut cache) = self.cached_process_info.write() {
             *cache = (None, Instant::now());
         }
+        // ★v24.31: 映射变更 → 修订号 +1, worker 据此强制解锁旧锁定条目 (防卡键)
+        self.mappings_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
         // Clear pressed keys and active combos (lock-free concurrent structures)
         self.pressed_keys.clear_sync();
@@ -1855,6 +1910,116 @@ impl AppState {
     #[inline(always)]
     pub fn get_input_mapping(&self, device: &InputDevice) -> Option<InputMappingInfo> {
         self.input_mappings.read_sync(device, |_, v| v.clone())
+    }
+
+    /// ★v24.31 当前映射配置修订号 (锁定条目防卡键用)
+    #[inline]
+    pub(crate) fn mappings_revision(&self) -> u64 {
+        self.mappings_revision
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// ★v24.31 登记一条执行中的序列 (同一设备上一条没跑完 → 忽略新触发)。
+    /// 返回 Ok(run) 时调用方必须派生 seq-runner 线程。
+    pub(crate) fn register_sequence_run(
+        &self,
+        device: &InputDevice,
+    ) -> Result<Arc<SequenceRun>, ()> {
+        let mut runs = self.sequence_runs.lock().map_err(|_| ())?;
+        if runs.contains_key(device) {
+            return Err(());
+        }
+        let run = Arc::new(SequenceRun {
+            stop: std::sync::atomic::AtomicBool::new(false),
+        });
+        runs.insert(device.clone(), run.clone());
+        Ok(run)
+    }
+
+    /// ★v24.31 序列执行完毕 (runner 线程收尾): 只清掉自己那条, 防误删新一轮
+    pub(crate) fn sequence_run_finished(&self, device: &InputDevice, run: &Arc<SequenceRun>) {
+        if let Ok(mut runs) = self.sequence_runs.lock() {
+            if runs.get(device).map(|r| Arc::ptr_eq(r, run)).unwrap_or(false)
+            {
+                runs.remove(device);
+            }
+        }
+    }
+
+    /// ★v24.31 序列控制键: 全局 暂停/继续/切换
+    pub(crate) fn sequence_ctl(&self, ctl: SequenceCtl) {
+        match ctl {
+            SequenceCtl::Toggle => {
+                let paused = self.sequence_paused.load(Ordering::Relaxed);
+                self.sequence_paused.store(!paused, Ordering::Relaxed);
+            }
+            SequenceCtl::Pause => self.sequence_paused.store(true, Ordering::Relaxed),
+            SequenceCtl::Continue => self.sequence_paused.store(false, Ordering::Relaxed),
+        }
+    }
+
+    /// ★v24.31 开始录制按键 (序列宏录制)
+    pub fn start_key_record(&self) {
+        if let Ok(mut r) = self.key_record.lock() {
+            *r = Some(KeyRecordState {
+                start: Instant::now(),
+                events: Vec::new(),
+            });
+        }
+        self.key_record_active.store(true, Ordering::Relaxed);
+        crate::vibration::vib_log("[record] start (poller)");
+    }
+
+    /// ★v24.31 停止录制并取走事件
+    pub fn stop_key_record(&self) -> Option<Vec<crate::sequence::RecordedKey>> {
+        self.key_record_active.store(false, Ordering::Relaxed);
+        let mut r = self.key_record.lock().ok()?;
+        let state = r.take()?;
+        /* ★v24.31 诊断探针 */
+        crate::vibration::vib_log(&format!(
+            "[record] stop events={}",
+            state.events.len()
+        ));
+        Some(state.events)
+    }
+
+    /// ★v24.31 轮询通道的录制入口 (键盘按键状态沿; 过滤 vk=0 的空事件)
+    pub fn record_key_state(&self, is_down: bool, vk_code: u32) {
+        if vk_code == 0 {
+            return;
+        }
+        self.record_key_event(is_down, vk_code);
+    }
+
+    /// ★v24.31 钩子线程调用: 记录一次按键按下/抬起 (录制中才有效)
+    fn record_key_event(&self, is_down: bool, vk_code: u32) {
+        if !self.key_record_active.load(Ordering::Relaxed) {
+            return;
+        }
+        if let Ok(mut r) = self.key_record.lock() {
+            let Some(rec) = r.as_mut() else { return };
+            /* ★v24.31 诊断探针: 每次录制只记第一条按下 (证明钩子→录制链路通) */
+            if is_down && rec.events.is_empty() {
+                crate::vibration::vib_log(&format!(
+                    "[record] first key vk=0x{vk_code:X} (钩子→录制链路通)"
+                ));
+            }
+            let t = rec.start.elapsed().as_millis() as u64;
+            if is_down {
+                rec.events.push(crate::sequence::RecordedKey {
+                    vk: vk_code,
+                    down_ms: t,
+                    up_ms: None,
+                });
+            } else if let Some(e) = rec
+                .events
+                .iter_mut()
+                .rev()
+                .find(|e| e.vk == vk_code && e.up_ms.is_none())
+            {
+                e.up_ms = Some(t);
+            }
+        }
     }
 
     /// Gets all XInputCombo button_ids for a specific device type
@@ -2298,6 +2463,9 @@ impl AppState {
                         }
                     }
                 }
+                OutputAction::SequenceControl(_) => {
+                    // ★v24.31: 控制键由 worker 拦截, 永不到达模拟层
+                }
             }
         }
     }
@@ -2421,6 +2589,9 @@ impl AppState {
                         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
                     }
                 }
+                OutputAction::SequenceControl(_) => {
+                    // ★v24.31: 控制键由 worker 拦截, 永不到达模拟层
+                }
             }
         }
     }
@@ -2519,6 +2690,9 @@ impl AppState {
                         SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
                     }
                 }
+                OutputAction::SequenceControl(_) => {
+                    // ★v24.31: 控制键由 worker 拦截, 永不到达模拟层
+                }
             }
         }
     }
@@ -2609,6 +2783,9 @@ impl AppState {
                 OutputAction::MouseMove(_, _) | OutputAction::MouseScroll(_, _) => {
                     // Skip actions without press state
                 }
+                OutputAction::SequenceControl(_) => {
+                    // ★v24.31: 控制键由 worker 拦截, 永不到达模拟层
+                }
             }
         }
     }
@@ -2698,6 +2875,9 @@ impl AppState {
                 }
                 OutputAction::MouseMove(_, _) | OutputAction::MouseScroll(_, _) => {
                     // Skip actions without release state
+                }
+                OutputAction::SequenceControl(_) => {
+                    // ★v24.31: 控制键由 worker 拦截, 永不到达模拟层
                 }
             }
         }
@@ -3053,7 +3233,9 @@ impl AppState {
             /* ★v23.1: 无目标键的映射本就跳过 —— 必须在解析触发键**之前**判断。
              * (此前先解析, 遇到历史遗留的坏触发键会直接报错导致**程序起不来**。) */
             let target_keys = mapping.get_target_keys();
-            if target_keys.is_empty() {
+            /* ★v24.31 审计: 纯序列映射允许目标键为空 (序列即输出); 两者都空才跳过 */
+            let has_sequence = !mapping.sequence_text.trim().is_empty();
+            if target_keys.is_empty() && !has_sequence {
                 continue; // Skip mappings without target keys
             }
             /* ★v23.1: 坏触发键降级为"跳过 + 日志", 绝不让单条脏数据阻断启动。 */
@@ -3092,16 +3274,112 @@ impl AppState {
                 }
             }
 
-            if actions.is_empty() {
+            if actions.is_empty() && !has_sequence {
                 continue; // Skip if no valid actions
             }
 
             // Create the final target action
-            let target_action = if actions.len() == 1 {
+            let target_action = if actions.is_empty() {
+                /* ★v24.31: 纯序列映射的占位 —— worker 在序列分支拦截, 永不被模拟 */
+                OutputAction::KeyboardKey(0)
+            } else if actions.len() == 1 {
                 actions.into_iter().next().unwrap()
             } else {
                 OutputAction::MultipleActions(Arc::new(actions))
             };
+
+            /* ★v24.31 序列控制键 (整条目标都是 KeySequenceToggle/Pause/Continue):
+             * 不注入任何键, 按下时切全局序列暂停状态。占位 action 永不被模拟。 */
+            let ctls: Vec<Option<SequenceCtl>> = target_keys
+                .iter()
+                .map(|k| crate::sequence::sequence_control_name(k))
+                .collect();
+            if !ctls.is_empty() && ctls.iter().all(|c| c.is_some()) {
+                input_mappings.insert(
+                    trigger_device.clone(),
+                    InputMappingInfo {
+                        target_action: OutputAction::KeyboardKey(0), // 占位: 永不到达模拟层
+                        interval,
+                        event_duration,
+                        turbo_enabled: false,
+                        double_tap_enabled: false,
+                        double_tap_gap_ms: mapping.double_tap_gap_ms,
+                        run_enabled: false,
+                        run_threshold: mapping.run_threshold.clamp(50, 95),
+                        run_recheck: mapping.run_recheck,
+                        lock_enabled: false,
+                        release_action: None,
+                        sequence: None,
+                        sequence_ctl: ctls[0],
+                    },
+                );
+                continue;
+            }
+
+            /* ★v24.31 序列宏: sequence_text 非空时接管输出。解析失败退回普通目标键
+             * (记日志, 不阻断加载)。序列条目上 连发/锁定/双击/奔跑 全部停用。 */
+            let sequence: Option<Arc<[ResolvedStep]>> =
+                if mapping.sequence_text.trim().is_empty() {
+                    None
+                } else {
+                    let macro_map: HashMap<String, String> = config
+                        .universal_macros
+                        .iter()
+                        .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                        .collect();
+                    match crate::sequence::parse_sequence(&mapping.sequence_text, &macro_map) {
+                        Ok(steps) => {
+                            let mut resolved: Vec<ResolvedStep> = Vec::with_capacity(steps.len());
+                            let mut ok = true;
+                            for step in steps {
+                                let mut acts: SmallVec<[OutputAction; 2]> = SmallVec::new();
+                                for key in &step.keys {
+                                    match Self::input_name_to_output(key) {
+                                        Some(
+                                            a @ (OutputAction::KeyboardKey(_)
+                                            | OutputAction::MouseButton(_)
+                                            | OutputAction::KeyCombo(_)),
+                                        ) => acts.push(a),
+                                        _ => {
+                                            eprintln!(
+                                                "[config] 序列步键无效/不支持: trigger={:?} key={:?}",
+                                                mapping.trigger_key, key
+                                            );
+                                            ok = false;
+                                            break;
+                                        }
+                                    }
+                                }
+                                if !ok {
+                                    break;
+                                }
+                                resolved.push(ResolvedStep {
+                                    actions: acts,
+                                    hold_ms: step
+                                        .hold_ms
+                                        .unwrap_or(event_duration)
+                                        .clamp(2, 60_000),
+                                });
+                            }
+                            if ok && !resolved.is_empty() {
+                                Some(Arc::from(resolved.into_boxed_slice()))
+                            } else {
+                                eprintln!(
+                                    "[config] 序列解析失败, 退回普通目标键: {:?}",
+                                    mapping.trigger_key
+                                );
+                                None
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "[config] 序列语法错误 ({e}), 退回普通目标键: {:?}",
+                                mapping.trigger_key
+                            );
+                            None
+                        }
+                    }
+                };
 
             // Create input mapping
             /* ★v21.0 奔跑互斥: 勾选【奔跑】时压制 连发/简易奔跑 —— 奔跑语义 =
@@ -3112,12 +3390,57 @@ impl AppState {
                     target_action,
                     interval,
                     event_duration,
-                    turbo_enabled: mapping.turbo_enabled && !mapping.run_enabled,
-                    double_tap_enabled: mapping.double_tap_enabled && !mapping.run_enabled,
+                    turbo_enabled: mapping.turbo_enabled
+                        && !mapping.run_enabled
+                        && sequence.is_none(),
+                    double_tap_enabled: mapping.double_tap_enabled
+                        && !mapping.run_enabled
+                        && sequence.is_none(),
                     double_tap_gap_ms: mapping.double_tap_gap_ms,
                     run_enabled: mapping.run_enabled,
                     run_threshold: mapping.run_threshold.clamp(50, 95),
                     run_recheck: mapping.run_recheck,
+                    /* ★v24.31 锁定与奔跑互斥: 奔跑有自己的按住语义, 双开语义打架;
+                     * 序列条目上锁定也无意义 (序列自己管理按住节奏) */
+                    lock_enabled: mapping.lock_enabled
+                        && !mapping.run_enabled
+                        && !mapping.double_tap_enabled
+                        && sequence.is_none(),
+                    sequence,
+                    sequence_ctl: None,
+                    /* ★v24.31 抬起映射: 解析失败逐条跳过并记日志, 不阻断整表加载 */
+                    release_action: {
+                        let mut release_actions: SmallVec<[OutputAction; 4]> = SmallVec::new();
+                        for release_key in &mapping.release_targets {
+                            match Self::input_name_to_output(release_key) {
+                                Some(
+                                    action @ (OutputAction::KeyboardKey(_)
+                                    | OutputAction::MouseButton(_)
+                                    | OutputAction::KeyCombo(_)),
+                                ) => release_actions.push(action),
+                                Some(OutputAction::MouseMove(direction, _)) => {
+                                    release_actions.push(OutputAction::MouseMove(direction, move_speed))
+                                }
+                                Some(OutputAction::MouseScroll(direction, _)) => {
+                                    release_actions
+                                        .push(OutputAction::MouseScroll(direction, move_speed))
+                                }
+                                other => {
+                                    if other.is_none() {
+                                        eprintln!(
+                                            "[config] 抬起映射目标无效, 已跳过: trigger={:?} release={:?}",
+                                            mapping.trigger_key, release_key
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                        match release_actions.len() {
+                            0 => None,
+                            1 => Some(release_actions.into_iter().next().unwrap()),
+                            _ => Some(OutputAction::MultipleActions(Arc::new(release_actions))),
+                        }
+                    },
                 },
             );
         }
@@ -3522,6 +3845,11 @@ impl AppState {
     fn input_name_to_output(name: &str) -> Option<OutputAction> {
         let name_upper = name.to_uppercase();
 
+        // ★v24.31 序列控制键 (由 worker 拦截处理, 永不被模拟注入)
+        if let Some(ctl) = crate::sequence::sequence_control_name(&name_upper) {
+            return Some(OutputAction::SequenceControl(ctl));
+        }
+
         // Try mouse scroll
         if let Some(direction) = Self::mouse_scroll_name_to_direction(&name_upper) {
             return Some(OutputAction::MouseScroll(direction, 1)); // Default speed, will be overridden by move_speed
@@ -3627,6 +3955,10 @@ impl AppState {
 }
 
 pub fn set_global_state(state: Arc<AppState>) -> Result<(), Arc<AppState>> {
+    let ptr = Arc::as_ptr(&state) as usize;
+    crate::vibration::vib_log(&format!(
+        "[hook] set_global_state ptr=0x{ptr:X}"
+    ));
     GLOBAL_STATE.set(state)
 }
 
@@ -3908,6 +4240,8 @@ mod tests {
         config.mappings = vec![
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "A".to_string(),
                 target_keys: SmallVec::from_vec(vec!["B".to_string()]),
                 interval: Some(10),
@@ -3919,11 +4253,14 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                    release_targets: Default::default(),
                 trigger_key: "F1".to_string(),
                 target_keys: SmallVec::from_vec(vec!["SPACE".to_string()]),
                 interval: None,
@@ -3934,6 +4271,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
@@ -3963,6 +4301,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
                 trigger_key: "INVALID_KEY".to_string(),
                 target_keys: SmallVec::from_vec(vec!["A".to_string()]),
                 interval: None,
@@ -3974,9 +4313,13 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
+                release_targets: Default::default(),
                 note: String::new(),
             },
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
                 trigger_key: "B".to_string(),
                 target_keys: SmallVec::from_vec(vec!["C".to_string()]),
                 interval: None,
@@ -3988,6 +4331,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
                 note: String::new(),
             },
         ];
@@ -4004,6 +4348,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["INVALID_KEY".to_string()]),
             interval: None,
@@ -4014,6 +4360,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4022,12 +4369,138 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// ★v24.31 诊断: 键盘录制链路状态层验证 —— handle_key_event (钩子入口)
+    /// → record_key_event → stop_key_record 必须拿到事件。
+    /// (真实钩子线程在本测试外; 若此测试绿而实机录不到, 问题在钩子外层环境)
+    #[test]
+    fn test_key_record_captures_keyboard_events() {
+        let config = AppConfig::default();
+        let state = AppState::new(config).unwrap();
+        const WM_KEYDOWN: u32 = 0x0100;
+        const WM_KEYUP: u32 = 0x0101;
+
+        state.start_key_record();
+        assert!(state.key_record_active.load(std::sync::atomic::Ordering::Relaxed));
+
+        // A 按下 30ms 后抬起, B 按下 … (时间由真实时钟给出, 只验证事件被捕获)
+        // ★录制来源 = RawInput (v24.31 审计后不再走 LL 钩子)
+        state.record_key_state(true, 0x41); // A down
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        state.record_key_state(false, 0x41); // A up
+        state.record_key_state(true, 0x42); // B down
+        state.record_key_state(false, 0x42); // B up
+
+        let events = state.stop_key_record().expect("停止应取走事件缓冲");
+        assert!(!state.key_record_active.load(std::sync::atomic::Ordering::Relaxed));
+        assert_eq!(events.len(), 2, "应录到 A、B 两个键");
+        assert_eq!(events[0].vk, 0x41);
+        assert!(events[0].up_ms.is_some(), "抬起时间应被回填");
+        // 转序列文本应非空且含 A
+        let text = crate::sequence::recorded_to_sequence(&events, &crate::sequence::vk_to_seq_name);
+        assert!(text.contains('A'), "序列文本应含 A: {text}");
+    }
+
+
+    /// ★v24.31 审计回归: 纯序列映射 (目标键为空 + 序列文本) 必须能建档,
+    /// 且 turbo/双击/锁定全部停用 (序列接管输出)。
+    #[test]
+    fn test_create_input_mappings_pure_sequence_mapping() {
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            trigger_key: "F8".to_string(),
+            target_keys: SmallVec::new(), // 目标键留空
+            interval: None,
+            event_duration: None,
+            turbo_enabled: true, // 会被序列压制
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            sequence_text: "A⏱50>>B⏱50".to_string(),
+            release_targets: SmallVec::new(),
+            note: String::new(),
+        }];
+        let map = AppState::create_input_mappings(&config).expect("纯序列映射应能建档");
+        let device = AppState::input_name_to_device("F8").unwrap();
+        let info = map.get(&device).expect("映射应存在");
+        assert!(info.sequence.is_some(), "序列应已解析");
+        assert_eq!(info.sequence.as_ref().unwrap().len(), 2);
+        assert!(!info.turbo_enabled, "序列条目连发必须停用");
+        assert!(!info.double_tap_enabled);
+        assert!(!info.lock_enabled);
+        assert!(info.sequence_ctl.is_none());
+    }
+
+    /// ★v24.31 审计回归: 序列控制键建档 (不注入, worker 拦截切全局暂停状态)。
+    #[test]
+    fn test_create_input_mappings_sequence_control_key() {
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            trigger_key: "F9".to_string(),
+            target_keys: SmallVec::from_vec(vec!["KeySequenceToggle".to_string()]),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            sequence_text: String::new(),
+            release_targets: SmallVec::new(),
+            note: String::new(),
+        }];
+        let map = AppState::create_input_mappings(&config).expect("控制键映射应能建档");
+        let device = AppState::input_name_to_device("F9").unwrap();
+        let info = map.get(&device).expect("映射应存在");
+        assert!(matches!(
+            info.sequence_ctl,
+            Some(crate::state::SequenceCtl::Toggle)
+        ));
+        assert!(!info.turbo_enabled, "控制键不得连发 (占位 action 永不被模拟)");
+    }
+
+    /// ★v24.31 审计回归: 锁定与 奔跑/简易奔跑 互斥 (引擎侧压制)。
+    #[test]
+    fn test_create_input_mappings_lock_suppressed_by_run() {
+        let mut config = AppConfig::default();
+        config.mappings = vec![KeyMapping {
+            trigger_key: "A".to_string(),
+            target_keys: SmallVec::from_vec(vec!["LEFT".to_string()]),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: true,
+            move_speed: 5,
+            double_tap_enabled: true, // 简易奔跑
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: true, // 与简易奔跑互斥 → 被压制
+            sequence_text: String::new(),
+            release_targets: SmallVec::new(),
+            note: String::new(),
+        }];
+        let map = AppState::create_input_mappings(&config).unwrap();
+        let device = AppState::input_name_to_device("A").unwrap();
+        let info = map.get(&device).unwrap();
+        assert!(!info.lock_enabled, "锁定与简易奔跑互斥, 应被压制");
+        assert!(info.double_tap_enabled, "简易奔跑不受影响");
+    }
+
     #[test]
     fn test_create_input_mappings_interval_validation() {
         let mut config = AppConfig::default();
         config.interval = 3; // Below minimum
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(3), // Below minimum
@@ -4038,6 +4511,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4060,6 +4534,8 @@ mod tests {
         config.event_duration = 2; // Below minimum
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: None,
@@ -4070,6 +4546,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4112,6 +4589,7 @@ mod tests {
         config.mappings = vec![
             
                 KeyMapping {
+                    sequence_text: String::new(),
                 trigger_key: "A".to_string(),
                 target_keys: SmallVec::from_vec(vec!["1".to_string()]),
                 interval: Some(10),
@@ -4120,13 +4598,16 @@ mod tests {
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
                 run_enabled: false,
+                release_targets: Default::default(),
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
                 trigger_key: "B".to_string(),
                 target_keys: SmallVec::from_vec(vec!["2".to_string()]),
                 interval: Some(15),
@@ -4134,14 +4615,18 @@ mod tests {
                 turbo_enabled: true,
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
+                release_targets: Default::default(),
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                    release_targets: Default::default(),
                 trigger_key: "C".to_string(),
                 target_keys: SmallVec::from_vec(vec!["3".to_string()]),
                 interval: Some(20),
@@ -4152,6 +4637,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
@@ -4206,6 +4692,8 @@ mod tests {
         // Test with minimum interval
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(5), // Minimum valid value
@@ -4216,6 +4704,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4231,6 +4720,8 @@ mod tests {
         // Test with zero interval (should be auto-adjusted to minimum)
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(0),
@@ -4241,6 +4732,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4576,10 +5068,12 @@ mod tests {
         config.mappings = vec![
             
                 KeyMapping {
+                    sequence_text: String::new(),
                 trigger_key: "ALT+A".to_string(),
                 target_keys: SmallVec::from_vec(vec!["B".to_string()]),
                 interval: Some(10),
                 event_duration: Some(5),
+                release_targets: Default::default(),
                 turbo_enabled: true,
             move_speed: 5,
                 double_tap_enabled: false,
@@ -4587,11 +5081,14 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
             
                 KeyMapping {
+                    sequence_text: String::new(),
+                    release_targets: Default::default(),
                 trigger_key: "CTRL+SHIFT+F".to_string(),
                 target_keys: SmallVec::from_vec(vec!["ALT+F4".to_string()]),
                 interval: None,
@@ -4602,6 +5099,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
             },
@@ -4822,6 +5320,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "Q".to_string(),
             target_keys: SmallVec::from_vec(vec!["MOUSE_UP".to_string(), "MOUSE_LEFT".to_string()]),
             interval: Some(5),
@@ -4832,6 +5332,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4857,6 +5358,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec![
                 "1".to_string(),
@@ -4871,6 +5374,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4894,6 +5398,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(10),
@@ -4904,6 +5410,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4927,6 +5434,7 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::new(),
             interval: Some(10),
@@ -4938,6 +5446,8 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                release_targets: Default::default(),
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4955,6 +5465,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "Q".to_string(),
             target_keys: SmallVec::from_vec(vec![
                 "A".to_string(),
@@ -4969,6 +5481,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -4996,16 +5509,19 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string(), "INVALID_KEY".to_string()]),
             interval: None,
             event_duration: None,
             turbo_enabled: true,
+                release_targets: Default::default(),
                 move_speed: 10,                double_tap_enabled: false,
                 double_tap_gap_ms: default_double_tap_gap_ms(),
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -5020,6 +5536,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+                release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["1".to_string(), "2".to_string()]),
             interval: Some(10),
@@ -5030,6 +5548,7 @@ mod tests {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
 
                 note: String::new(),
         }];
@@ -5056,6 +5575,8 @@ mod tests {
     #[test]
     fn invalid_trigger_mapping_is_skipped_not_fatal() {
         let mk = |trigger: &str, targets: &[&str], note: &str| KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: trigger.to_string(),
             target_keys: targets.iter().map(|s| s.to_string()).collect(),
             interval: None,
@@ -5067,6 +5588,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: note.to_string(),
         };
         let config = AppConfig {

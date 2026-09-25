@@ -192,6 +192,13 @@ pub struct SorahkGui {
     temp_config: Option<AppConfig>,
     /// New mapping trigger key input
     new_mapping_trigger: String,
+    /// ★v24.31 通用宏: 新增行草稿 (名字 + 序列文本)
+    new_macro_name: String,
+    new_macro_text: String,
+    /// ★v24.31 序列录制结果提示 (消息, 显示时刻) —— 成败都要给反馈, 4 秒后消失
+    seq_record_hint: Option<(String, std::time::Instant)>,
+    /// ★v24.32 通用宏引用选择器展开状态 (序列编辑器里点「＋ 引用通用宏」)
+    seq_macro_picker_open: bool,
     /// New mapping target key input (single key for capture)
     new_mapping_target: String,
     /// New mapping target keys (multiple keys)
@@ -388,6 +395,10 @@ impl SorahkGui {
             dark_mode,
             temp_config: None,
             new_mapping_trigger: String::new(),
+            new_macro_name: String::new(),
+            new_macro_text: String::new(),
+            seq_record_hint: None,
+            seq_macro_picker_open: false,
             new_mapping_target: String::new(),
             new_mapping_target_keys: Vec::new(),
             new_mapping_interval: String::new(),

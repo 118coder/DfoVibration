@@ -33,6 +33,8 @@ impl RecordingDispatcher {
 
 fn mapping(trigger: &str, target: &str) -> KeyMapping {
     KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: trigger.to_string(),
         target_keys: SmallVec::from_vec(vec![target.to_string()]),
         interval: Some(10),
@@ -44,6 +46,7 @@ fn mapping(trigger: &str, target: &str) -> KeyMapping {
         run_enabled: false,
         run_threshold: 80,
         run_recheck: true,
+        lock_enabled: false,
         note: String::new(),
     }
 }

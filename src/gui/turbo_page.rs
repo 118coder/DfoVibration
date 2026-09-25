@@ -19,6 +19,7 @@ impl SorahkGui {
         }
         self.render_turbo_preset_manager(ui);
         self.render_turbo_mappings(ui);
+        self.render_universal_macros_card(ui);
         self.render_turbo_params(ui, ctx);
     }
 
@@ -773,13 +774,15 @@ impl SorahkGui {
                         continue;
                     }
                     // 静态行: 拷贝显示数据避免借用冲突, 行尾挂「编辑」按钮
-                    let (trigger, targets, note, turbo) = {
+                    let (trigger, targets, note, turbo, m_lock, m_seq) = {
                         let m = &self.config.mappings[idx];
                         (
                             m.trigger_key.clone(),
                             m.target_keys.to_vec(),
                             m.note.clone(),
                             m.turbo_enabled,
+                            m.lock_enabled,
+                            !m.sequence_text.trim().is_empty(),
                         )
                     };
                     let m_interval = self.config.mappings[idx].interval.unwrap_or(interval);
@@ -792,6 +795,8 @@ impl SorahkGui {
                         m_interval,
                         m_duration,
                         turbo,
+                        m_lock,
+                        m_seq,
                         &note,
                         &mut |ui| {
                             /* 方向/滚动/连发/简易奔跑 全部收在「编辑」面板内 (v20.4 用户定稿:
@@ -817,6 +822,8 @@ impl SorahkGui {
         self.config.mappings.insert(
             0,
             crate::config::KeyMapping {
+                release_targets: Default::default(),
+                sequence_text: String::new(),
                 /* ★v24.3: 新建映射初始**无触发键** —— UI 显示「尚未捕获触发键」,
                  * 旧默认 "A" 会让人以为已经捕获了 A 键 (用户实测困惑点)。 */
                 trigger_key: String::new(),
@@ -830,6 +837,7 @@ impl SorahkGui {
                 run_enabled: false,
                 run_threshold: 80,
                 run_recheck: true,
+                lock_enabled: false,
                 note: String::new(),
             },
         );
@@ -1010,7 +1018,63 @@ impl SorahkGui {
                         self.start_mapping_capture(idx, false);
                     }
                 });
-                ui.add_space(theme::SP_M);
+                ui.add_space(theme::SP_S);
+
+                /* ★v24.31 抬起映射: 触发键抬起时额外发送的键 (可选) */
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(th.weak("抬起时发送"));
+                    let release_targets: Vec<String> =
+                        self.config.mappings[idx].release_targets.to_vec();
+                    for (i, t) in release_targets.iter().enumerate() {
+                        let short = truncate_chars(t, 35);
+                        let (fg, bg) = match utils::key_kind(t) {
+                            utils::KeyKind::Gamepad => (th.gamepad_fg, th.gamepad_bg),
+                            utils::KeyKind::Mouse => (th.mouse_fg, th.mouse_bg),
+                            utils::KeyKind::Keyboard => (th.target_fg, th.target_bg),
+                        };
+                        let chip = th.badge_clickable(ui, &format!("{}  ✕", short), fg, bg);
+                        if chip.clicked() {
+                            self.config.mappings[idx].remove_release_key(t);
+                        }
+                        chip.on_hover_text(format!("{}
+点击移除", t));
+                    }
+                    if release_targets.is_empty() {
+                        ui.label(th.hint_text(
+                        concat!(
+                            "可选 —— 松开触发键的那一瞬间额外发送这组键 (例: 收招/取消)\n",
+                            "例: 触发键是 J, 抬起键设 SPACE → 松开 J 时自动按一下空格"
+                        ),
+                    ));
+                    }
+                    let capturing = matches!(
+                        self.key_capture_mode,
+                        KeyCaptureMode::MappingRelease(i) if i == idx
+                    );
+                    let btn_text = if capturing {
+                        "正在捕获抬起键… (按下并松开)"
+                    } else {
+                        "＋ 添加抬起键"
+                    };
+                    if ui.add(th.secondary_button(btn_text)).clicked() && !capturing {
+                        self.key_capture_mode = KeyCaptureMode::MappingRelease(idx);
+                        self.capture_pressed_keys.clear();
+                        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                        self.just_captured_input = true;
+                    }
+                    if !release_targets.is_empty()
+                        && ui
+                            .add(th.secondary_button("清空抬起键"))
+                            .on_hover_text("移除全部抬起映射目标 (恢复旧行为)")
+                            .clicked()
+                    {
+                        self.config.mappings[idx].clear_release_keys();
+                    }
+                });
+                ui.add_space(theme::SP_S);
+
+                /* ★v24.32 序列宏 (可视化步骤编辑器, 连发页/手柄页共用同一组件) */
+                self.render_sequence_steps_editor(ui, idx, &th);
 
                 // 参数行
                 ui.horizontal_wrapped(|ui| {
@@ -1035,6 +1099,22 @@ impl SorahkGui {
                     if ui.checkbox(&mut turbo, "连发").changed() {
                         self.config.mappings[idx].turbo_enabled = turbo;
                     }
+                    ui.add_space(theme::SP_L);
+                    /* ★v24.31 锁定 Lock: 按一下=按住不松, 再按一下=松开; 可与连发叠加。
+                     * 与 简易奔跑/重推奔跑 互斥 (奔跑有自身的按住语义, 引擎侧同样压制)。 */
+                    ui.add_enabled_ui(!run_enabled && !double_tap, |ui| {
+                        let mut lock = self.config.mappings[idx].lock_enabled;
+                        let resp = ui
+                            .checkbox(&mut lock, "锁定")
+                            .on_hover_text(
+                                "按一下 = 持续按住不松 (挂机刷图/长按类技能), 再按一下 = 松开\n\
+                                 可与连发叠加: 锁定期间连发持续循环\n\
+                                 与 简易奔跑/重推奔跑 互斥 (勾选奔跑时此项不可用)",
+                            );
+                        if resp.changed() {
+                            self.config.mappings[idx].lock_enabled = lock;
+                        }
+                    });
                     ui.add_space(theme::SP_L);
                     /* ★v20.3: 简易奔跑补齐到连发页 (原只在设置弹窗有)
                      * ★v21.5: 与重推奔跑互斥 —— 重推奔跑勾选时此项灰掉 (不允许勾选) */
@@ -1270,9 +1350,12 @@ impl SorahkGui {
 
     /// 内联编辑的捕获轮询 (设置弹窗关闭时由 update 调用)。
     pub(super) fn handle_turbo_edit_capture(&mut self, ctx: &egui::Context) {
-        let (idx, is_trigger) = match self.key_capture_mode {
-            KeyCaptureMode::MappingTrigger(i) => (i, true),
-            KeyCaptureMode::MappingTarget(i) => (i, false),
+        let (idx, is_trigger, is_release) = match self.key_capture_mode {
+            KeyCaptureMode::MappingTrigger(i) => (i, true, false),
+            KeyCaptureMode::MappingTarget(i) => (i, false, false),
+            KeyCaptureMode::MappingRelease(i) => (i, false, true),
+            /* ★v24.32 序列步骤捕获由 handle_sequence_step_capture 独立轮询 */
+            KeyCaptureMode::SequenceStepKey(_, _) => return,
             _ => return,
         };
         if self.edit_mapping_idx != Some(idx) {
@@ -1354,6 +1437,490 @@ impl SorahkGui {
 
     /* ═══════════════════ 极简模式 (P8) ═══════════════════ */
 
+
+    /// ★v24.32 序列宏可视化步骤编辑器 (连发页 / 手柄映射页共用)。
+    /// 步骤列表 + 添加/录制/引用通用宏 + 高级文本, 全部无需记语法。
+    pub(crate) fn render_sequence_steps_editor(
+        &mut self,
+        ui: &mut egui::Ui,
+        idx: usize,
+        th: &Theme,
+    ) {
+        let macros: std::collections::HashMap<String, String> = self
+            .config
+            .universal_macros
+            .iter()
+            .map(|m| (m.name.to_lowercase(), m.text.clone()))
+            .collect();
+        let seq_now = self.config.mappings[idx].sequence_text.clone();
+        let parse_result = crate::sequence::parse_sequence(&seq_now, &macros);
+        let parse_ok = parse_result.is_ok();
+        let mut steps = parse_result.clone().unwrap_or_default();
+        let default_hold = self.config.mappings[idx].event_duration.unwrap_or(20);
+        let recording = self
+            .app_state
+            .key_record_active
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let capturing_step = matches!(
+            self.key_capture_mode,
+            KeyCaptureMode::SequenceStepKey(i, _) if i == idx
+        );
+
+        ui.horizontal_wrapped(|ui| {
+            ui.label(th.weak("序列宏"));
+
+            /* ● 录制 / ■ 停止 (GetAsyncKeyState 轮询线程, 不依赖 LL 钩子) */
+            if recording {
+                ui.label(
+                    egui::RichText::new("● 录制中… (按键盘按键, 完了点右边停止)")
+                        .size(12.0)
+                        .color(th.bad),
+                );
+                if ui.add(th.secondary_button("■ 停止并填入")).clicked() {
+                    if let Some(events) = self.app_state.stop_key_record() {
+                        let text = crate::sequence::recorded_to_sequence(
+                            &events,
+                            &crate::sequence::vk_to_seq_name,
+                        );
+                        if text.is_empty() {
+                            let ime_hits = events.iter().filter(|e| e.vk == 0xE5).count();
+                            let msg = if ime_hits > 0 {
+                                "✗ 没录到按键: 按键被中文输入法接管了 —— 请切到英文输入法再重新录制".to_string()
+                            } else {
+                                "✗ 没有录到任何按键 —— 请按【键盘】键录制 (手柄按键无法录: 序列的输出就是键盘动作)".to_string()
+                            };
+                            self.seq_record_hint = Some((msg, std::time::Instant::now()));
+                        } else {
+                            let existing = self.config.mappings[idx].sequence_text.clone();
+                            let combined = if existing.trim().is_empty() {
+                                text
+                            } else {
+                                format!("{existing}»{text}")
+                            };
+                            self.config.mappings[idx].sequence_text = combined;
+                            self.seq_record_hint = Some((
+                                "✓ 已填入 (下方步骤列表)".to_string(),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                    } else {
+                        self.seq_record_hint = Some((
+                            "✗ 录制状态丢失 (再录一次即可)".to_string(),
+                            std::time::Instant::now(),
+                        ));
+                    }
+                }
+            } else if ui
+                .add(th.secondary_button("● 录制按键"))
+                .on_hover_text(
+                    "录制【键盘】按键 → 自动生成步骤 (手柄按键无法录)\n录完再点一次停止",
+                )
+                .clicked()
+            {
+                self.app_state.start_key_record();
+                let st = self.app_state.clone();
+                let _ = std::thread::Builder::new()
+                    .name("key-record-poller".into())
+                    .spawn(move || crate::sequence::run_key_record_poller(st));
+                self.seq_record_hint = None;
+            }
+
+            /* ＋ 按键步: 点击进入捕获, 有明确的"正在捕获中"反馈 */
+            if capturing_step {
+                ui.label(
+                    egui::RichText::new("正在捕获中… (按一个键盘键, Esc 取消)")
+                        .size(12.0)
+                        .color(th.good),
+                );
+            } else if ui
+                .add(th.secondary_button("＋ 按键步"))
+                .on_hover_text("新增一个按键步骤: 点按钮 → 按一个键盘键 → 自动加入")
+                .clicked()
+            {
+                self.key_capture_mode = KeyCaptureMode::SequenceStepKey(idx, steps.len());
+                self.capture_pressed_keys.clear();
+                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.just_captured_input = true;
+            }
+
+            /* ＋ 等待步 */
+            if parse_ok
+                && ui
+                    .add(th.secondary_button("＋ 等待步"))
+                    .on_hover_text("新增一个等待 (毫秒), 用在两步之间")
+                    .clicked()
+            {
+                steps.push(crate::sequence::SeqStep {
+                    keys: Vec::new(),
+                    hold_ms: Some(200),
+                });
+                self.config.mappings[idx].sequence_text =
+                    crate::sequence::steps_to_text(&steps, default_hold);
+            }
+
+            /* ＋ 引用通用宏: 展开通用宏列表, 点一个就插入 */
+            if !self.config.universal_macros.is_empty()
+                && ui
+                    .add(th.secondary_button("＋ 引用通用宏"))
+                    .on_hover_text("把保存过的通用宏插入为一步 (如 宏(觉醒连招))")
+                    .clicked()
+            {
+                self.seq_macro_picker_open = !self.seq_macro_picker_open;
+            }
+            if !seq_now.trim().is_empty()
+                && ui
+                    .add(th.secondary_button("✕ 清空"))
+                    .on_hover_text("清空序列 (退回普通目标键模式)")
+                    .clicked()
+                {
+                    self.config.mappings[idx].sequence_text = String::new();
+                    self.seq_macro_picker_open = false;
+                    self.seq_record_hint = None;
+                }
+        });
+
+        /* 通用宏引用列表 (展开时) */
+        if self.seq_macro_picker_open && !self.config.universal_macros.is_empty() {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(th.weak("选一个通用宏:"));
+                let mut picked: Option<usize> = None;
+                for (i, m) in self.config.universal_macros.iter().enumerate() {
+                    if ui
+                        .add(th.secondary_button(&format!("宏({})", m.name)))
+                        .on_hover_text(format!("插入: {}", truncate_chars(&m.text, 40)))
+                        .clicked()
+                    {
+                        picked = Some(i);
+                    }
+                }
+                if let Some(i) = picked {
+                    let m = &self.config.universal_macros[i];
+                    let existing = self.config.mappings[idx].sequence_text.clone();
+                    self.config.mappings[idx].sequence_text =
+                        if existing.trim().is_empty() {
+                            format!("宏({})", m.name)
+                        } else {
+                            format!("{existing}»宏({})", m.name)
+                        };
+                    self.seq_macro_picker_open = false;
+                }
+            });
+        }
+
+        match parse_result {
+            Err(e) => {
+                ui.add_space(theme::SP_S);
+                ui.label(egui::RichText::new(format!("✗ {e}")).size(12.0).color(th.bad));
+                ui.label(th.hint_text("可在下方「高级」里修正, 或点「✕ 清空」重来"));
+                let mut seq_edit = seq_now;
+                ui.add(
+                    egui::TextEdit::multiline(&mut seq_edit)
+                        .desired_rows(2)
+                        .desired_width(ui.available_width()),
+                );
+                ui.add_space(theme::SP_M);
+            }
+            Ok(steps_parsed) => {
+                if !steps_parsed.is_empty() {
+                    let mut remove_step: Option<usize> = None;
+                    let mut remove_key: Option<(usize, usize)> = None;
+                    let mut hold_changed = false;
+                    ui.add_space(theme::SP_XS);
+                    for (si, step) in steps_parsed.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{}. ", si + 1))
+                                    .size(12.0)
+                                    .color(th.text_weak),
+                            );
+                            if step.keys.is_empty() {
+                                ui.label(th.weak("等待"));
+                            } else {
+                                for (ki, k) in step.keys.iter().enumerate() {
+                                    let (fg, bg) = match utils::key_kind(k) {
+                                        utils::KeyKind::Gamepad => (th.gamepad_fg, th.gamepad_bg),
+                                        utils::KeyKind::Mouse => (th.mouse_fg, th.mouse_bg),
+                                        utils::KeyKind::Keyboard => (th.target_fg, th.target_bg),
+                                    };
+                                    let chip = th.badge_clickable(
+                                        ui,
+                                        &format!("{}  ✕", k),
+                                        fg,
+                                        bg,
+                                    );
+                                    if chip.clicked() {
+                                        remove_key = Some((si, ki));
+                                    }
+                                    chip.on_hover_text(format!("{k}\n点击移除该键"));
+                                }
+                            }
+                            ui.label(th.weak(if step.keys.is_empty() { "时长" } else { "按住" }));
+                            let mut hold = step.hold_ms.unwrap_or(default_hold) as f32;
+                            if ui
+                                .add(
+                                    egui::DragValue::new(&mut hold)
+                                        .range(10.0..=60000.0)
+                                        .suffix("ms")
+                                        .speed(10.0),
+                                )
+                                .changed()
+                            {
+                                steps[si].hold_ms =
+                                    Some(hold.round().clamp(10.0, 60000.0) as u64);
+                                hold_changed = true;
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_sized(
+                                            [26.0, 22.0],
+                                            egui::Button::new(
+                                                egui::RichText::new("🗑")
+                                                    .size(12.0)
+                                                    .color(th.text_weak),
+                                            )
+                                            .fill(th.faint)
+                                            .corner_radius(egui::CornerRadius::same(6)),
+                                        )
+                                        .on_hover_text("删除该步骤")
+                                        .clicked()
+                                    {
+                                        remove_step = Some(si);
+                                    }
+                                },
+                            );
+                        });
+                        ui.add_space(theme::SP_XS);
+                    }
+                    if let Some((si, ki)) = remove_key {
+                        steps[si].keys.remove(ki);
+                        if steps[si].keys.is_empty() {
+                            steps.remove(si);
+                        }
+                    }
+                    if let Some(si) = remove_step {
+                        steps.remove(si);
+                    }
+                    if remove_step.is_some() || remove_key.is_some() || hold_changed {
+                        self.config.mappings[idx].sequence_text =
+                            crate::sequence::steps_to_text(&steps, default_hold);
+                    }
+                } else {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(theme::SP_XS);
+                        ui.label(th.hint_text(
+                            "空序列 —— 点「＋ 按键步」逐步添加, 或「● 录制按键」直接录",
+                        ));
+                        ui.add_space(theme::SP_XS);
+                    });
+                }
+                /* 录制结果反馈 (4 秒后消失) */
+                if let Some((msg, at)) = &self.seq_record_hint {
+                    if at.elapsed().as_secs() < 4 {
+                        let bad = msg.starts_with('✗');
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .size(12.0)
+                                .color(if bad { th.bad } else { th.good }),
+                        );
+                    }
+                }
+                /* 高级: 直接编辑文本 (兼容粘贴 QKeyMapper 格式) */
+                egui::CollapsingHeader::new(
+                    egui::RichText::new("高级: 直接编辑文本").size(12.0),
+                )
+                .id_source(("seq_advanced_text", idx))
+                .show(ui, |ui| {
+                    let mut seq_edit = seq_now;
+                    let resp = egui::TextEdit::multiline(&mut seq_edit)
+                        .desired_rows(2)
+                        .desired_width(ui.available_width())
+                        .hint_text("A+B:50 > NONE:200 > C:50 (等价写法: ⏱ » @)")
+                        .show(ui);
+                    if resp.response.changed() {
+                        self.config.mappings[idx].sequence_text = seq_edit.trim().to_string();
+                    }
+                });
+            }
+        }
+    }
+
+    /// ★v24.32 序列步骤捕获轮询 (任意页面; Esc 取消; 松开按键即填入)。
+    /// 独立于 handle_turbo_edit_capture —— 手柄映射页没有 edit_mapping_idx。
+    pub(crate) fn handle_sequence_step_capture(&mut self, ctx: &egui::Context) {
+        let (idx, step) = match self.key_capture_mode {
+            KeyCaptureMode::SequenceStepKey(i, s) => (i, s),
+            _ => return,
+        };
+
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.key_capture_mode = KeyCaptureMode::None;
+            self.capture_pressed_keys.clear();
+            return;
+        }
+
+        let mut captured: Option<String> = None;
+        let current_pressed = Self::poll_all_pressed_keys();
+        current_pressed
+            .iter()
+            .filter(|&&vk| !self.capture_initial_pressed.contains(&vk))
+            .for_each(|&vk| {
+                self.capture_pressed_keys.insert(vk);
+            });
+        let any_released = self
+            .capture_pressed_keys
+            .iter()
+            .any(|vk| !current_pressed.contains(vk));
+        if any_released {
+            captured = Self::format_captured_keys(&self.capture_pressed_keys);
+        }
+
+        if let Some(name) = captured {
+            let default_hold = self.config.mappings[idx].event_duration.unwrap_or(20);
+            let macros: std::collections::HashMap<String, String> = self
+                .config
+                .universal_macros
+                .iter()
+                .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                .collect();
+            let mut steps = crate::sequence::parse_sequence(
+                &self.config.mappings[idx].sequence_text,
+                &macros,
+            )
+            .unwrap_or_default();
+            let upper = name.to_uppercase();
+            match steps.get_mut(step) {
+                Some(st) => {
+                    if !st.keys.contains(&upper) {
+                        st.keys.push(upper);
+                    }
+                }
+                None => steps.push(crate::sequence::SeqStep {
+                    keys: vec![upper],
+                    hold_ms: Some(default_hold),
+                }),
+            }
+            self.config.mappings[idx].sequence_text =
+                crate::sequence::steps_to_text(&steps, default_hold);
+            self.key_capture_mode = KeyCaptureMode::None;
+            self.capture_pressed_keys.clear();
+            self.just_captured_input = false;
+            /* 即时落盘 + 热重载 (手柄页/连发页都要立即生效) */
+            let _ = self.config.save_to_file("Config.toml");
+            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                eprintln!("Failed to reload config after sequence step capture: {}", e);
+            }
+        } else if self.just_captured_input {
+            self.just_captured_input = false;
+        }
+    }
+
+    /// ★v24.32 通用宏管理卡: 序列文本里用 宏(名字) 引用的公共片段。
+    pub(super) fn render_universal_macros_card(&mut self, ui: &mut egui::Ui) {
+        let th = self.theme();
+        th.card(ui, Some("通用宏"), |ui| {
+            ui.label(th.hint_text(
+                "公共的序列片段: 在任意映射的「序列宏」里用 宏(名字) 引用 (名字不分大小写)",
+            ));
+            ui.add_space(theme::SP_S);
+
+            let mut to_remove: Option<usize> = None;
+            for (i, m) in self.config.universal_macros.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("宏({})", m.name))
+                            .size(12.0)
+                            .strong()
+                            .color(th.accent_text),
+                    );
+                    ui.label(th.hint_text(truncate_chars(&m.text, 44)));
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .add_sized(
+                                    [26.0, 22.0],
+                                    egui::Button::new(
+                                        egui::RichText::new("✕").size(12.0).color(th.text_weak),
+                                    )
+                                    .fill(th.faint)
+                                    .corner_radius(egui::CornerRadius::same(6)),
+                                )
+                                .on_hover_text("删除该通用宏")
+                                .clicked()
+                            {
+                                to_remove = Some(i);
+                            }
+                        },
+                    );
+                });
+                ui.add_space(theme::SP_XS);
+            }
+            if self.config.universal_macros.is_empty() {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(theme::SP_S);
+                    ui.label(th.hint_text("还没有通用宏 —— 下面新增一个试试"));
+                    ui.add_space(theme::SP_S);
+                });
+            }
+            if let Some(i) = to_remove {
+                self.config.universal_macros.remove(i);
+                let _ = self.config.save_to_file("Config.toml");
+                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                    eprintln!("Failed to reload config after macro removal: {}", e);
+                }
+            }
+
+            /* 新增行: 名字 + 序列文本 */
+            let mut new_name = self.new_macro_name.clone();
+            let mut new_text = self.new_macro_text.clone();
+            ui.horizontal(|ui| {
+                ui.label(th.weak("名字"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut new_name)
+                        .desired_width(90.0)
+                        .hint_text("如 觉醒连招"),
+                );
+                ui.label(th.weak("序列"));
+                ui.add(
+                    egui::TextEdit::singleline(&mut new_text)
+                        .desired_width(ui.available_width() - 120.0)
+                        .hint_text("LCTRL⏱30>>K⏱30 (» 可写 >>)"),
+                );
+                let can_add = !new_name.trim().is_empty() && !new_text.trim().is_empty();
+                if ui
+                    .add_enabled(can_add, th.secondary_button("＋ 添加"))
+                    .on_disabled_hover_text("名字和序列都要填")
+                    .clicked()
+                {
+                    let name = new_name.trim().to_string();
+                    let text = new_text.trim().to_string();
+                    /* 同名覆盖 (大小写不敏感), 与运行时解析规则一致 */
+                    if let Some(slot) = self
+                        .config
+                        .universal_macros
+                        .iter_mut()
+                        .find(|m| m.name.eq_ignore_ascii_case(&name))
+                    {
+                        slot.text = text;
+                    } else {
+                        self.config
+                            .universal_macros
+                            .push(crate::config::UniversalMacro { name, text });
+                    }
+                    let _ = self.config.save_to_file("Config.toml");
+                    if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                        eprintln!("Failed to reload config after macro add: {}", e);
+                    }
+                    new_name.clear();
+                    new_text.clear();
+                }
+            });
+            self.new_macro_name = new_name;
+            self.new_macro_text = new_text;
+        });
+    }
 
     /// 全局参数卡。
     /// 全局配置卡 (★v20.5: 从只读改为**可编辑** —— 玩家在映射页直接改, 不用跑设置弹窗)。
@@ -1540,6 +2107,8 @@ fn render_mapping_row(
     interval: u64,
     duration: u64,
     turbo: bool,
+    lock: bool,
+    seq: bool,
     note: &str,
     extra: &mut dyn FnMut(&mut egui::Ui),
 ) {
@@ -1592,6 +2161,15 @@ fn render_mapping_row(
                             .on_hover_text(note);
                         }
                         ui.add_space(theme::SP_M);
+                        /* ★v24.31 锁定/序列徽章 */
+                        if lock {
+                            th.badge(ui, "🔒 锁定", th.warn, th.warn_soft);
+                            ui.add_space(theme::SP_M);
+                        }
+                        if seq {
+                            th.badge(ui, "⚡ 宏", th.accent_text, th.accent_soft);
+                            ui.add_space(theme::SP_M);
+                        }
                         // Turbo 徽章
                         if turbo {
                             th.badge(ui, "TURBO", th.accent, th.accent_soft);
@@ -1618,6 +2196,8 @@ mod preset_switch_conflict_tests {
 
     fn mapping(trigger: &str, turbo: bool) -> KeyMapping {
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: trigger.to_string(),
             target_keys: smallvec::SmallVec::from_vec(vec!["A".to_string()]),
             interval: None,
@@ -1629,6 +2209,7 @@ mod preset_switch_conflict_tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         }
     }

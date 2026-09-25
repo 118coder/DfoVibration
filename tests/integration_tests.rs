@@ -32,6 +32,8 @@ fn test_config_with_complex_mappings() {
     let mut config = AppConfig::default();
     config.mappings = vec![
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["1".to_string()]),
             interval: Some(10),
@@ -43,9 +45,12 @@ fn test_config_with_complex_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "B".to_string(),
             target_keys: SmallVec::from_vec(vec!["2".to_string()]),
             interval: None,
@@ -57,9 +62,12 @@ fn test_config_with_complex_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "F1".to_string(),
             target_keys: SmallVec::from_vec(vec!["SPACE".to_string()]),
             interval: Some(20),
@@ -71,9 +79,12 @@ fn test_config_with_complex_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "LSHIFT".to_string(),
             target_keys: SmallVec::from_vec(vec!["ENTER".to_string()]),
             interval: Some(15),
@@ -85,6 +96,7 @@ fn test_config_with_complex_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
     ];
@@ -132,6 +144,8 @@ fn test_config_maximum_mappings() {
     let mut config = AppConfig::default();
     config.mappings = (0..50)
         .map(|i| KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: format!("F{}", (i % 12) + 1),
             target_keys: SmallVec::from_vec(vec![format!("{}", i % 10)]),
             interval: Some((i as u64 + 1) * 5),
@@ -143,6 +157,7 @@ fn test_config_maximum_mappings() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         })
         .collect();
@@ -218,6 +233,8 @@ fn test_config_multiple_target_keys() {
     let mut config = AppConfig::default();
     config.mappings = vec![
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "Q".to_string(),
             target_keys: SmallVec::from_vec(vec!["MOUSE_UP".to_string(), "MOUSE_LEFT".to_string()]),
             interval: Some(5),
@@ -229,9 +246,12 @@ fn test_config_multiple_target_keys() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
         KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "E".to_string(),
             target_keys: SmallVec::from_vec(vec![
                 "MOUSE_UP".to_string(),
@@ -246,6 +266,7 @@ fn test_config_multiple_target_keys() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
         },
     ];
@@ -271,6 +292,8 @@ fn test_config_many_target_keys() {
 
     let mut config = AppConfig::default();
     config.mappings = vec![KeyMapping {
+        sequence_text: String::new(),
+        release_targets: Default::default(),
         trigger_key: "A".to_string(),
         target_keys: SmallVec::from_vec(vec![
             "1".to_string(),
@@ -288,6 +311,7 @@ fn test_config_many_target_keys() {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
     }];
 

@@ -19,6 +19,28 @@ static EVENT_BACKLOG: AtomicUsize = AtomicUsize::new(0);
 unsafe impl Send for KeyboardHook {}
 
 // Multi-worker dispatcher supporting both keyboard and mouse
+/// ★v24.31: 触发设备在 worker 内的运行时状态 (原 7 元组具名化 ——
+/// 锁定/抬起映射持续加字段, 匿名元组的位置参数已不可维护)。
+struct DevRuntime {
+    last_time: Instant,
+    interval: u64,
+    duration: u64,
+    action: crate::state::OutputAction,
+    turbo: bool,
+    run_gap: u16,
+    run_recheck: bool,
+    /// 建档时的配置修订号 (reload 后旧锁定条目强制解锁, 防卡键)
+    revision: u64,
+    /// ★锁定 Lock: 本条是否为锁定映射 (v2: 解锁后条目仍驻留, 靠它区分)
+    lock_enabled: bool,
+    /// ★锁定 Lock: true = 注入键保持按下 (物理松开不松; 再按一次解除)
+    locked: bool,
+    /// 触发键物理上是否正按着 (区分「再按一次解锁」与「按住期自动重复」)
+    phys_held: bool,
+    /// ★v24.31 抬起映射: 触发键抬起时额外发送的动作 (None = 旧行为)
+    release_action: Option<crate::state::OutputAction>,
+}
+
 struct WorkerPool {
     workers: Vec<Sender<InputEvent>>,
     mouse_move_worker: Sender<InputEvent>,
@@ -195,6 +217,7 @@ impl KeyboardHook {
                 anyhow::bail!("Failed to set keyboard hook.");
             }
 
+            crate::vibration::vib_log("[hook] keyboard LL hook installed");
             Ok(Self {
                 state,
                 hook_handle: hook,
@@ -307,6 +330,9 @@ impl KeyboardHook {
             }
         });
 
+        /* ★v24.31 诊断探针: 证明消息循环真的启动了 (LL 回调只在循环泵消息时送达) */
+        crate::vibration::vib_log("[hook] message loop entered");
+
         // Main thread message loop
         unsafe {
             let mut msg = MSG::default();
@@ -370,10 +396,10 @@ impl KeyboardHook {
     fn turbo_worker(_worker_id: usize, state: Arc<AppState>, event_rx: Receiver<InputEvent>) {
         use crate::state::OutputAction;
         // Store device state along with cached mapping info to avoid repeated lookups
-        // Cache format: (last_time, interval, event_duration, target_action, turbo_enabled)
+        // ★v24.31: 7 元组重构为命名结构体 DevRuntime (锁定/抬起映射持续加字段,
+        // 匿名元组的位置参数已不可维护)。
         // Pre-allocate with reasonable capacity to reduce allocations
-        let mut device_states: HashMap<InputDevice, (Instant, u64, u64, OutputAction, bool, u16, bool)> =
-            HashMap::with_capacity(16);
+        let mut device_states: HashMap<InputDevice, DevRuntime> = HashMap::with_capacity(16);
 
         while !state.should_exit() {
             if unlikely(state.is_paused()) {
@@ -381,9 +407,10 @@ impl KeyboardHook {
                     // 暂停清理前补发释放: 非连发按住条目的注入键不能悬空
                     // (暂停期间闸门吞掉了 Released, 清缓存后它永远不会再送达)。
                     // 连发条目直接丢弃 —— 停止连发本身就是暂停的正确语义。
-                    for (_, (_, _, _, action, turbo, _run_gap, _recheck)) in device_states.drain() {
-                        if !turbo {
-                            state.simulate_release(&action);
+                    for (_, rt) in device_states.drain() {
+                        // ★v24.31: 锁定条目即使连发也在"按住"注入键 —— 暂停必须补松开防卡键
+                        if !rt.turbo || rt.locked {
+                            state.simulate_release(&rt.action);
                         }
                     }
                 }
@@ -410,17 +437,22 @@ impl KeyboardHook {
                 Err(_) => Self::handle_timeout(&state, &mut device_states),
             }
         }
+        /* ★v24.31 审计: 退出前补松开 —— 锁定/非连发条目的注入键不能悬空到进程死后 (防卡键) */
+        if !device_states.is_empty() {
+            for (_, rt) in device_states.drain() {
+                if !rt.turbo || rt.locked {
+                    state.simulate_release(&rt.action);
+                }
+            }
+        }
     }
 
     /// 背压合并(见 turbo_worker 主循环): 快速清空积压队列, 只保留每个设备
     /// 最新的 按下/松开 状态; 移动/滚动事件在背压期间直接丢弃(限流, 不积压)。
     #[inline]
     fn drain_and_coalesce(
-        state: &AppState,
-        device_states: &mut HashMap<
-            InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
-        >,
+        state: &Arc<AppState>,
+        device_states: &mut HashMap<InputDevice, DevRuntime>,
         event_rx: &Receiver<InputEvent>,
     ) {
         let mut latest: HashMap<InputDevice, bool> = HashMap::with_capacity(16);
@@ -447,11 +479,8 @@ impl KeyboardHook {
 
     #[inline]
     fn handle_input_event(
-        state: &AppState,
-        device_states: &mut HashMap<
-            InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
-        >,
+        state: &Arc<AppState>,
+        device_states: &mut HashMap<InputDevice, DevRuntime>,
         event: InputEvent,
     ) {
         use crate::state::OutputAction;
@@ -465,46 +494,69 @@ impl KeyboardHook {
              *   松开 → 敲(80ms) → 松开 → 再按住。 */
             InputEvent::RunTap(device) => {
                 const RUN_FIRST_TAP_MIN_MS: u64 = 80;
-                if let Some((last_time, _, _, target_action, _turbo, run_gap, run_recheck)) =
-                    device_states.get_mut(&device)
-                {
-                    if *run_gap > 0 {
-                        if *run_recheck {
+                if let Some(rt) = device_states.get_mut(&device) {
+                    if rt.run_gap > 0 {
+                        if rt.run_recheck {
                             /* 完整双击序列: 长按(走路)本身不算敲击, 松开即重置。
                              * ★v21.2 节奏优化 (用户实测: 松开后先停一个间隔视觉顿挫明显):
                              * 松开后立即接敲1 (角色脚不停, 视觉=继续走 80ms),
                              * 「二次敲击间隔」只用在 走→跑 的切换点 (敲1→敲2 之间) ——
                              * 视觉序列 = 走 → 走 → 轻微一顿(可调) → 跑 */
-                            state.simulate_release(target_action);
-                            state.simulate_action(
-                                target_action.clone(),
-                                RUN_FIRST_TAP_MIN_MS,
-                            );
-                            std::thread::sleep(Duration::from_millis(*run_gap as u64));
-                            state.simulate_press(target_action);
+                            state.simulate_release(&rt.action);
+                            state.simulate_action(rt.action.clone(), RUN_FIRST_TAP_MIN_MS);
+                            std::thread::sleep(Duration::from_millis(rt.run_gap as u64));
+                            state.simulate_press(&rt.action);
                         } else {
-                            let held_ms = last_time.elapsed().as_millis() as u64;
+                            let held_ms = rt.last_time.elapsed().as_millis() as u64;
                             if held_ms < RUN_FIRST_TAP_MIN_MS {
                                 std::thread::sleep(Duration::from_millis(
                                     RUN_FIRST_TAP_MIN_MS - held_ms,
                                 ));
                             }
-                            state.simulate_release(target_action);
-                            std::thread::sleep(Duration::from_millis(*run_gap as u64));
-                            state.simulate_press(target_action);
+                            state.simulate_release(&rt.action);
+                            std::thread::sleep(Duration::from_millis(rt.run_gap as u64));
+                            state.simulate_press(&rt.action);
                         }
-                        *last_time = Instant::now();
+                        rt.last_time = Instant::now();
                     }
                 }
             }
             InputEvent::Pressed(device) => {
                 let now = Instant::now();
 
+                /* ★v24.31 锁定 Lock v2: 锁定条目**常驻缓存**, 解锁只切 locked 标记不移除
+                 * —— 否则解锁后按住期间键盘自动重复会走慢路径把条目重新锁上。
+                 * - locked && phys_held  → 按住期自动重复, 忽略;
+                 * - locked && !phys_held → 真实再按 → 解锁 (松开注入键 + 触发抬起序列);
+                 * - !locked && phys_held → 解锁后仍按住, 忽略;
+                 * - !locked && !phys_held → 完全松开后的再按 → 重新锁定。 */
+                if let Some(rt) = device_states.get_mut(&device)
+                    && rt.lock_enabled
+                {
+                    if rt.locked {
+                        if !rt.phys_held {
+                            rt.locked = false;
+                            state.simulate_release(&rt.action);
+                            /* 抬起映射: 注入键松开时触发 (locked→false 只发这一次) */
+                            if let Some(ra) = rt.release_action.clone() {
+                                let dur = rt.duration;
+                                state.simulate_action(ra, dur);
+                            }
+                        }
+                    } else if !rt.phys_held {
+                        rt.locked = true;
+                        if !rt.turbo {
+                            state.simulate_press(&rt.action);
+                        }
+                    }
+                    return;
+                }
+
                 // Fast path: check if device already in cache (common case for repeats)
-                if let Some((last_time, _interval, duration, target_action, turbo_enabled, _run_gap, _recheck)) =
+                if let Some(rt) =
                     device_states.get_mut(&device)
                 {
-                    if *turbo_enabled {
+                    if rt.turbo {
                         // 快速连按保护: 设备已在连发中时, 冗余的 Pressed(按住期间键盘自动重复、
                         // 或手柄/双连接上报的重复按下)不再叠加完整注入周期 ——
                         // 连发节奏统一由 handle_timeout 按 interval 驱动, 从源头消除
@@ -515,10 +567,10 @@ impl KeyboardHook {
                         // Non-turbo mode: handle Windows repeat events
                         // Process keyboard keys only (mouse buttons don't generate repeat events)
                         // Windows repeat sends full action cycles (press->duration->release)
-                        match target_action {
+                        match &rt.action {
                             OutputAction::KeyboardKey(_) | OutputAction::KeyCombo(_) => {
-                                state.simulate_action(target_action.clone(), *duration);
-                                *last_time = now;
+                                state.simulate_action(rt.action.clone(), rt.duration);
+                                rt.last_time = now;
                             }
                             OutputAction::MultipleActions(actions) => {
                                 // For multiple actions, check if all are keyboard-related
@@ -529,8 +581,8 @@ impl KeyboardHook {
                                     )
                                 });
                                 if all_keyboard {
-                                    state.simulate_action(target_action.clone(), *duration);
-                                    *last_time = now;
+                                    state.simulate_action(rt.action.clone(), rt.duration);
+                                    rt.last_time = now;
                                 }
                             }
                             _ => {}
@@ -539,6 +591,25 @@ impl KeyboardHook {
                 } else {
                     // Slow path: first press lookup and cache
                     if let Some(mapping) = state.get_input_mapping(&device) {
+                        /* ★v24.31 序列控制键 (KeySequenceToggle/Pause/Continue):
+                         * 只切全局序列状态, 不注入、不入缓存。 */
+                        if let Some(ctl) = mapping.sequence_ctl {
+                            state.sequence_ctl(ctl);
+                            return;
+                        }
+                        /* ★v24.31 序列宏: 独立线程执行 (绝不占输入 worker);
+                         * 同一设备上一条没跑完时忽略本次触发。 */
+                        if let Some(steps) = &mapping.sequence {
+                            if let Ok(run) = state.register_sequence_run(&device) {
+                                let st = Arc::clone(state);
+                                let dev = device.clone();
+                                let steps = steps.clone();
+                                let _ = std::thread::Builder::new()
+                                    .name("seq-runner".into())
+                                    .spawn(move || crate::sequence::run_sequence(st, dev, steps, run));
+                            }
+                            return;
+                        }
                         let target_action_clone = mapping.target_action.clone();
                         let turbo_enabled = mapping.turbo_enabled;
                         let double_tap_enabled = mapping.double_tap_enabled;
@@ -546,22 +617,36 @@ impl KeyboardHook {
                         let run_gap = if mapping.run_enabled { double_tap_gap as u16 } else { 0 };
                         let run_recheck = mapping.run_recheck;
                         let duration = mapping.event_duration;
+                        /* ★v24.31 锁定 Lock: 按一下=按住不松, 再按一下=松开; 可与连发叠加。
+                         * 与 简易奔跑/重推奔跑 互斥 (create_input_mappings 已压制)。 */
+                        let lock_enabled = mapping.lock_enabled;
 
                         device_states.insert(
                             device,
-                            (
-                                now,
-                                mapping.interval,
-                                mapping.event_duration,
-                                mapping.target_action,
-                                turbo_enabled,
+                            DevRuntime {
+                                last_time: now,
+                                interval: mapping.interval,
+                                duration: mapping.event_duration,
+                                action: mapping.target_action,
+                                turbo: turbo_enabled,
                                 run_gap,
                                 run_recheck,
-                            ),
+                                revision: state.mappings_revision(),
+                                lock_enabled,
+                                locked: lock_enabled,
+                                phys_held: true,
+                                release_action: mapping.release_action.clone(),
+                            },
                         );
 
-                        // Simulate based on turbo / double-tap mode
-                        if double_tap_enabled {
+                        if lock_enabled {
+                            /* 首按即锁定: 非连发 = 立即按住不松;
+                             * 连发 = 不立即发, 由 timeout 按 interval 节拍循环 (锁定期间持续)。
+                             * 物理松开由 Released 只清 phys_held, 注入键保持。 */
+                            if !turbo_enabled {
+                                state.simulate_press(&target_action_clone);
+                            }
+                        } else if double_tap_enabled {
                             // Double-tap on a single trigger press (e.g. DNF run):
                             // first tap is a full press-release cycle, then a gap,
                             // then a second press. In follow (non-turbo) mode the
@@ -593,14 +678,40 @@ impl KeyboardHook {
                 }
             }
             InputEvent::Released(device) => {
-                // For non-turbo mode, simulate release event
-                if let Some((_, _, _, target_action, turbo_enabled, _run_gap, _recheck)) =
-                    device_states.get(&device)
-                    && !turbo_enabled
-                {
-                    state.simulate_release(target_action);
+                /* ★v24.31 锁定 v2:
+                 * - 锁定中: 物理松开只清 phys_held, 注入键保持 (等下次按下解锁);
+                 * - 已解锁后的物理松开: 收尾移除条目 (解锁时已发过 KEYUP, 连发已停)。 */
+                let lock_entry = device_states
+                    .get(&device)
+                    .filter(|rt| rt.lock_enabled)
+                    .map(|rt| (rt.locked, rt.turbo));
+                if let Some((locked, turbo)) = lock_entry {
+                    if locked {
+                        if let Some(rt) = device_states.get_mut(&device) {
+                            rt.phys_held = false;
+                        }
+                    } else {
+                        if !turbo {
+                            if let Some(rt) = device_states.get(&device) {
+                                state.simulate_release(&rt.action);
+                            }
+                        }
+                        device_states.remove(&device);
+                    }
+                    return;
                 }
+                // For non-turbo mode, simulate release event
+                let release_fire = device_states.get(&device).and_then(|rt| {
+                    if !rt.turbo {
+                        state.simulate_release(&rt.action);
+                    }
+                    rt.release_action.clone().map(|ra| (ra, rt.duration))
+                });
                 device_states.remove(&device);
+                /* ★v24.31 抬起映射: 触发键抬起时额外发送一组键 (连发条目 = 停止连发后发) */
+                if let Some((ra, dur)) = release_fire {
+                    state.simulate_action(ra, dur);
+                }
             }
         }
     }
@@ -608,10 +719,7 @@ impl KeyboardHook {
     #[inline]
     fn handle_timeout(
         state: &AppState,
-        device_states: &mut HashMap<
-            InputDevice,
-            (Instant, u64, u64, crate::state::OutputAction, bool, u16, bool),
-        >,
+        device_states: &mut HashMap<InputDevice, DevRuntime>,
     ) {
         // Early return if no active devices
         if unlikely(device_states.is_empty()) {
@@ -619,19 +727,32 @@ impl KeyboardHook {
         }
 
         let now = Instant::now();
+        let revision_now = state.mappings_revision();
+        let mut stale_locked: Vec<InputDevice> = Vec::new();
 
         // Iterate over cached device states
-        for (_device, (last_time, interval, duration, target_action, turbo_enabled, _run_gap, _recheck)) in
-            device_states.iter_mut()
-        {
-            // Only repeat if turbo mode is enabled
-            if likely(
-                *turbo_enabled
-                    && now.duration_since(*last_time) >= Duration::from_millis(*interval),
-            ) {
-                state.simulate_action(target_action.clone(), *duration);
-                *last_time = now;
+        for (_device, rt) in device_states.iter_mut() {
+            /* ★v24.31 锁定防卡键: 配置重载后, 旧修订号的锁定条目强制解锁松开
+             * (映射已被改掉/删掉, 注入键再按着就永远悬空) */
+            if rt.locked && rt.revision != revision_now {
+                let action = rt.action.clone();
+                state.simulate_release(&action);
+                stale_locked.push(_device.clone());
+                continue;
             }
+            // Only repeat if turbo mode is enabled
+            // ★v24.31 审计: 锁定条目解锁后仍驻留缓存 —— 必须门控, 否则解锁后连发永不停
+            let bursting = rt.turbo && (!rt.lock_enabled || rt.locked);
+            if likely(
+                bursting
+                    && now.duration_since(rt.last_time) >= Duration::from_millis(rt.interval),
+            ) {
+                state.simulate_action(rt.action.clone(), rt.duration);
+                rt.last_time = now;
+            }
+        }
+        for d in stale_locked {
+            device_states.remove(&d);
         }
     }
 
@@ -1352,6 +1473,8 @@ mod tests {
         let mut config = AppConfig::default();
         config.mappings = vec![
             KeyMapping {
+                sequence_text: String::new(),
+            release_targets: Default::default(),
             trigger_key: "A".to_string(),
             target_keys: SmallVec::from_vec(vec!["B".to_string()]),
             interval: Some(10),
@@ -1363,6 +1486,7 @@ mod tests {
             run_enabled: false,
             run_threshold: 80,
             run_recheck: true,
+            lock_enabled: false,
             note: String::new(),
 }];
 

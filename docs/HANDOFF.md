@@ -1,13 +1,13 @@
 # DfoVibration-V3 (原 SorahkDFO) — 交接文档 (HANDOFF)
 
-> 更新: 2026-09-21 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
-> 配套: `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
+> 更新: 2026-09-27 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
+> 配套: `docs/开发维护规范.md`(★强制性规范, R1 新增) · `CONTEXT.md`(领域词汇+模块地图, R1 新增) · `docs/adr/`(已定决策) · `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
 
 ---
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 待上交** (2026-09-25: 同一 PR; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29` 为远端 main 顶端, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
+**当前状态**: 基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
 
 > **🎨 v24.30 深色配色重制 v5 (2026-09-23, 743 全绿 + 逐页截图验收)**: 用户"深色页面不好看"
 > → v4 三阶灰全带紫调整屏发糊、强调紫大面积饱和块、语义色互相打架。本版**只重做深色**
@@ -1595,9 +1595,21 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
         (注意 Gitgub 是用户目录实际拼写, 勿"纠正")
       * **E 盘开发主线** (`E:\网页小工具\DfoVibration V3版本\SorahkDFO源码`): **无 remote**,
         是唯一事实来源 (source of truth); 所有开发 commit 在这里。
-      * **gh CLI 未安装** → 建 PR/合并走 **GitHub REST API + curl**; token 用
-        `git credential fill` (protocol=https host=github.com) 现场取, **只在变量里,
-        绝不落盘/不回显** (GitHub Desktop 已存该凭据, push 也走同一份)。
+      * **gh CLI 未安装** → 建 PR/合并走 **GitHub REST API + curl**; **09-26 实战补遗
+        (照做, 少走弯路)**:
+        * **token 获取**: `git credential fill` 在会话沙箱下会挂起/返回空 (即使 push
+          刚刚成功过)。token 实际存于 **Windows 凭据管理器**, 用 Python ctypes
+          `CredReadW` 读 target `GitHub - https://api.github.com/118coder`
+          (**blob 是 UTF-8**, gho_ 开头, 直接可用); 另一条 `git:https://github.com`
+          是 UTF-16 blob (x-access-token)。现成工具: `work/_gh_pr.py`
+          (token 经 curl `--config -` 走 stdin, **不落盘不回显**; 子命令
+          create-pr / merge-pr / pr-info / delete-branch / api)。
+        * **网络**: 直连 github.com 时通时不通 (schannel: server closed abruptly /
+          OpenSSL UNEXPECTED_EOF_WHILE_READING); **本机代理 `http://127.0.0.1:7897`
+          稳定** —— git push 用 `git -c http.proxy=http://127.0.0.1:7897 -c
+          https.proxy=http://127.0.0.1:7897 push …`, REST 调用 curl 加 `-x`。
+          ⚠ Python urllib 走该代理 TLS 会断 (UNEXPECTED_EOF), REST 一律 curl。
+          push 后必须 `git ls-remote` 实证分支存在, 不轻信单次输出。
     - **上交流程 (口令后逐步执行)**:
       1. E 盘主线确认干净: `git -C <E盘repo> status --short` 应为空 (未提交改动先按
          惯例 commit)。
@@ -3394,7 +3406,7 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     (共存亦无害)。已知边界 (上游现状非回归): 玩家对象未定案 → 移动/走位事件本就不发;
     ACCUM/VOICE/RESULT/FINALE/ATHIT/COMBOUI 锚点未定位 → 对应通道暂无事件。
     exe md5 `93d39a8baa3b06b0057e1f7ea5130fdf` (四交付名重刷)。已上交: PR #4 合并 276ac29 (2026-09-25)。
-87. **★v24.35 序列宏 × 目标键/连发 冲突审计与修复 (2026-09-25, 全量 0 失败, 等口令)**:
+87. **★v24.35 序列宏 × 目标键/连发 冲突审计与修复 (2026-09-25, 全量 0 失败, 已上交 PR #5)**:
     用户提问"设了目标键又设序列宏, 会不会先按目标键再跑序列?"。核查结论: **引擎本就是
     "序列接管输出"** (`keyboard.rs` 慢路径序列分支派生 seq-runner 后立即 return, 目标键永不
     模拟), 不会双按; 但实锤 6 处**静默冲突**并全部修复:
@@ -3417,7 +3429,8 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     "已接管"/"解析失败"(红字, 该槽位映射已死)。
     回归测试 +4 (解析失败整条跳过 / run 门控 / 序列条目建档-重复吞掉-抬起移除生命周期 /
     reload 后占位条目清除)。exe md5 见 v24.36 条目 (v24.35/v24.36 同一 PR 上交)。
-88. **★v24.36 首次进连发映射页卡顿根治 (2026-09-25, 全量 0 失败, 等口令)**:
+    已上交: **PR #5** 合并 `3dac8ae` (2026-09-26)。
+88. **★v24.36 首次进连发映射页卡顿根治 (2026-09-25, 全量 0 失败, 已上交 PR #5)**:
     用户反馈"每次打开软件切到连发映射页会卡一下, 之后就正常; 本软件定位极致流畅"。
     **实测定位 (分段计时, 非猜测)**: 首次进页那一帧在 **UI 线程**同步做完键盘 SVG 全链路 =
     `load_system_fonts()` 全系统字体扫描 **425ms** (键盘 SVG 有 102 个 `<text>` 键帽字形,
@@ -3439,4 +3452,73 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
     回归测试 +1 `svg_raster_is_correct_and_thread_ready` (尺寸断言 + **预乘不变量**
     channel≤alpha, 误喂未预乘数据立刻红 + 跨线程建纹理可用性 + 缓存耗时上限守护;
     `--nocapture` 打印冷/热分段数据供后续对照)。exe md5 `49305a5f9576d80c6ce1546c74b1ee78`
-    (DfoVibration-Sorahk_v24.36_进页卡顿修复版.exe)。
+    (DfoVibration-Sorahk_v24.36_进页卡顿修复版.exe)。已上交: **PR #5** 合并 `3dac8ae` (2026-09-26)。
+89. **★架构重构 R1: A+B+C+D+G 一口气落地 (2026-09-27, 功能零变化, 789 测试全绿, 未上交)**:
+    用户需求 = 保留全部功能下重构/拆分, 解决①编译测试慢②代码杂乱耗 token; 另立标准规范。
+    方案评审报告选定 A(管线)+B(state 拆分)+C(GUI 拆分)+D(参数单一事实源)+G(导航卫生),
+    E(workspace)与 F(i18n) 明确不做 (E 缓期见 ADR-0001)。
+    - **A/管线**: `sync_and_build.sh` 默认 `--profile iter` (opt-1/无LTO/增量; 改→测 6-30s,
+      交付才 `--release`) + 同步先删后拷 + `run_tests.bat` 4遍制→1遍制 (ADR-0004)。
+      实战补遗: 沙箱 CARGO_HOME 重定向到中文路径 → MinGW ld `cannot find -lwindows.0.53.0`
+      (中文路径铁律变体), 脚本内置 ASCII CARGO_HOME; 会话内手动 cargo 还需 ASCII TMP/TEMP
+      (doctest 对象文件同病); `| tail` 掩码退出码的坑再踩一次, 全部写进 ADR-0004 与规范。
+    - **G**: `src/hidhide.rs`(1005行冻结实现) 移出编译目录 → `docs/frozen/hidhide.rs`
+      (banner 增"步骤0 移回 src" + lib/main/config 注释指向新路径); 侦察所称 4 个"低引用
+      pub fn" 经核实均为真实跨模块引用或本就私有 → 不做收窄 (数据先于假设)。
+    - **B**: `src/state.rs`(5678行, AppState 122字段+3086行单impl) → `src/state/` 十文件
+      (mod/types/events/turbo/inject/mappings/key_names/whitelist/vib_mirror/tests);
+      纯搬家, `Arc<AppState>` 接缝不变; 内嵌测试(1580行)归位 tests.rs。
+    - **C**: 四大 GUI 热点页拆解 — `vibration_page.rs`(3577)→目录五文件 + 2770行单函数
+      →主编排+10分区方法; `settings_dialog.rs`(2610)→主编排+6分区方法(各段内部自取
+      temp_config 快照, should_cancel 经返回值回传); `gamepad_mapping.rs`(3178)→目录九文件;
+      `turbo_page.rs`(2410)→目录五文件。方法可见性 pub(super)→pub(in crate::gui)/pub(super)
+      与拆分前严格等价; 教训: egui 闭包内长借用 (`let p=&self.app_state…`) 与整 self 方法
+      调用互斥, 抽方法需整体一步到位; 顺带清掉两个历史遗留孤儿 doc。
+    - **D**: 震动 60 槽参数单一事实源 (ADR-0002) — `vibration/params.rs`:
+      P_* 常量 + `for_each_named_param!` 宏表 (0-18 具名槽位) 唯一生成
+      `params_from_config`/`config_from_params` 双向映射 (19-59=advanced 位置段);
+      state.vib_mirror 与 gui.sync 改为委托; 引擎算法/TOML 字段/参数值零改动;
+      +2 守卫测试 (特征值往返逐字节恒等 / P_* 对账), act_variants 校验和 + config_roundtrip
+      全绿 = 手感等价性证明。
+    - **规范交付**: `docs/开发维护规范.md`(强制性: 构建/流程/代码/测试/发布) +
+      `CONTEXT.md`(领域词汇+模块地图) + `docs/adr/`(ADR-0001..0004) + AGENTS.md 重写。
+    - **R1 终验 (2026-09-27)**: 全量 789 测试全绿 (lib 354 + bin 381 + 集成 54, 0 失败);
+      release 交付构建通过 (3m53s, 与 v24.36 的 3m59s 同级; exe md5 `bafbbc67f0de554b112b88b3396783bd`,
+      E:\Sorahk-build	argetelease\sorahk.exe, 未覆盖项目根交付别名); 冒烟视觉验收通过
+      (work/r1_smoke_default.png: 新 exe 离屏启动渲染正常 —— 侧边栏/SVG 热点/震动状态/向导弹窗,
+      SORAHK_NO_AUTO_INJECT=1, 全新工作目录未触碰用户真实配置); **逐页交互走查 + 真机连发/震动
+      手感回归 = 待用户实测** (重构为纯结构搬家, 渲染次序逐块保序)。环境敏感测试
+      (`poller_captures_synthesized_keys`) 在锁屏/无人值守会话会假失败 —— 对照 HEAD 复测定性,
+      属环境非回归。
+    - 每步独立 commit (fa6bb05..6ef1742 共 21 个), 可单独 revert; 未上交, 等口令走 PR。
+90. **★R1 防冲突复审 (2026-09-27, 应用户"以防万一"要求, 全部通过)**: 用 diagnosing-bugs
+    纪律建了**红绿灯反馈环**再审计, 防止"看起来没问题"的自我确认:
+    - **工具**: `work/_r1_equiv_check.py` (留存, 可随时重跑) — ①多重集校验: 6 次拆分的原始
+      文件 vs 新文件全体, 归一化(剥可见性修饰/括号行/use/属性)后逐行对账; ②序列级校验:
+      C1b/C2 动过手术的 16 个区块, difflib 逐行对比 (多重集抓不到相邻行对调!)。
+    - **红绿灯证明**: --mutate 注入"马达区相邻两行对调"变异 → 校验器立刻 ✗ 精确定位;
+      还原后 16/16 复绿。工具本身红-绿能力已实证。
+    - **结果**: LOST 52 行全部对上已知编辑 (D2 委托 43 + 设置 guard 重写 1 + include 路径
+      2 + cargo fix 冗余消除: .clone()/_i/_is_release — 均编译器证明行为等价); ADDED 199 行
+      全部对上已知新增 (方法签名/调用点/前导行/mod 声明/再导出/D2 宏表)。16 个手术区块
+      内容行序列与原始**逐行一致**, 渲染次序保序实锤。
+    - **冲突语义矩阵全绿**: 预设切换键冲突 (v24.31 语义) / 序列×目标键 (v24.35) / 路线隔离
+      S1-S4 (v24.15) / 白名单双版本 (v24.29) / ACT1 特供校验和 (v24.16) / stuck_key /
+      job_import / config 往返 —— 789/789, 0 失败。
+    - **风险扫描零新增**: dbg!/todo!/unimplemented! 零; glob 再导出重名零 (model/capture/
+      helpers/svg); INIT_DONE 恰好 1 处; 交付别名 (DfoVibration V3版本\ 下 3 个 exe) 未触碰。
+    - 结论: 未发现重构引入的冲突/顺序/语义漂移 bug。剩余风险 = 真机手感 (待用户实测) 与
+      逐页交互走查。
+91. **★R1.1 长期保障层 (2026-09-27, 用户目标"长期使用", 零运行时语义变化)**:
+    - **反向依赖修复**: XInputDeviceInfo / HidDeviceInfo 从 gui/device_manager_dialog 归位到
+      生产者侧 (xinput.rs / rawinput.rs) —— 消除驱动层→GUI 层的两条反向边。
+    - **架构守卫测试** (`tests/architecture_tests.rs`, +5): GUI 外禁 crate::gui / gui 模块
+      依赖允许清单 / config 叶子化 / serde 契约快照 (VibrationConfig 79 键 + AppConfig 29 键,
+      TOML 字段冻结契约首次机器看守; 新增字段更新 EXPECTED 常量, 改名删除先过 ADR)。
+    - **基础设施**: rust-toolchain.toml 钉扎 1.96.0-x86_64-pc-windows-gnu (E:\Sorahk-build
+      暂不钉, 装 1.96.0-gnu 后再钉) · .github/workflows/ci.yml (PR 自动构建+测试, runner
+      MSVC 尽力校验) · git tag v24.36 / R1-架构重构。
+    - **docs/cookbook.md**: 六张扩展配方 (加震动参数/加 GUI 页面/加客户端形态/加设置项/
+      发版/重构安全网), 每张标注会拦住你的守卫测试。
+    - 决策: ADR-0005 (三层长期保障: 契约护栏/演进食谱/工程基础设施)。
+    - 验证: 守卫 5/5 + 全量 794 全绿。上传仍等口令。

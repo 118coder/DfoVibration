@@ -474,7 +474,7 @@ impl Theme {
                         color: egui::Color32::from_rgba_premultiplied(0, 0, 0, 60),
                     }),
             )
-            .show(ctx, |ui| add_contents);
+            .show(ctx, |_ui| add_contents);
     }
 
     // ───────────────────────── 按钮 ─────────────────────────

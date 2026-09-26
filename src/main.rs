@@ -4,7 +4,7 @@
 mod config;
 mod gui;
 mod hid_layout;
-/* ★v24.19b 手柄隐藏暂时下线 —— 与 lib.rs 同步。 */
+/* ★v24.19b 手柄隐藏暂时下线 —— 与 lib.rs 同步 (实现已移至 docs/frozen/hidhide.rs)。 */
 // mod hidhide;
 mod i18n;
 mod input_manager;

@@ -1,3 +1,45 @@
+架构重构 R1.1 — 长期保障层 (2026-09-27)
+=======================================
+🛡️ **可扩展性/长期维护/长期稳定性** (用户目标; 全部零运行时语义变化):
+
+- **反向依赖修复**: `XInputDeviceInfo`/`HidDeviceInfo` 从 gui/device_manager_dialog 归位到
+  生产者侧 (xinput.rs / rawinput.rs) —— 消除"驱动层依赖 GUI 层"的两条反向边。
+- **架构守卫测试** (`tests/architecture_tests.rs`): ①GUI 外禁 `crate::gui` ②gui 模块依赖
+  允许清单 (钩子/托盘/信号/急退禁止被 GUI 直接触碰) ③config.rs 叶子化 ④**serde 字段契约
+  快照** (VibrationConfig 79 键 / AppConfig 29 键 —— TOML 字段名冻结契约首次机器看守)。
+- **工具链钉扎**: `rust-toolchain.toml` 固定 `1.96.0-x86_64-pc-windows-gnu` (完整三元组,
+  防 rustc 漂移破坏 MinGW 构建)。
+- **CI**: `.github/workflows/ci.yml` —— PR 在干净 Windows runner 自动构建 + 全量测试
+  (runner 走 MSVC 尽力校验; 首次 PR 验证一次)。
+- **扩展食谱**: `docs/cookbook.md` 六张标准配方 (加参数/加页面/加客户端/加设置项/发版/安全网)。
+- **决策记录**: ADR-0005 (三层长期保障) · git tag: `v24.36` / `R1-架构重构`。
+- 验证: 守卫 5/5 绿; 全量测试 794 全绿 (789 + 5 守卫)。
+
+架构重构 R1 (2026-09-27)
+========================
+♻ **功能零变化的结构重构 (A+B+C+D+G, 用户选定方案; E=workspace 与 F=i18n 明确不做)**
+—— 目标: ①编译/测试提速 ②降低 AI 协作 token 消耗; 全程 789 测试全绿, 引擎算法与
+TOML 字段零改动。规范文本见 `docs/开发维护规范.md`, 领域词汇+模块地图见 `CONTEXT.md`,
+决策记录见 `docs/adr/` (ADR-0001..0004)。
+
+- **A 构建管线** (`sync_and_build.sh` / `run_tests.bat`): 日常构建默认 `--profile iter`
+  快速档 (opt-1/无 fat-LTO/增量; 改→测循环从分钟级降到 6-30s), 交付才 `--release`;
+  测试从一轮 4 遍收敛为 1 遍; 同步先删后拷 (防目录拆分残留)。
+- **G 导航卫生**: hidhide.rs (1005 行整体注释下线的冻结实现) 移出编译目录 →
+  `docs/frozen/hidhide.rs`, 恢复步骤见其文件头。
+- **B state 拆分**: `state.rs` (5678 行, AppState 122 字段 + 3086 行单 impl) →
+  `src/state/` 十个职责文件 (types/events/turbo/inject/mappings/key_names/whitelist/
+  vib_mirror/tests), 接口 (Arc\<AppState\>) 纹丝不动。
+- **C GUI 拆分**: 四大热点页目录化 + 巨型函数拆解 —— vibration_page (2770 行单函数 →
+  主编排 + 10 分区方法), settings_dialog (2240 行单函数 → 主编排 + 6 分区方法),
+  gamepad_mapping (九文件), turbo_page (五文件)。
+- **D 震动参数单一事实源** (`vibration/params.rs`, ADR-0002): P_* 槽位常量 +
+  `for_each_named_param!` 宏表唯一生成 config↔60 槽双向映射; 此前 state 与 gui 各写一份
+  镜像。新增守卫测试: 特征值 config→槽位→config 逐字节恒等; act_variants 校验和 /
+  config_roundtrip / vibration_params 全绿 = 手感与持久化等价。
+- **验证**: 全量 789 测试全绿 (lib 354 + bin 381 + 集成 54); 交付构建见 R1 终验;
+  真机回归 = 用户实测 (待做)。每步独立 commit 可单独 revert; 未上交。
+
 v24.36 (2026-09-25)
 ===================
 ⚡ **首次进入连发映射页卡顿根治 (用户反馈: "切到连发页会卡一下")** —— 实测主线程

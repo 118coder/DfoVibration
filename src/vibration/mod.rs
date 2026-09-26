@@ -16,6 +16,9 @@ use windows::Win32::UI::Input::XboxController::{XINPUT_STATE, XINPUT_VIBRATION};
 
 use crate::state::AppState;
 
+pub(crate) mod params;
+use params::*;
+
 const VIB_SHM_MAGIC: u32 = 0x564F4656;
 /// 必须与 DLL 源码 common/vib_protocol.h 的 VIB_SHM_VERSION 一致;
 /// DLL 协议升级 (事件语义/参数槽位变化) 后旧版本直接拒接, 避免按旧语义误读
@@ -167,77 +170,6 @@ fn base_lr_for(item_idx: usize) -> (f32, f32) {
     };
     BASE_LR[i]
 }
-#[allow(dead_code)]
-const P_ATTACK: usize = 0;
-#[allow(dead_code)]
-const P_MAX: usize = 4;
-const P_BOOST: usize = 6;
-const P_MASTER: usize = 9;
-const P_FONT_STR: usize = 10;
-const P_FONT_IVL: usize = 11;
-const P_FONT_HP: usize = 12;
-const P_FONT_SPECIAL: usize = 13;
-const P_FONT_STATE: usize = 14;
-const P_FONT_EFFECT: usize = 15;
-const P_FONT_ATTACK: usize = 16;
-const P_FONT_HIT: usize = 17;
-const P_RHYTHM: usize = 18;
-/* 高级 A */
-const P_CURVE_L: usize = 19;
-const P_CURVE_R: usize = 20;
-/* 移动积累增强 (v22): 长时间移动积累"走位能量", 停止移动后下次短暂
- * 窗口期的攻击增强震动 (走位职业强化)。原 21/22 混合/相位槽位复用。 */
-const P_MOVE_CHARGE_RATE: usize = 21; /* 移动积累速率 %/秒 (0=禁用) */
-const P_MOVE_CHARGE_CAP: usize = 22;  /* 攻击增强上限 % (最多 ×(1+cap/100)) */
-/* 高级 A2: 移动走路质感参数 (v20.2 新增, 原 23-26 为移除的 B 组 L/R) */
-const P_MOVE_PACE: usize = 23;       /* 移动步频 ms (默认 380, 自然步频) */
-const P_MOVE_PULSE: usize = 24;      /* 移动着地脉冲 % (默认 35, 柔和) */
-const P_MOVE_HOLD: usize = 25;       /* 移动抬脚保持 % (默认 8, 极轻) */
-const P_MOVE_GAIN: usize = 26;       /* 移动整体增益 % (默认 40, 轻音量) */
-const P_MOVE_SMOOTH: usize = 27;     /* 移动平滑系数 % (默认 30, 消除嗡嗡声) */
-const P_MOVE_THRESHOLD: usize = 28;  /* 移动最低输出阈值 % (默认 4, 低于归 0 消除沙沙声) */
-
-/* 连击密度自适应 (v22): 短时间连击暴增时自动降低窗口期震动强度
- * 29-34 原为 B 组残留槽位, 现分配为密度算法参数 (高连击职业防震手核心) */
-const P_DENSITY_THR: usize = 29;    /* 密度触发阈值 hits/窗口 (100=禁用) */
-const P_DENSITY_WIN: usize = 30;    /* 密度检测窗口 ms */
-const P_DENSITY_REDUCE: usize = 31; /* 降幅 % (窗口期强度 ×(1-reduce)) */
-const P_DENSITY_RECOVER: usize = 32;/* 恢复判定 gap ms (最后命中超过此值→强度恢复) */
-const P_DENSITY_FLOOR: usize = 33;  /* 最低保留 % (降幅不超 (1-floor)) */
-const P_DENSITY_SMOOTH: usize = 34; /* 恢复平滑 ms (渐变恢复, 0=立即) */
-/* 高级 C 衰减 */
-const P_DEC_ATTACK: usize = 35;
-const P_DEC_SPECIAL: usize = 36;
-const P_DEC_HIT: usize = 37;
-const P_DEC_STATE: usize = 38;
-/* 移动积累增强窗口 (v22): 停止移动后增强有效期 ms。
- * ★39 号槽唯一语义 (P1 结案): 原 P_DEC_EFFECT 死常量已删除 (无任何读点,
- * 曾与本病历任意混淆), GUI 无双绑定, 引擎只读 P_MOVE_BOOST_WIN */
-const P_MOVE_BOOST_WIN: usize = 39;
-
-/* 高级 D 时长窗口 */
-const P_DOT_HOLD: usize = 40;
-const P_EFFECT_PERIOD: usize = 41;
-const P_BURST_WIN: usize = 42;
-const P_BURST_MIN: usize = 43;
-const P_COUNTER_WIN: usize = 44;
-const P_COMBO_WIN: usize = 45;
-const P_IDLE: usize = 46;
-/* 高级 E 连击/自适应 */
-const P_COMBO_CAP: usize = 47;
-const P_BOOST_SLOPE: usize = 48;
-const P_INTERRUPT: usize = 49;
-const P_ADAPT_THR: usize = 50;
-const P_ADAPT_REDUCE: usize = 51;
-const P_ADAPT_MAXGAP: usize = 52;
-const P_ADAPT_FLOOR: usize = 53;
-/* 高级 F/G/H */
-const P_SILENCE: usize = 54;
-const P_COUNTER_MUL: usize = 55;
-const P_WAKE: usize = 56;
-const P_MILESTONE_PULSE: usize = 57;
-const P_INTERRUPT_PULSE: usize = 58;
-const P_TEST: usize = 59;
 
 /* 里程碑固定档位 */
 const MILESTONES: [(u32, u32); 4] = [(50, 0x1), (100, 0x2), (200, 0x4), (400, 0x8)];

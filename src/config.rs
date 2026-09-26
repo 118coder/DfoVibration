@@ -1485,7 +1485,7 @@ pub struct AppConfig {    /// Display tray icon
     /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
      * 旧配置文件里残留的 hidhide_* 字段/小节会被 serde 直接忽略, 无需迁移。 */
     // /// ★v24.19 手柄隐藏 (HidHide) —— 玩家开关意图。
-    // /// 运行态由驱动是否在装、游戏路径能否定位决定 (见 `src/hidhide.rs`)。
+    // /// 运行态由驱动是否在装、游戏路径能否定位决定 (见 `docs/frozen/hidhide.rs`)。
     // #[serde(default)]
     // pub hidhide_enabled: bool,
     // /// ★v24.19 开启隐藏前抓取的驱动全局状态快照 (active/inverse/whitelist)。

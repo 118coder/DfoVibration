@@ -1,45 +1,26 @@
 @echo off
 REM Test runner for Sorahk on Windows
-REM This script runs all tests and provides a summary
+REM ★架构重构 A (2026-09-27): 一轮只跑一遍全量测试。旧版连跑 4 遍
+REM (debug lib / 集成 / 全量 --nocapture / 全量 --release), 测试时间无谓 x4。
+REM 默认走 iter 快速档 (与日常构建同档, 复用缓存); 交付复核: run_tests.bat --release
+REM 参数原样透传给 cargo test (例: run_tests.bat --lib / run_tests.bat --release)。
 
 echo ============================================
-echo   Sorahk Test Suite
+echo   Sorahk Test Suite (single pass)
 echo ============================================
 echo.
 
-echo [1/4] Running library unit tests...
-cargo test --lib
+set MODE=--profile iter
+if "%1"=="--release" set MODE=--release
+if "%1"=="--debug" set MODE=
+
+echo [1/1] cargo test %MODE% %2 %3 %4 ...
+cargo test %MODE% %2 %3 %4
 if %ERRORLEVEL% NEQ 0 (
-    echo Library tests failed!
+    echo Tests FAILED!
     exit /b 1
 )
 echo.
-
-echo [2/4] Running integration tests...
-cargo test --test integration_tests
-if %ERRORLEVEL% NEQ 0 (
-    echo Integration tests failed!
-    exit /b 1
-)
-echo.
-
-echo [3/4] Running all tests with verbose output...
-cargo test -- --nocapture
-if %ERRORLEVEL% NEQ 0 (
-    echo Verbose tests failed!
-    exit /b 1
-)
-echo.
-
-echo [4/4] Running tests in release mode...
-cargo test --release
-if %ERRORLEVEL% NEQ 0 (
-    echo Release mode tests failed!
-    exit /b 1
-)
-echo.
-
 echo ============================================
 echo   All tests passed successfully!
 echo ============================================
-

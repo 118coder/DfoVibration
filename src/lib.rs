@@ -7,7 +7,9 @@ pub mod config;
 pub mod gui;
 pub mod hid_layout;
 /* ★v24.19b 手柄隐藏暂时下线 (用户决策 2026-09-14: 全部注释, 避免影响主功能)。
- * 未来重启: 取消下行与 main.rs 的注释, 并还原 config.rs / gui 三处接线即可。 */
+ * ★2026-09-27 重构 G: 实现已整体移出编译目录 → docs/frozen/hidhide.rs。
+ * 未来重启: 先把该文件移回 src/hidhide.rs, 再取消下行与 main.rs 的注释,
+ * 并还原 config.rs / gui 三处接线 (详见 docs/frozen/hidhide.rs 文件头)。 */
 // pub mod hidhide;
 pub mod i18n;
 pub mod input_manager;

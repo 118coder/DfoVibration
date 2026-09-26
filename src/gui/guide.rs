@@ -1,14 +1,10 @@
 //! Main window implementation and rendering logic.
 
 use crate::gui::SorahkGui;
-use crate::gui::about_dialog::render_about_dialog;
-use crate::gui::theme::{self, Theme, truncate_chars};
-use crate::gui::widgets;
-use crate::gui::types::{KeyCaptureMode, Page};
-use crate::state::NotificationEvent;
+use crate::gui::theme::{self, Theme};
+use crate::gui::types::Page;
 
 use eframe::egui;
-use super::main_window::FrameState;
 
 impl SorahkGui {
     /// 首次运行 · 第 1 弹: 询问是否 DFO 玩家 (决定震动入口显示; 答完进入使用说明)。

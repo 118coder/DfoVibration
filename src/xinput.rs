@@ -250,6 +250,15 @@ pub struct XInputHandler {
     device_states: [Option<XInputDeviceState>; XUSER_MAX_COUNT as usize],
 }
 
+/// Information about an XInput device (设备管理弹窗数据; 原 gui/device_manager_dialog.rs, ★R1.1 归位到生产者侧)。
+#[derive(Clone, Debug)]
+pub struct XInputDeviceInfo {
+    pub user_index: u32,
+    pub vid: u16,
+    pub pid: u16,
+    pub device_type: String,
+}
+
 impl XInputHandler {
     /// Creates a new XInput handler.
     pub fn new(state: Arc<AppState>, ownership: DeviceOwnership) -> Self {
@@ -1571,7 +1580,7 @@ axis_hist_len: 0,
     }
 
     /// Enumerates all connected XInput devices.
-    pub fn enumerate_devices() -> Vec<crate::gui::device_manager_dialog::XInputDeviceInfo> {
+    pub fn enumerate_devices() -> Vec<XInputDeviceInfo> {
         let mut devices = Vec::new();
 
         for user_index in 0..XUSER_MAX_COUNT {
@@ -1595,7 +1604,7 @@ axis_hist_len: 0,
                     _ => "XInput Device",
                 };
 
-                devices.push(crate::gui::device_manager_dialog::XInputDeviceInfo {
+                devices.push(XInputDeviceInfo {
                     user_index,
                     vid,
                     pid,

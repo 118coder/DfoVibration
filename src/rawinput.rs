@@ -2165,8 +2165,18 @@ pub fn clear_device_baseline(vid: u16, pid: u16) {
     crate::input_manager::release_device_ownership((vid, pid));
 }
 
+/// Information about a HID device (设备管理弹窗数据; 原 gui/device_manager_dialog.rs, ★R1.1 归位到生产者侧)。
+#[derive(Clone, Debug)]
+pub struct HidDeviceInfo {
+    pub vid: u16,
+    pub pid: u16,
+    pub device_name: String,
+    pub usage_page: u16,
+    pub usage: u16,
+}
+
 /// Enumerates all HID devices currently connected.
-pub fn enumerate_hid_devices() -> Vec<crate::gui::device_manager_dialog::HidDeviceInfo> {
+pub fn enumerate_hid_devices() -> Vec<HidDeviceInfo> {
     use windows::Win32::UI::Input::*;
 
     let mut devices = Vec::new();
@@ -2256,7 +2266,7 @@ pub fn enumerate_hid_devices() -> Vec<crate::gui::device_manager_dialog::HidDevi
                     continue;
                 };
 
-            devices.push(crate::gui::device_manager_dialog::HidDeviceInfo {
+            devices.push(HidDeviceInfo {
                 vid,
                 pid,
                 device_name,

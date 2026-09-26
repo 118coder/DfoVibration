@@ -1,11 +1,8 @@
 //! Main window implementation and rendering logic.
 
 use crate::gui::SorahkGui;
-use crate::gui::about_dialog::render_about_dialog;
-use crate::gui::theme::{self, Theme, truncate_chars};
+use crate::gui::theme::{self, Theme};
 use crate::gui::widgets;
-use crate::gui::types::{KeyCaptureMode, Page};
-use crate::state::NotificationEvent;
 
 use eframe::egui;
 use super::main_window::FrameState;
@@ -162,7 +159,7 @@ impl SorahkGui {
                 let combo_w = 130.0; // render_preset_switch 里 ComboBox::width(130)
                 let gap = theme::SP_XS + ui.spacing().item_spacing.x;
                 let row_w = label_w + gap + combo_w;
-                let preset_row = ui.allocate_ui_with_layout(
+                let _preset_row = ui.allocate_ui_with_layout(
                     egui::vec2(row_w, ui.spacing().interact_size.y),
                     egui::Layout::right_to_left(egui::Align::Center),
                     |ui| {
@@ -326,8 +323,8 @@ impl SorahkGui {
                 let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                 let classes = &jobs[base_sel].classes;
                 let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
-                let cur_active = self.vib_job_active.clone();
-                let job_enabled = self.vib_job_enabled;
+                let _cur_active = self.vib_job_active.clone();
+                let _job_enabled = self.vib_job_enabled;
                 let combo_w = 150.0_f32;
                 /* 块宽用上一帧实测值 (首帧兜底 316): combo 实际渲染宽度 ≠ width() 设定值,
                  * 手工估算总有几像素偏差, 实测值才能让内容严丝合缝填满居中的块 */
@@ -337,10 +334,10 @@ impl SorahkGui {
                 } else {
                     combo_w * 2.0 + gap
                 };
-                let combo_h = ui.spacing().interact_size.y;
+                let _combo_h = ui.spacing().interact_size.y;
                 let slot_h = 26.0_f32; // 两 combo 统一槽高
                 let class_nudge = -1.5_f32; // 转职槽累计上调 (用户微调: 原 -3.0, 回调 1.5)
-                let block = ui.allocate_ui_with_layout(
+                let _block = ui.allocate_ui_with_layout(
                     egui::vec2(block_w, slot_h),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
@@ -377,7 +374,7 @@ impl SorahkGui {
                                 .layout(egui::Layout::right_to_left(egui::Align::Center)),
                             |ui| {
                                 egui::ComboBox::from_id_salt("minimal_vib_job_class")
-                                    .selected_text(classes[class_sel].name.clone())
+                                    .selected_text(classes[class_sel].name)
                                     .width(combo_w)
                                     .show_ui(ui, |ui| {
                                         for (i, c) in classes.iter().enumerate() {
@@ -420,7 +417,7 @@ impl SorahkGui {
                 .size()
                 .x;
             let gap = theme::SP_XS + ui.spacing().item_spacing.x;
-            let status_row = ui.allocate_ui_with_layout(
+            let _status_row = ui.allocate_ui_with_layout(
                 egui::vec2(dot_w + gap + stat_w, 18.0),
                 egui::Layout::left_to_right(egui::Align::Center),
                 |ui| {

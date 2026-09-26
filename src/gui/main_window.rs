@@ -2,9 +2,9 @@
 
 use crate::gui::SorahkGui;
 use crate::gui::about_dialog::render_about_dialog;
-use crate::gui::theme::{self, Theme, truncate_chars};
+use crate::gui::theme::{self, Theme};
 use crate::gui::widgets;
-use crate::gui::types::{KeyCaptureMode, Page};
+use crate::gui::types::Page;
 use crate::state::NotificationEvent;
 use eframe::egui;
 
@@ -868,7 +868,7 @@ impl SorahkGui {
                 }
             } else {
                 /* 每帧校验小窗尺寸: 有概率丢 InnerSize 命令时兜底, 确保百分百小窗 */
-                let ppp = ctx.pixels_per_point();
+                let _ppp = ctx.pixels_per_point();
                 let vp = ctx.input(|i| (i.viewport().outer_rect, i.viewport().inner_rect));
                 if let (Some(outer), Some(inner)) = vp {
                     let sz = inner.size();

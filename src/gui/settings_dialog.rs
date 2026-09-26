@@ -103,8 +103,6 @@ impl SorahkGui {
         let mut should_save = false;
         let mut should_cancel = false;
 
-        let t = &self.translations;
-
         /* ★v20.6: 弹窗尺寸随视口收紧 —— 经典窗 (900×600) 里 800×600 会上下顶满被截断;
          * 且完整/经典各自独立记忆尺寸 (防完整模式拉大的尺寸在经典窗里溢出)。
          * 内容区自带滚动条, 高度收紧只影响可视范围不影响功能。 */
@@ -250,7 +248,7 @@ impl SorahkGui {
             egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
         };
 
-        let accent_color = Theme::new(self.dark_mode).accent_text;
+        let _accent_color = Theme::new(self.dark_mode).accent_text;
 
         egui::Window::new("")
             .title_bar(false)
@@ -274,1898 +272,35 @@ impl SorahkGui {
             )
             .show(ctx, |ui| {
                 ui.push_id("settings_dialog_scope", |ui| {
-                    // Custom title bar (matching main window style)
-                    ui.horizontal(|ui| {
-                        ui.add_space(15.0);
-
-                        // Settings title - 统一紫色强调
-                        ui.label(
-                            egui::RichText::new(t.settings_dialog_title())
-                                .size(18.0)
-                                .strong()
-                                .color(accent_color),
-                        );
-
-                        // Push close button to the right
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.add_space(10.0);
-
-                            // Close button (matching style)
-                            let close_btn =
-                                egui::Button::new(egui::RichText::new("x").size(16.0).color(
-                                    accent_color,
-                                ))
-                                .corner_radius(8.0)
-                                .frame(false);
-
-                            if ui.add(close_btn).clicked() {
-                                should_cancel = true;
-                            }
-                        });
-                    });
+                    if self.settings_title_bar(ui) {
+                        should_cancel = true;
+                    }
 
                     ui.add_space(12.0);
 
                     // Wrap ScrollArea in a frame with padding (like main window)
                     // ★v20.6: 无快照不渲染 (原 unwrap = 经典齿轮打开崩溃的爆点);
-                    // 正常路径 open_settings_dialog 一定先建快照, 异常时静默关弹窗
-                    let Some(temp_config) = self.temp_config.as_mut() else {
+                    // 正常路径 open_settings_dialog 一定先建快照, 异常时静默关弹窗。
+                    // ★C2 重构: 各分区方法内部各自 as_mut() —— 此处只做存在性检查,
+                    //   快照存在性与原实现完全等价 (检查后到分区调用之间无人清快照)。
+                    if self.temp_config.is_none() {
                         self.show_settings_dialog = false;
                         return;
-                    };
+                    }
                     egui::Frame::NONE
                         .inner_margin(egui::Margin::symmetric(12, 0))
                         .show(ui, |ui| {
                             egui::ScrollArea::vertical()
                                 .max_height(scroll_max)
                                 .show(ui, |ui| {
-                                    // Toggle Key Section
-                                    let card_bg = if self.dark_mode {
-                                        egui::Color32::from_rgb(26, 29, 37) // #1C1F2D
-                                    } else {
-                                        egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
-                                    };
-
-                                    egui::Frame::NONE
-                                        .fill(card_bg)
-                                        .corner_radius(egui::CornerRadius::same(14))
-                                        .inner_margin(egui::Margin::same(16))
-                                        .show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.label(
-                                                egui::RichText::new(t.toggle_key())
-                                                    .size(16.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(8.0);
-
-                                            ui.horizontal(|ui| {
-                                                ui.label(
-                                                    egui::RichText::new(t.key_label())
-                                                        .size(14.0)
-                                                        .color(Theme::new(self.dark_mode).text),
-                                                );
-                                                ui.add_space(8.0);
-
-                                                let is_capturing = self.key_capture_mode
-                                                    == KeyCaptureMode::ToggleKey;
-                                                let button_text = if is_capturing {
-                                                    t.press_any_key()
-                                                } else if temp_config.switch_key.is_empty() {
-                                                    t.click_to_set()
-                                                } else {
-                                                    &temp_config.switch_key
-                                                };
-
-                                                let button = egui::Button::new(
-                                                    egui::RichText::new(button_text).size(13.0).color(
-                                                        if is_capturing {
-                                                            egui::Color32::WHITE
-                                                        } else { Theme::new(self.dark_mode).text },
-                                                    ),
-                                                )
-                                                .fill(if is_capturing {
-                                                    Theme::new(self.dark_mode).accent // 捕获中: 强调色
-                                                } else if self.dark_mode {
-                                                    egui::Color32::from_rgb(33, 36, 46) // #232838 输入框底色
-                                                } else {
-                                                    egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
-                                                })
-                                                .corner_radius(8.0); // Increased rounding to match buttons
-
-                                                if ui.add_sized([200.0, 34.0], button).clicked()
-                                                    && !self.just_captured_input
-                                                {
-                                                    self.key_capture_mode =
-                                                        KeyCaptureMode::ToggleKey;
-                                                    self.capture_pressed_keys.clear();
-                                                    self.capture_initial_pressed =
-                                                        Self::poll_all_pressed_keys();
-                                                    self.app_state.set_raw_input_capture_mode(true);
-                                                    // Set flag to skip mouse capture on this frame
-                                                    self.just_captured_input = true;
-                                                }
-                                            });
-                                        });
-
-                                    ui.add_space(10.0);
-
-                                    // Preset Management Section
-                                    let card_bg = if self.dark_mode {
-                                        egui::Color32::from_rgb(26, 29, 37) // #1C1F2D
-                                    } else {
-                                        egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
-                                    };
-
-                                    egui::Frame::NONE
-                                        .fill(card_bg)
-                                        .corner_radius(egui::CornerRadius::same(14))
-                                        .inner_margin(egui::Margin::same(16))
-                                        .show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.label(
-                                                egui::RichText::new(t.preset_title())
-                                                    .size(16.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(8.0);
-
-                                            ui.horizontal(|ui| {
-                                                // Current preset display / selection
-                                                let current_name = if temp_config.current_preset.is_empty() {
-                                                    t.no_preset().to_string()
-                                                } else {
-                                                    temp_config.current_preset.clone()
-                                                };
-
-                                                egui::ComboBox::from_id_salt("preset_selector")
-                                                    .selected_text(&current_name)
-                                                    .width(180.0)
-                                                    .show_ui(ui, |ui| {
-                                                        if ui.selectable_label(temp_config.current_preset.is_empty(), t.no_preset()).clicked() {
-                                                            temp_config.current_preset.clear();
-                                                            self.preset_rename_target.clear();
-                                                            self.preset_rename_input.clear();
-                                                        }
-                                                        for preset in &temp_config.presets {
-                                                            let is_selected = temp_config.current_preset == preset.name;
-                                                            if ui.selectable_label(is_selected, &preset.name).clicked() {
-                                                                temp_config.current_preset = preset.name.clone();
-                                                                temp_config.mappings = preset.mappings.clone();
-                                                                self.preset_rename_target.clear();
-                                                                self.preset_rename_input.clear();
-                                                            }
-                                                        }
-                                                    });
-
-                                                ui.add_space(8.0);
-
-                                                // Save preset button - 紫色强调
-                                                let save_btn = egui::Button::new(
-                                                    egui::RichText::new(t.preset_save_btn())
-                                                        .size(13.0)
-                                                        .color(egui::Color32::WHITE)
-                                                        .strong(),
-                                                )
-                                                .fill(Theme::new(self.dark_mode).btn_primary)
-                                                .corner_radius(8.0);
-
-                                                if ui.add_sized([90.0, 34.0], save_btn).clicked() {
-                                                    self.show_preset_name_input = true;
-                                                }
-                                            });
-
-                                            // Preset name input (shown after clicking save)
-                                            if self.show_preset_name_input {
-                                                ui.add_space(6.0);
-                                                ui.horizontal(|ui| {
-                                                    let name_edit = egui::TextEdit::singleline(
-                                                        &mut self.preset_name_input,
-                                                    )
-                                                    .background_color(if self.dark_mode {
-                                                        egui::Color32::from_rgb(33, 36, 46) // #232838
-                                                    } else {
-                                                        egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
-                                                    })
-                                                    .hint_text(t.preset_name_hint())
-                                                    .desired_width(160.0);
-                                                    ui.add_sized([160.0, 32.0], name_edit);
-
-                                                    let confirm_btn = egui::Button::new(
-                                                        egui::RichText::new("✓")
-                                                            .size(14.0)
-                                                            .color(Theme::new(self.dark_mode).on_emphasis),
-                                                    )
-                                                    .fill(Theme::new(self.dark_mode).good)
-                                                    .corner_radius(8.0);
-
-                                                    if ui.add_sized([36.0, 32.0], confirm_btn).clicked() {
-                                                        let name = self.preset_name_input.trim();
-                                                        if !name.is_empty() {
-                                                            // Remove existing preset with same name
-                                                            temp_config.presets.retain(|p| p.name != name);
-                                                            // ★v20.3: 同名覆盖时保留已绑定的切换键
-                                                            let switch_key = temp_config
-                                                                .presets
-                                                                .iter()
-                                                                .find(|p| p.name == name)
-                                                                .map(|p| p.switch_key.clone())
-                                                                .unwrap_or_default();
-                                                            // Save current mappings as preset
-                                                            temp_config.presets.push(crate::config::Preset {
-                                                                name: name.to_string(),
-                                                                mappings: temp_config.mappings.clone(),
-                                                                switch_key,
-                                                            });
-                                                            temp_config.current_preset = name.to_string();
-                                                            self.preset_name_input.clear();
-                                                            self.show_preset_name_input = false;
-                                                        }
-                                                    }
-
-                                                    let cancel_name_btn = egui::Button::new(
-                                                        egui::RichText::new("✕")
-                                                            .size(14.0)
-                                                            .color(egui::Color32::WHITE),
-                                                    )
-                                                    .fill(Theme::new(self.dark_mode).btn_danger)
-                                                    .corner_radius(8.0);
-
-                                                    if ui.add_sized([36.0, 32.0], cancel_name_btn).clicked() {
-                                                        self.preset_name_input.clear();
-                                                        self.show_preset_name_input = false;
-                                                    }
-                                                });
-                                            }
-
-                                            // Delete and Rename preset buttons (only show if a preset is selected)
-                                            if !temp_config.current_preset.is_empty() {
-                                                ui.add_space(6.0);
-                                                ui.horizontal(|ui| {
-                                                    let delete_btn = egui::Button::new(
-                                                        egui::RichText::new(t.preset_delete_btn())
-                                                            .size(13.0)
-                                                            .color(egui::Color32::WHITE)
-                                                            .strong(),
-                                                    )
-                                                    .fill(Theme::new(self.dark_mode).btn_danger)
-                                                    .corner_radius(8.0);
-
-                                                    if ui.add_sized([88.0, 32.0], delete_btn).clicked() {
-                                                        let name = temp_config.current_preset.clone();
-                                                        temp_config.presets.retain(|p| p.name != name);
-                                                        temp_config.current_preset.clear();
-                                                        self.preset_rename_target.clear();
-                                                        self.preset_rename_input.clear();
-                                                    }
-
-                                                    let rename_btn = egui::Button::new(
-                                                        egui::RichText::new(t.preset_rename_btn())
-                                                            .size(13.0)
-                                                            .color(egui::Color32::WHITE)
-                                                            .strong(),
-                                                    )
-                                                    .fill(Theme::new(self.dark_mode).btn_primary)
-                                                    .corner_radius(8.0);
-
-                                                    if ui.add_sized([88.0, 32.0], rename_btn).clicked() {
-                                                        self.preset_rename_target = temp_config.current_preset.clone();
-                                                        self.preset_rename_input = temp_config.current_preset.clone();
-                                                    }
-                                                });
-
-                                                // Rename input (shown after clicking rename)
-                                                if !self.preset_rename_target.is_empty() {
-                                                    ui.add_space(6.0);
-                                                    ui.horizontal(|ui| {
-                                                        let rename_edit = egui::TextEdit::singleline(
-                                                            &mut self.preset_rename_input,
-                                                        )
-                                                        .background_color(if self.dark_mode {
-                                                            egui::Color32::from_rgb(33, 36, 46) // #232838
-                                                        } else {
-                                                            egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
-                                                        })
-                                                        .hint_text(t.preset_name_hint())
-                                                        .desired_width(140.0);
-                                                        ui.add_sized([140.0, 32.0], rename_edit);
-
-                                                        let confirm_btn = egui::Button::new(
-                                                            egui::RichText::new("✓")
-                                                                .size(14.0)
-                                                                .color(Theme::new(self.dark_mode).on_emphasis),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).good)
-                                                        .corner_radius(8.0);
-
-                                                        if ui.add_sized([36.0, 32.0], confirm_btn).clicked() {
-                                                            let new_name = self.preset_rename_input.trim();
-                                                            if !new_name.is_empty() && new_name != self.preset_rename_target {
-                                                                let old_name = self.preset_rename_target.clone();
-                                                                if let Some(preset) = temp_config.presets.iter_mut().find(|p| p.name == old_name) {
-                                                                    preset.name = new_name.to_string();
-                                                                }
-                                                                if temp_config.current_preset == old_name {
-                                                                    temp_config.current_preset = new_name.to_string();
-                                                                }
-                                                            }
-                                                            self.preset_rename_target.clear();
-                                                            self.preset_rename_input.clear();
-                                                        }
-
-                                                        let cancel_btn = egui::Button::new(
-                                                            egui::RichText::new("✕")
-                                                                .size(14.0)
-                                                                .color(egui::Color32::WHITE),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).btn_danger)
-                                                        .corner_radius(8.0);
-
-                                                        if ui.add_sized([36.0, 32.0], cancel_btn).clicked() {
-                                                            self.preset_rename_target.clear();
-                                                            self.preset_rename_input.clear();
-                                                        }
-                                                    });
-                                                }
-                                            }
-                                        });
-
-                                    ui.add_space(10.0);
-
-                                    // Global Configuration Section
-                                    let card_bg = Theme::new(self.dark_mode).card;
-
-                                    egui::Frame::NONE
-                                        .fill(card_bg)
-                                        .corner_radius(egui::CornerRadius::same(14))
-                                        .inner_margin(egui::Margin::same(16))
-                                        .show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.label(
-                                                egui::RichText::new(t.global_config_title())
-                                                    .size(16.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(6.0);
-
-                                            let available = ui.available_width();
-                                            egui::Grid::new("config_edit_grid")
-                                                .num_columns(2)
-                                                .spacing([20.0, 8.0])
-                                                .min_col_width(available * 0.35)
-                                                .show(ui, |ui| {
-                                                    // Language
-                                                    ui.label(t.language());
-                                                    egui::ComboBox::from_id_salt(
-                                                        "language_selector",
-                                                    )
-                                                    .selected_text(
-                                                        temp_config.language.display_name(),
-                                                    )
-                                                    .width(120.0)
-                                                    .show_ui(ui, |ui| {
-                                                        use crate::i18n::Language;
-                                                        for lang in Language::all() {
-                                                            ui.selectable_value(
-                                                                &mut temp_config.language,
-                                                                *lang,
-                                                                lang.display_name(),
-                                                            );
-                                                        }
-                                                    });
-                                                    ui.end_row();
-
-                                                    // Raw Input Capture Mode selector
-                                                    ui.label(t.rawinput_capture_mode_label());
-                                                    let current_mode_str = &temp_config.rawinput_capture_mode;
-                                                    let current_mode = CaptureMode::from_str(current_mode_str).unwrap();
-                                                    let current_mode_name = get_capture_mode_display_name(t, current_mode);
-                                                    egui::ComboBox::from_id_salt("rawinput_capture_mode")
-                                                        .selected_text(current_mode_name)
-                                                        .width(180.0)
-                                                        .show_ui(ui, |ui| {
-                                                            for &mode in CaptureMode::all_modes() {
-                                                                let mode_name = get_capture_mode_display_name(t, mode);
-                                                                let is_selected = temp_config.rawinput_capture_mode == mode.as_str();
-                                                                if ui.selectable_label(is_selected, mode_name).clicked() {
-                                                                    temp_config.rawinput_capture_mode = mode.as_str().to_string();
-                                                                }
-                                                            }
-                                                        });
-                                                    ui.end_row();
-
-                                                    // XInput Capture Mode selector
-                                                    ui.label(t.xinput_capture_mode_label());
-                                                    let current_mode_str = &temp_config.xinput_capture_mode;
-                                                    let current_mode = crate::config::XInputCaptureMode::from_str(current_mode_str).unwrap();
-                                                    let current_mode_name = match current_mode {
-                                                        crate::config::XInputCaptureMode::MostSustained => t.capture_mode_most_sustained(),
-                                                        crate::config::XInputCaptureMode::LastStable => t.capture_mode_last_stable(),
-                                                        crate::config::XInputCaptureMode::DiagonalPriority => t.capture_mode_diagonal_priority(),
-                                                    };
-                                                    egui::ComboBox::from_id_salt("xinput_capture_mode")
-                                                        .selected_text(current_mode_name)
-                                                        .width(180.0)
-                                                        .show_ui(ui, |ui| {
-                                                            for &mode in crate::config::XInputCaptureMode::all_modes() {
-                                                                let mode_name = match mode {
-                                                                    crate::config::XInputCaptureMode::MostSustained => t.capture_mode_most_sustained(),
-                                                                    crate::config::XInputCaptureMode::LastStable => t.capture_mode_last_stable(),
-                                                                    crate::config::XInputCaptureMode::DiagonalPriority => t.capture_mode_diagonal_priority(),
-                                                                };
-                                                                let is_selected = temp_config.xinput_capture_mode == mode.as_str();
-                                                                if ui.selectable_label(is_selected, mode_name).clicked() {
-                                                                    temp_config.xinput_capture_mode = mode.as_str().to_string();
-                                                                }
-                                                            }
-                                                        });
-                                                    ui.end_row();
-
-                                                    ui.label(t.input_timeout_label());
-                                                    let mut timeout_str =
-                                                        temp_config.input_timeout.to_string();
-                                                    ui.add_sized(
-                                                        [140.0, 30.0],
-                                                        egui::TextEdit::singleline(
-                                                            &mut timeout_str,
-                                                        )
-                                                        .background_color(Theme::new(self.dark_mode).card_alt),
-                                                    );
-                                                    if let Ok(val) = timeout_str.parse::<u64>() {
-                                                        temp_config.input_timeout = val;
-                                                    }
-                                                    ui.end_row();
-
-                                                    ui.label(t.default_interval_label());
-                                                    let mut interval_str =
-                                                        temp_config.interval.to_string();
-                                                    ui.add_sized(
-                                                        [140.0, 30.0],
-                                                        egui::TextEdit::singleline(
-                                                            &mut interval_str,
-                                                        )
-                                                        .background_color(Theme::new(self.dark_mode).card_alt),
-                                                    );
-                                                    if let Ok(val) = interval_str.parse::<u64>() {
-                                                        temp_config.interval = val.max(5);
-                                                    }
-                                                    ui.end_row();
-
-                                                    ui.label(t.default_duration_label());
-                                                    let mut duration_str =
-                                                        temp_config.event_duration.to_string();
-                                                    ui.add_sized(
-                                                        [140.0, 30.0],
-                                                        egui::TextEdit::singleline(
-                                                            &mut duration_str,
-                                                        )
-                                                        .background_color(Theme::new(self.dark_mode).card_alt),
-                                                    );
-                                                    if let Ok(val) = duration_str.parse::<u64>() {
-                                                        temp_config.event_duration = val.max(2);
-                                                    }
-                                                    ui.end_row();
-
-                                                    ui.label(t.worker_count_label());
-                                                    let mut worker_str =
-                                                        temp_config.worker_count.to_string();
-                                                    ui.add_sized(
-                                                        [140.0, 30.0],
-                                                        egui::TextEdit::singleline(&mut worker_str)
-                                                            .hint_text("0 = auto")
-                                                            .background_color(if self.dark_mode {
-                                                                egui::Color32::from_rgb(33, 36, 46)
-                                                            } else {
-                                                                egui::Color32::from_rgb(
-                                                                    240, 241, 246,
-                                                                )
-                                                            }),
-                                                    );
-                                                    if let Ok(val) = worker_str.parse::<usize>() {
-                                                        temp_config.worker_count = val;
-                                                    }
-                                                    ui.end_row();
-
-                                                    ui.label(t.show_tray_icon());
-                                                    ui.checkbox(
-                                                        &mut temp_config.show_tray_icon,
-                                                        "",
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(t.show_notifications());
-                                                    ui.checkbox(
-                                                        &mut temp_config.show_notifications,
-                                                        "",
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(t.always_on_top());
-                                                    ui.checkbox(&mut temp_config.always_on_top, "");
-                                                    ui.end_row();
-
-                                                    ui.label(t.dfo_vibration_feature());
-                                                    ui.checkbox(&mut temp_config.dfo_player, "");
-                                                    ui.end_row();
-
-                                                    /* ★客户端版本路线 (仅 DFO 玩家可用):
-                                                     * S1 ACT → 老方案 (配老版 DLL 事件语义);
-                                                     * S4+ 新版 → 现行新方案。下拉选择。 */
-                                                    ui.label(
-                                                        egui::RichText::new("客户端版本 (震动方案)")
-                                                            .size(13.0),
-                                                    );
-                                                    ui.add_enabled_ui(
-                                                        temp_config.dfo_player,
-                                                        |ui| {
-                                                            let routes =
-                                                                ["S4+ 新版本方案", "S1 ACT 老版本方案 (推荐)"];
-                                                            let idx =
-                                                                if temp_config.vib_legacy_client {
-                                                                    1
-                                                                } else {
-                                                                    0
-                                                                };
-                                                            egui::ComboBox::from_id_salt(
-                                                                "settings_client_edition",
-                                                            )
-                                                            .selected_text(routes[idx])
-                                                            .width(190.0)
-                                                            .show_ui(ui, |ui| {
-                                                                ui.selectable_value(
-                                                                    &mut temp_config.vib_legacy_client,
-                                                                    false,
-                                                                    routes[0],
-                                                                );
-                                                                ui.selectable_value(
-                                                                    &mut temp_config.vib_legacy_client,
-                                                                    true,
-                                                                    routes[1],
-                                                                );
-                                                            });
-                                                        },
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(t.dark_mode());
-                                                    ui.checkbox(&mut temp_config.dark_mode, "");
-                                                    ui.end_row();
-                                                });
-                                        });
-
-                                    ui.add_space(10.0);
-
-                                    // Key Mappings Section
-                                    let card_bg = Theme::new(self.dark_mode).card;
-
-                                    egui::Frame::NONE
-                                        .fill(card_bg)
-                                        .corner_radius(egui::CornerRadius::same(14))
-                                        .inner_margin(egui::Margin::same(16))
-                                        .show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.label(
-                                                egui::RichText::new(t.key_mappings_title())
-                                                    .size(16.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(6.0);
-
-                                            ui.add_space(2.0);
-                                            let hint_bg = if self.dark_mode {
-                                                egui::Color32::from_rgba_premultiplied(30, 34, 50, 220)
-                                            } else {
-                                                egui::Color32::from_rgba_premultiplied(240, 241, 246, 230)
-                                            };
-                                            ui.horizontal(|ui| {
-                                                egui::Frame::NONE
-                                                    .fill(hint_bg)
-                                                    .corner_radius(egui::CornerRadius::same(12))
-                                                    .inner_margin(egui::Margin::symmetric(10, 6))
-                                                    .show(ui, |ui| {
-                                                        ui.set_width(ui.available_width());
-                                                        egui::CollapsingHeader::new(
-                                                            egui::RichText::new(t.diagonal_hint_title())
-                                                                .size(12.0)
-                                                                .color(accent_color),
-                                                        )
-                                                        .default_open(true)
-                                                        .show(ui, |ui| {
-                                                            ui.add_space(2.0);
-                                                            ui.add(
-                                                                egui::Label::new(
-                                                                    egui::RichText::new(
-                                                                        t.diagonal_hint(),
-                                                                    )
-                                                                    .size(11.0)
-                                                                    .color(if self.dark_mode {
-                                                                        egui::Color32::from_rgb(
-                                                                            230, 230, 230,
-                                                                        )
-                                                                    } else {
-                                                                        egui::Color32::from_rgb(
-                                                                            180, 100, 50,
-                                                                        )
-                                                                    }),
-                                                                )
-                                                                .wrap(),
-                                                            );
-                                                        });
-                                                    });
-                                            });
-                                            ui.add_space(4.0);
-                                            // Existing mappings
-                                            let mut to_remove = None;
-                                            for (idx, mapping) in
-                                                temp_config.mappings.iter_mut().enumerate()
-                                            {
-                                                let is_capturing_trigger = self
-                                                    .key_capture_mode
-                                                    == KeyCaptureMode::MappingTrigger(idx);
-                                                let is_capturing_target = self.key_capture_mode
-                                                    == KeyCaptureMode::MappingTarget(idx);
-                                                let full_trigger_text = mapping.trigger_key.clone();
-                                                let target_display = mapping.target_keys_display();
-                                                let first_target = mapping
-                                                    .get_target_keys()
-                                                    .first()
-                                                    .map(|s| s.as_str())
-                                                    .unwrap_or("");
-                                                let is_mouse_move_mapping =
-                                                    is_mouse_move_target(first_target);
-                                                let is_mouse_scroll_mapping =
-                                                    is_mouse_scroll_target(first_target);
-                                                let row_text_color = Theme::new(self.dark_mode).text;
-                                                let input_bg = if self.dark_mode {
-                                                    egui::Color32::from_rgb(33, 36, 46) // #232838
-                                                } else {
-                                                    egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
-                                                };
-                                                let inner_bg = Theme::new(self.dark_mode).surface;
-
-                                                // 每条映射独立分组卡片: 触发键/目标键分行展示, 长按键名不再溢出
-                                                egui::Frame::NONE
-                                                    .fill(inner_bg)
-                                                    .corner_radius(egui::CornerRadius::same(12))
-                                                    .inner_margin(egui::Margin::same(12))
-                                                    .show(ui, |ui| {
-                                                        // 行 1: 序号 + 触发键
-                                                        ui.horizontal(|ui| {
-                                                            ui.add_sized(
-                                                                [26.0, 34.0],
-                                                                egui::Label::new(
-                                                                    egui::RichText::new(format!("{}.", idx + 1))
-                                                                        .size(14.0)
-                                                                        .strong()
-                                                                        .color(Theme::new(self.dark_mode).text_weak),
-                                                                ),
-                                                            );
-                                                            ui.label(
-                                                                egui::RichText::new(t.trigger_short())
-                                                                    .size(13.0)
-                                                                    .strong()
-                                                                    .color(accent_color),
-                                                            );
-                                                            ui.add_space(6.0);
-
-                                                            let trigger_text = if is_capturing_trigger {
-                                                                t.press_any_key()
-                                                            } else {
-                                                                full_trigger_text.as_str()
-                                                            };
-                                                            let display_text = truncate_text_safe(
-                                                                trigger_text,
-                                                                TEXT_TRUNCATE_LEN,
-                                                            );
-                                                            let trigger_btn = egui::Button::new(
-                                                                egui::RichText::new(&display_text)
-                                                                    .size(13.0)
-                                                                    .color(if is_capturing_trigger {
-                                                                        egui::Color32::WHITE
-                                                                    } else {
-                                                                        row_text_color
-                                                                    }),
-                                                            )
-                                                            .fill(if is_capturing_trigger {
-                                                                Theme::new(self.dark_mode).accent
-                                                            } else {
-                                                                input_bg
-                                                            })
-                                                            .corner_radius(8.0);
-                                                            let mut response =
-                                                                ui.add_sized([170.0, 34.0], trigger_btn);
-                                                            // Show full text on hover if truncated
-                                                            if !is_capturing_trigger
-                                                                && trigger_text.len() > TEXT_TRUNCATE_LEN
-                                                            {
-                                                                response =
-                                                                    response.on_hover_text(trigger_text);
-                                                            }
-                                                            if response.clicked()
-                                                                && !self.just_captured_input
-                                                            {
-                                                                self.key_capture_mode =
-                                                                    KeyCaptureMode::MappingTrigger(idx);
-                                                                self.capture_pressed_keys.clear();
-                                                                self.capture_initial_pressed =
-                                                                    Self::poll_all_pressed_keys();
-                                                                self.app_state
-                                                                    .set_raw_input_capture_mode(true);
-                                                                // Set flag to skip mouse capture on this frame
-                                                                self.just_captured_input = true;
-                                                            }
-                                                        });
-                                                        ui.add_space(6.0);
-
-                                                        // 行 2: 目标键 + 添加/清空
-                                                        ui.horizontal(|ui| {
-                                                            ui.add_space(26.0);
-                                                            ui.label(
-                                                                egui::RichText::new(t.target_short())
-                                                                    .size(13.0)
-                                                                    .strong()
-                                                                    .color(accent_color),
-                                                            );
-                                                            ui.add_space(6.0);
-
-                                                            let target_text = if is_capturing_target {
-                                                                t.press_any_key()
-                                                            } else if target_display.is_empty() {
-                                                                t.click_to_set()
-                                                            } else {
-                                                                target_display.as_str()
-                                                            };
-                                                            let display_target_text = if is_capturing_target {
-                                                                target_text.to_string()
-                                                            } else {
-                                                                truncate_text_safe(
-                                                                    target_text,
-                                                                    TEXT_TRUNCATE_LEN,
-                                                                )
-                                                            };
-                                                            let target_btn = egui::Button::new(
-                                                                egui::RichText::new(&display_target_text)
-                                                                    .size(13.0)
-                                                                    .color(if is_capturing_target {
-                                                                        egui::Color32::WHITE
-                                                                    } else {
-                                                                        row_text_color
-                                                                    }),
-                                                            )
-                                                            .fill(if is_capturing_target {
-                                                                Theme::new(self.dark_mode).accent
-                                                            } else {
-                                                                input_bg
-                                                            })
-                                                            .corner_radius(8.0);
-                                                            let mut target_response = ui
-                                                                .add_sized([170.0, 34.0], target_btn);
-                                                            if !is_capturing_target
-                                                                && target_text.len() > TEXT_TRUNCATE_LEN
-                                                            {
-                                                                target_response = target_response
-                                                                    .on_hover_text(target_text);
-                                                            }
-                                                            if target_response.clicked()
-                                                                && !self.just_captured_input
-                                                            {
-                                                                self.key_capture_mode =
-                                                                    KeyCaptureMode::MappingTarget(idx);
-                                                                self.capture_pressed_keys.clear();
-                                                                self.capture_initial_pressed =
-                                                                    Self::poll_all_pressed_keys();
-                                                            }
-                                                            ui.add_space(8.0);
-
-                                                            // Button 1: Add target key with capture
-                                                            let add_target_btn = egui::Button::new(
-                                                                egui::RichText::new("+")
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(16.0),
-                                                            )
-                                                            .fill(Theme::new(self.dark_mode).accent)
-                                                            .corner_radius(8.0);
-                                                            if ui
-                                                                .add_sized([36.0, 34.0], add_target_btn)
-                                                                .on_hover_text(t.add_target_key_hover())
-                                                                .clicked()
-                                                            {
-                                                                self.key_capture_mode =
-                                                                    KeyCaptureMode::MappingTarget(idx);
-                                                                self.capture_pressed_keys.clear();
-                                                                self.capture_initial_pressed =
-                                                                    Self::poll_all_pressed_keys();
-                                                            }
-                                                            // Button 1.5: Clear all target keys
-                                                            let clear_btn = egui::Button::new(
-                                                                egui::RichText::new("✖")
-                                                                    .color(egui::Color32::WHITE)
-                                                                    .size(14.0),
-                                                            )
-                                                            .fill(Theme::new(self.dark_mode).btn_danger)
-                                                            .corner_radius(8.0);
-                                                            if ui
-                                                                .add_sized([36.0, 34.0], clear_btn)
-                                                                .on_hover_text(t.clear_all_target_keys_hover())
-                                                                .clicked()
-                                                            {
-                                                                mapping.clear_target_keys();
-                                                            }
-                                                        });
-
-                                                        // 多目标键 chips
-                                                        if mapping.get_target_keys().len() > 1 {
-                                                            ui.add_space(4.0);
-                                                            ui.horizontal(|ui| {
-                                                                ui.add_space(26.0);
-                                                                ui.label(
-                                                                    egui::RichText::new("🎯")
-                                                                        .size(12.0)
-                                                                        .color(Theme::new(self.dark_mode).text_weak),
-                                                                );
-                                                                ui.horizontal_wrapped(|ui| {
-                                                                    ui.spacing_mut().item_spacing.x = 4.0;
-                                                                    let mut key_to_remove: Option<String> = None;
-                                                                    for (i, target_key) in mapping.get_target_keys().iter().enumerate() {
-                                                                        if i > 0 {
-                                                                            ui.label(
-                                                                                egui::RichText::new("·")
-                                                                                    .size(12.0)
-                                                                                    .color(egui::Color32::from_rgb(150, 150, 150)),
-                                                                            );
-                                                                        }
-                                                                        let key_chip = egui::Button::new(
-                                                                            egui::RichText::new(format!("{} ✕", target_key))
-                                                                                .size(12.0)
-                                                                                .color(Theme::new(self.dark_mode).bad),
-                                                                        )
-                                                                        .fill(Theme::new(self.dark_mode).card_alt)
-                                                                        .corner_radius(8.0)
-                                                                        .min_size(egui::vec2(0.0, 24.0))
-                                                                        .frame(true);
-                                                                        if ui.add(key_chip)
-                                                                            .on_hover_text(t.format_remove_target_key_hover(target_key))
-                                                                            .clicked()
-                                                                        {
-                                                                            key_to_remove = Some(target_key.clone());
-                                                                        }
-                                                                    }
-                                                                    if let Some(key) = key_to_remove {
-                                                                        mapping.remove_target_key(&key);
-                                                                    }
-                                                                });
-                                                            });
-                                                        }
-
-                                                        // 行 3: 鼠标移动/滚轮参数 (仅此类映射)
-                                                        if is_mouse_move_mapping || is_mouse_scroll_mapping {
-                                                            ui.add_space(6.0);
-                                                            ui.horizontal(|ui| {
-                                                                ui.add_space(26.0);
-                                                                ui.label(
-                                                                    egui::RichText::new(t.interval_short())
-                                                                        .size(13.0)
-                                                                        .color(row_text_color),
-                                                                );
-                                                                let mut interval_str = mapping
-                                                                    .interval
-                                                                    .unwrap_or(temp_config.interval)
-                                                                    .to_string();
-                                                                let interval_edit = egui::TextEdit::singleline(
-                                                                    &mut interval_str,
-                                                                )
-                                                                .background_color(input_bg)
-                                                                .desired_width(50.0)
-                                                                .font(egui::TextStyle::Button);
-                                                                if ui
-                                                                    .add_sized([50.0, 30.0], interval_edit)
-                                                                    .changed()
-                                                                    && let Ok(val) = interval_str.parse::<u64>()
-                                                                {
-                                                                    mapping.interval = Some(val.max(5));
-                                                                }
-                                                                ui.add_space(8.0);
-                                                                ui.label(
-                                                                    egui::RichText::new(t.speed_label())
-                                                                        .size(13.0)
-                                                                        .color(row_text_color),
-                                                                );
-                                                                let mut speed_str = mapping
-                                                                    .move_speed
-                                                                    .to_string();
-                                                                let speed_edit = egui::TextEdit::singleline(
-                                                                    &mut speed_str,
-                                                                )
-                                                                .background_color(input_bg)
-                                                                .desired_width(50.0)
-                                                                .font(egui::TextStyle::Button);
-                                                                let max_val = if is_mouse_scroll_mapping { 1200 } else { 100 };
-                                                                if ui
-                                                                    .add_sized([50.0, 30.0], speed_edit)
-                                                                    .changed()
-                                                                    && let Ok(val) = speed_str.parse::<i32>()
-                                                                {
-                                                                    mapping.move_speed = val.clamp(1, max_val);
-                                                                }
-                                                                ui.add_space(8.0);
-                                                                ui.label(
-                                                                    egui::RichText::new(t.duration_short())
-                                                                        .size(13.0)
-                                                                        .color(row_text_color),
-                                                                );
-                                                                let mut duration_str = mapping
-                                                                    .event_duration
-                                                                    .unwrap_or(temp_config.event_duration)
-                                                                    .to_string();
-                                                                let duration_edit = egui::TextEdit::singleline(
-                                                                    &mut duration_str,
-                                                                )
-                                                                .background_color(input_bg)
-                                                                .desired_width(50.0)
-                                                                .font(egui::TextStyle::Button);
-                                                                if ui
-                                                                    .add_sized([50.0, 30.0], duration_edit)
-                                                                    .changed()
-                                                                    && let Ok(val) = duration_str.parse::<u64>()
-                                                                {
-                                                                    mapping.event_duration = Some(val.max(2));
-                                                                }
-                                                            });
-                                                        }
-
-                                                        // 行 4: 操作按钮 (方向/滚动/连发/双击/删除)
-                                                        ui.add_space(6.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.add_space(26.0);
-                                                            // Button 2: Mouse movement direction
-                                                            let move_btn = egui::Button::new(
-                                                                egui::RichText::new("⌖ 方向")
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(13.0),
-                                                            )
-                                                            .fill(Theme::new(self.dark_mode).accent_hover)
-                                                            .corner_radius(8.0);
-                                                            if ui
-                                                                .add_sized([88.0, 32.0], move_btn)
-                                                                .on_hover_text(t.set_mouse_direction_hover())
-                                                                .clicked()
-                                                            {
-                                                                self.mouse_direction_dialog = Some(
-                                                                    crate::gui::mouse_direction_dialog::MouseDirectionDialog::new(),
-                                                                );
-                                                                self.mouse_direction_mapping_idx = Some(idx);
-                                                            }
-                                                            ui.add_space(4.0);
-                                                            // Button 3: Mouse scroll direction
-                                                            let scroll_btn = egui::Button::new(
-                                                                egui::RichText::new("🎡 滚动")
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(13.0),
-                                                            )
-                                                            .fill(Theme::new(self.dark_mode).good)
-                                                            .corner_radius(8.0);
-                                                            if ui
-                                                                .add_sized([88.0, 32.0], scroll_btn)
-                                                                .on_hover_text(t.set_mouse_scroll_direction_hover())
-                                                                .clicked()
-                                                            {
-                                                                self.mouse_scroll_dialog = Some(
-                                                                    crate::gui::mouse_scroll_dialog::MouseScrollDialog::new(),
-                                                                );
-                                                                self.mouse_scroll_mapping_idx = Some(idx);
-                                                            }
-                                                            ui.add_space(4.0);
-                                                            // Turbo toggle
-                                                            let turbo_enabled = mapping.turbo_enabled;
-                                                            let turbo_color = if turbo_enabled {
-                                                                Theme::new(self.dark_mode).accent
-                                                            } else { Theme::new(self.dark_mode).hint };
-                                                            let turbo_icon =
-                                                                if turbo_enabled { "⚡ 连发" } else { "○ 连发" };
-                                                            let turbo_btn = egui::Button::new(
-                                                                egui::RichText::new(turbo_icon)
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(12.0),
-                                                            )
-                                                            .fill(turbo_color)
-                                                            .corner_radius(8.0)
-                                                            .sense(egui::Sense::click());
-                                                            let hover_text = if turbo_enabled {
-                                                                self.translations.turbo_on_hover()
-                                                            } else {
-                                                                self.translations.turbo_off_hover()
-                                                            };
-                                                            if ui
-                                                                .add_sized([96.0, 32.0], turbo_btn)
-                                                                .on_hover_text(hover_text)
-                                                                .clicked()
-                                                            {
-                                                                mapping.turbo_enabled = !mapping.turbo_enabled;
-                                                            }
-                                                            ui.add_space(4.0);
-                                                            // Double-tap toggle (DNF run on first press)
-                                                            let double_tap_enabled = mapping.double_tap_enabled;
-                                                            let run_on = mapping.run_enabled;
-                                                            let double_tap_color = if double_tap_enabled {
-                                                                Theme::new(self.dark_mode).good
-                                                            } else { Theme::new(self.dark_mode).hint };
-                                                            let double_tap_icon =
-                                                                if double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
-                                                            let double_tap_btn = egui::Button::new(
-                                                                egui::RichText::new(double_tap_icon)
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(12.0),
-                                                            )
-                                                            .fill(double_tap_color)
-                                                            .corner_radius(8.0)
-                                                            .sense(egui::Sense::click());
-                                                            let double_tap_hover = if run_on {
-                                                                "已勾选「重推奔跑」, 两者互斥 —— 先关掉重推奔跑"
-                                                            } else if double_tap_enabled {
-                                                                self.translations.double_tap_on_hover()
-                                                            } else {
-                                                                self.translations.double_tap_off_hover()
-                                                            };
-                                                            /* ★v21.5: 重推奔跑开启时此项禁用 (互斥) */
-                                                            if ui
-                                                                .add_enabled_ui(!run_on, |ui| {
-                                                                    ui.add_sized([96.0, 32.0], double_tap_btn)
-                                                                        .on_hover_text(double_tap_hover)
-                                                                })
-                                                                .inner
-                                                                .clicked()
-                                                            {
-                                                                mapping.double_tap_enabled = !mapping.double_tap_enabled;
-                                                            }
-                                                            ui.add_space(4.0);
-                                                            // ★v21.0 重推奔跑开关 (与连发/简易奔跑互斥, 勾选后二者失效)
-                                                            let run_enabled = mapping.run_enabled;
-                                                            let dtap_on = mapping.double_tap_enabled;
-                                                            let run_color = if run_enabled {
-                                                                Theme::new(self.dark_mode).good
-                                                            } else { Theme::new(self.dark_mode).hint };
-                                                            let run_icon =
-                                                                if run_enabled { "🏃 重推奔跑:开" } else { "🏃 重推奔跑" };
-                                                            let run_btn = egui::Button::new(
-                                                                egui::RichText::new(run_icon)
-                                                                    .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                    .size(12.0),
-                                                            )
-                                                            .fill(run_color)
-                                                            .corner_radius(8.0)
-                                                            .sense(egui::Sense::click());
-                                                            let run_hover = if dtap_on {
-                                                                "已勾选「简易奔跑」, 两者互斥 —— 先关掉简易奔跑"
-                                                            } else if run_enabled {
-                                                                "重推奔跑: 开\n轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (双击→奔跑)\n勾选后本条映射的 连发/简易奔跑 不生效\n重推阈值与二次敲击间隔在连发页编辑面板调整\n点击关闭"
-                                                            } else {
-                                                                "重推奔跑: 关\n开启后: 轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (游戏判定双击→奔跑)\n仅对摇杆方向映射有效; 勾选后本条的 连发/简易奔跑 不生效"
-                                                            };
-                                                            /* ★v21.5: 简易奔跑开启时此项禁用 (互斥) */
-                                                            if ui
-                                                                .add_enabled_ui(!dtap_on, |ui| {
-                                                                    ui.add_sized([96.0, 32.0], run_btn)
-                                                                        .on_hover_text(run_hover)
-                                                                })
-                                                                .inner
-                                                                .clicked()
-                                                            {
-                                                                mapping.run_enabled = !mapping.run_enabled;
-                                                            }
-                                                            ui.add_space(4.0);
-                                                            // Delete mapping
-                                                            let delete_btn = egui::Button::new(
-                                                                egui::RichText::new("🗑 删除")
-                                                                    .color(egui::Color32::WHITE)
-                                                                    .size(12.0),
-                                                            )
-                                                            .fill(Theme::new(self.dark_mode).btn_danger)
-                                                            .corner_radius(8.0);
-                                                            if ui
-                                                                .add_sized([88.0, 32.0], delete_btn)
-                                                                .clicked()
-                                                            {
-                                                                to_remove = Some(idx);
-                                                            }
-                                                        });
-
-                                                        // 行 5: 备注
-                                                        ui.add_space(6.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.add_space(26.0);
-                                                            ui.label(
-                                                                egui::RichText::new(t.note_label())
-                                                                    .size(12.0)
-                                                                    .color(Theme::new(self.dark_mode).text_weak),
-                                                            );
-                                                            let note_width =
-                                                                ((ui.available_width() - 8.0).max(120.0)).min(520.0);
-                                                            let note_edit = egui::TextEdit::singleline(
-                                                                &mut mapping.note,
-                                                            )
-                                                            .background_color(input_bg)
-                                                            .hint_text(t.note_hint())
-                                                            .desired_width(note_width);
-                                                            ui.add(note_edit);
-                                                        });
-                                                    });
-                                                ui.add_space(6.0);
-                                            }
-
-                                            if let Some(idx) = to_remove {
-                                                temp_config.mappings.remove(idx);
-                                            }
-
-                                            ui.add_space(10.0);
-                                            ui.separator();
-                                            ui.add_space(10.0);
-                                            // Add new mapping
-                                            ui.label(
-                                                egui::RichText::new(t.add_new_mapping_title())
-                                                    .size(14.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(8.0);
-
-                                            let new_row_text_color = Theme::new(self.dark_mode).text;
-                                            let new_input_bg = if self.dark_mode {
-                                                egui::Color32::from_rgb(33, 36, 46) // #232838
-                                            } else {
-                                                egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
-                                            };
-                                            let new_inner_bg = Theme::new(self.dark_mode).surface;
-                                            egui::Frame::NONE
-                                                .fill(new_inner_bg)
-                                                .corner_radius(egui::CornerRadius::same(12))
-                                                .inner_margin(egui::Margin::same(12))
-                                                .show(ui, |ui| {
-                                                    // 行 1: 触发键
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(t.trigger_short())
-                                                                .size(13.0)
-                                                                .strong()
-                                                                .color(accent_color),
-                                                        );
-                                                        ui.add_space(6.0);
-                                                        let is_capturing_new_trigger = self
-                                                            .key_capture_mode
-                                                            == KeyCaptureMode::NewMappingTrigger;
-                                                        let full_new_trigger_text =
-                                                            if is_capturing_new_trigger {
-                                                                t.press_any_key()
-                                                            } else if self.new_mapping_trigger.is_empty() {
-                                                                t.click_to_set()
-                                                            } else {
-                                                                self.new_mapping_trigger.as_str()
-                                                            };
-                                                        // Truncate text to fit in button
-                                                        let new_display_text = truncate_text_safe(
-                                                            full_new_trigger_text,
-                                                            TEXT_TRUNCATE_LEN,
-                                                        );
-                                                        let new_trigger_btn = egui::Button::new(
-                                                            egui::RichText::new(&new_display_text)
-                                                                .size(13.0)
-                                                                .color(if is_capturing_new_trigger {
-                                                                    egui::Color32::WHITE
-                                                                } else {
-                                                                    new_row_text_color
-                                                                }),
-                                                        )
-                                                        .fill(if is_capturing_new_trigger {
-                                                            Theme::new(self.dark_mode).accent
-                                                        } else {
-                                                            new_input_bg
-                                                        })
-                                                        .corner_radius(8.0);
-                                                        let mut new_trigger_response =
-                                                            ui.add_sized([170.0, 34.0], new_trigger_btn);
-                                                        // Show full text on hover if truncated
-                                                        if !is_capturing_new_trigger
-                                                            && !self.new_mapping_trigger.is_empty()
-                                                            && full_new_trigger_text.len() > TEXT_TRUNCATE_LEN
-                                                        {
-                                                            new_trigger_response = new_trigger_response
-                                                                .on_hover_text(full_new_trigger_text);
-                                                        }
-                                                        if new_trigger_response.clicked()
-                                                            && !self.just_captured_input
-                                                        {
-                                                            self.key_capture_mode =
-                                                                KeyCaptureMode::NewMappingTrigger;
-                                                            self.capture_pressed_keys.clear();
-                                                            self.capture_initial_pressed =
-                                                                Self::poll_all_pressed_keys();
-                                                            self.app_state.set_raw_input_capture_mode(true);
-                                                            // Set flag to skip mouse capture on this frame
-                                                            self.just_captured_input = true;
-                                                            // Clear error when user starts to modify trigger
-                                                            self.duplicate_mapping_error = None;
-                                                        }
-                                                    });
-                                                    ui.add_space(6.0);
-
-                                                    // 行 2: 目标键 + 添加/清空
-                                                    ui.horizontal(|ui| {
-                                                        ui.label(
-                                                            egui::RichText::new(t.target_short())
-                                                                .size(13.0)
-                                                                .strong()
-                                                                .color(accent_color),
-                                                        );
-                                                        ui.add_space(6.0);
-                                                        let is_capturing_new_target = self.key_capture_mode
-                                                            == KeyCaptureMode::NewMappingTarget;
-                                                        let new_target_text = if is_capturing_new_target {
-                                                            t.press_any_key()
-                                                        } else if self.new_mapping_target.is_empty() {
-                                                            t.click_to_set()
-                                                        } else {
-                                                            self.new_mapping_target.as_str()
-                                                        };
-                                                        let display_new_target_text = if is_capturing_new_target
-                                                            || self.new_mapping_target.is_empty()
-                                                        {
-                                                            new_target_text.to_string()
-                                                        } else {
-                                                            truncate_text_safe(
-                                                                new_target_text,
-                                                                TEXT_TRUNCATE_LEN,
-                                                            )
-                                                        };
-                                                        let new_target_btn = egui::Button::new(
-                                                            egui::RichText::new(&display_new_target_text)
-                                                                .size(13.0)
-                                                                .color(if is_capturing_new_target {
-                                                                    egui::Color32::WHITE
-                                                                } else {
-                                                                    new_row_text_color
-                                                                }),
-                                                        )
-                                                        .fill(if is_capturing_new_target {
-                                                            Theme::new(self.dark_mode).accent
-                                                        } else {
-                                                            new_input_bg
-                                                        })
-                                                        .corner_radius(8.0);
-                                                        let mut new_target_response = ui
-                                                            .add_sized([170.0, 34.0], new_target_btn);
-                                                        if !is_capturing_new_target
-                                                            && !self.new_mapping_target.is_empty()
-                                                            && new_target_text.len() > TEXT_TRUNCATE_LEN
-                                                        {
-                                                            new_target_response = new_target_response
-                                                                .on_hover_text(new_target_text);
-                                                        }
-                                                        if new_target_response.clicked()
-                                                            && !self.just_captured_input
-                                                        {
-                                                            self.key_capture_mode =
-                                                                KeyCaptureMode::NewMappingTarget;
-                                                            self.capture_pressed_keys.clear();
-                                                            self.capture_initial_pressed =
-                                                                Self::poll_all_pressed_keys();
-                                                        }
-                                                        ui.add_space(8.0);
-
-                                                        // Button 1: Add target key
-                                                        let add_target_btn = egui::Button::new(
-                                                            egui::RichText::new("+")
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(16.0),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).accent)
-                                                        .corner_radius(8.0);
-                                                        if ui
-                                                            .add_sized([36.0, 34.0], add_target_btn)
-                                                            .on_hover_text(t.add_target_key_hover())
-                                                            .clicked()
-                                                        {
-                                                            self.key_capture_mode = KeyCaptureMode::NewMappingTarget;
-                                                            self.capture_pressed_keys.clear();
-                                                            self.capture_initial_pressed = Self::poll_all_pressed_keys();
-                                                            self.just_captured_input = true;
-                                                        }
-                                                        // Button 1.5: Clear all target keys
-                                                        let clear_btn = egui::Button::new(
-                                                            egui::RichText::new("✖")
-                                                                .color(egui::Color32::WHITE)
-                                                                .size(14.0),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).btn_danger)
-                                                        .corner_radius(8.0);
-                                                        if ui
-                                                            .add_sized([36.0, 34.0], clear_btn)
-                                                            .on_hover_text(t.clear_all_target_keys_hover())
-                                                            .clicked()
-                                                        {
-                                                            self.new_mapping_target_keys.clear();
-                                                            self.new_mapping_target.clear();
-                                                        }
-                                                    });
-
-                                                    // Display new mapping target keys list
-                                                    if self.new_mapping_target_keys.len() > 1 {
-                                                        ui.add_space(4.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new("🎯")
-                                                                    .size(12.0)
-                                                                    .color(Theme::new(self.dark_mode).text_weak),
-                                                            );
-                                                            // Wrap target keys within max width
-                                                            ui.horizontal_wrapped(|ui| {
-                                                                ui.spacing_mut().item_spacing.x = 4.0;
-                                                                let mut key_to_remove: Option<String> = None;
-                                                                for (i, target_key) in self.new_mapping_target_keys.iter().enumerate() {
-                                                                    if i > 0 {
-                                                                        ui.label(
-                                                                            egui::RichText::new("·")
-                                                                                .size(12.0)
-                                                                                .color(egui::Color32::from_rgb(150, 150, 150)),
-                                                                        );
-                                                                    }
-                                                                    let key_chip = egui::Button::new(
-                                                                        egui::RichText::new(format!("{} ✕", target_key))
-                                                                            .size(12.0)
-                                                                            .color(Theme::new(self.dark_mode).bad),
-                                                                    )
-                                                                    .fill(Theme::new(self.dark_mode).card_alt)
-                                                                    .corner_radius(8.0)
-                                                                    .min_size(egui::vec2(0.0, 24.0))
-                                                                    .frame(true);
-                                                                    if ui.add(key_chip)
-                                                                        .on_hover_text(t.format_remove_target_key_hover(target_key))
-                                                                        .clicked()
-                                                                    {
-                                                                        key_to_remove = Some(target_key.clone());
-                                                                    }
-                                                                }
-                                                                if let Some(key) = key_to_remove {
-                                                                    self.new_mapping_target_keys.retain(|k| k != &key);
-                                                                    if self.new_mapping_target_keys.len() == 1 {
-                                                                        self.new_mapping_target = self.new_mapping_target_keys[0].clone();
-                                                                    } else if self.new_mapping_target == key {
-                                                                        self.new_mapping_target.clear();
-                                                                    }
-                                                                }
-                                                            });
-                                                        });
-                                                    }
-
-                                                    // 行 3: 参数 (鼠标移动/滚轮 vs 普通按键)
-                                                    let first_target = self.new_mapping_target_keys.first().map(|s| s.as_str()).unwrap_or("");
-                                                    let is_mouse_move = is_mouse_move_target(first_target);
-                                                    let is_mouse_scroll = is_mouse_scroll_target(first_target);
-                                                    if is_mouse_move || is_mouse_scroll {
-                                                        // Show interval and speed for mouse movement/scroll
-                                                        ui.add_space(6.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new(t.interval_short())
-                                                                    .size(13.0)
-                                                                    .color(new_row_text_color),
-                                                            );
-                                                            let interval_edit = egui::TextEdit::singleline(
-                                                                &mut self.new_mapping_interval,
-                                                            )
-                                                            .background_color(new_input_bg)
-                                                            .hint_text("5")
-                                                            .desired_width(50.0)
-                                                            .font(egui::TextStyle::Button);
-                                                            ui.add_sized([50.0, 30.0], interval_edit);
-                                                            ui.add_space(8.0);
-                                                            ui.label(
-                                                                egui::RichText::new(t.speed_label())
-                                                                    .size(13.0)
-                                                                    .color(new_row_text_color),
-                                                            );
-                                                            let hint = if is_mouse_scroll { "120" } else { "5" };
-                                                            let speed_edit = egui::TextEdit::singleline(
-                                                                &mut self.new_mapping_move_speed,
-                                                            )
-                                                            .background_color(new_input_bg)
-                                                            .hint_text(hint)
-                                                            .desired_width(50.0)
-                                                            .font(egui::TextStyle::Button);
-                                                            ui.add_sized([50.0, 30.0], speed_edit);
-                                                        });
-                                                    } else {
-                                                        // Show interval and duration for regular keys
-                                                        ui.add_space(6.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new(t.interval_short())
-                                                                    .size(13.0)
-                                                                    .color(new_row_text_color),
-                                                            );
-                                                            let interval_edit = egui::TextEdit::singleline(
-                                                                &mut self.new_mapping_interval,
-                                                            )
-                                                            .background_color(new_input_bg)
-                                                            .hint_text("5")
-                                                            .desired_width(50.0)
-                                                            .font(egui::TextStyle::Button);
-                                                            ui.add_sized([50.0, 30.0], interval_edit);
-                                                            ui.add_space(8.0);
-                                                            ui.label(
-                                                                egui::RichText::new(t.duration_short())
-                                                                    .size(13.0)
-                                                                    .color(new_row_text_color),
-                                                            );
-                                                            let duration_edit = egui::TextEdit::singleline(
-                                                                &mut self.new_mapping_duration,
-                                                            )
-                                                            .background_color(new_input_bg)
-                                                            .hint_text("5")
-                                                            .desired_width(50.0)
-                                                            .font(egui::TextStyle::Button);
-                                                            ui.add_sized([50.0, 30.0], duration_edit);
-                                                        });
-                                                    }
-
-                                                    // 行 4: 操作按钮 (方向/滚动/连发/双击)
-                                                    ui.add_space(6.0);
-                                                    ui.horizontal(|ui| {
-                                                        // Button 2: Mouse movement direction
-                                                        let move_btn = egui::Button::new(
-                                                            egui::RichText::new("⌖ 方向")
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(13.0),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).accent_hover)
-                                                        .corner_radius(8.0);
-                                                        if ui
-                                                            .add_sized([88.0, 32.0], move_btn)
-                                                            .on_hover_text(t.set_mouse_direction_hover())
-                                                            .clicked()
-                                                        {
-                                                            self.mouse_direction_dialog = Some(
-                                                                crate::gui::mouse_direction_dialog::MouseDirectionDialog::new(),
-                                                            );
-                                                            self.mouse_direction_mapping_idx = None;
-                                                        }
-                                                        ui.add_space(4.0);
-                                                        // Button 3: Mouse scroll direction
-                                                        let scroll_btn = egui::Button::new(
-                                                            egui::RichText::new("🎡 滚动")
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(13.0),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).good)
-                                                        .corner_radius(8.0);
-                                                        if ui
-                                                            .add_sized([88.0, 32.0], scroll_btn)
-                                                            .on_hover_text(t.set_mouse_scroll_direction_hover())
-                                                            .clicked()
-                                                        {
-                                                            self.mouse_scroll_dialog = Some(
-                                                                crate::gui::mouse_scroll_dialog::MouseScrollDialog::new(),
-                                                            );
-                                                            self.mouse_scroll_mapping_idx = None;
-                                                        }
-                                                        ui.add_space(4.0);
-                                                        // Turbo toggle for new mapping
-                                                        let new_turbo_enabled = self.new_mapping_turbo;
-                                                        let new_turbo_color = if new_turbo_enabled {
-                                                            Theme::new(self.dark_mode).accent
-                                                        } else { Theme::new(self.dark_mode).hint };
-                                                        let new_turbo_icon =
-                                                            if new_turbo_enabled { "⚡ 连发" } else { "○ 连发" };
-                                                        let new_turbo_btn = egui::Button::new(
-                                                            egui::RichText::new(new_turbo_icon)
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(12.0),
-                                                        )
-                                                        .fill(new_turbo_color)
-                                                        .corner_radius(8.0)
-                                                        .sense(egui::Sense::click());
-                                                        let new_hover_text = if new_turbo_enabled {
-                                                            self.translations.turbo_on_hover()
-                                                        } else {
-                                                            self.translations.turbo_off_hover()
-                                                        };
-                                                        if ui
-                                                            .add_sized([96.0, 32.0], new_turbo_btn)
-                                                            .on_hover_text(new_hover_text)
-                                                            .clicked()
-                                                        {
-                                                            self.new_mapping_turbo = !self.new_mapping_turbo;
-                                                        }
-                                                        ui.add_space(4.0);
-                                                        // New mapping double-tap toggle (DNF run on first press)
-                                                        let new_double_tap_enabled = self.new_mapping_double_tap;
-                                                        let new_double_tap_color = if new_double_tap_enabled {
-                                                            Theme::new(self.dark_mode).good
-                                                        } else { Theme::new(self.dark_mode).hint };
-                                                        let new_double_tap_icon =
-                                                            if new_double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
-                                                        let new_double_tap_btn = egui::Button::new(
-                                                            egui::RichText::new(new_double_tap_icon)
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(12.0),
-                                                        )
-                                                        .fill(new_double_tap_color)
-                                                        .corner_radius(8.0)
-                                                        .sense(egui::Sense::click());
-                                                        let new_double_tap_hover = if new_double_tap_enabled {
-                                                            self.translations.double_tap_on_hover()
-                                                        } else {
-                                                            self.translations.double_tap_off_hover()
-                                                        };
-                                                        if ui
-                                                            .add_sized([96.0, 32.0], new_double_tap_btn)
-                                                            .on_hover_text(new_double_tap_hover)
-                                                            .clicked()
-                                                        {
-                                                            self.new_mapping_double_tap = !self.new_mapping_double_tap;
-                                                        }
-                                                    });
-
-                                                    // 行 5: 备注 (触发键已设置时显示)
-                                                    if !self.new_mapping_trigger.is_empty() {
-                                                        ui.add_space(6.0);
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new(t.note_label())
-                                                                    .size(12.0)
-                                                                    .color(Theme::new(self.dark_mode).text_weak),
-                                                            );
-                                                            let note_edit = egui::TextEdit::singleline(
-                                                                &mut self.new_mapping_note,
-                                                            )
-                                                            .background_color(new_input_bg)
-                                                            .hint_text(t.note_hint())
-                                                            .desired_width(220.0);
-                                                            ui.add(note_edit);
-                                                        });
-                                                    }
-
-                                                    // 行 6: 添加按钮
-                                                    ui.add_space(8.0);
-                                                    ui.horizontal(|ui| {
-                                                        let add_btn = egui::Button::new(
-                                                            egui::RichText::new(t.add_button_text())
-                                                                .color(Theme::new(self.dark_mode).on_emphasis)
-                                                                .size(14.0)
-                                                                .strong(),
-                                                        )
-                                                        .fill(Theme::new(self.dark_mode).accent)
-                                                        .corner_radius(8.0);
-                                                        if ui.add_sized([140.0, 36.0], add_btn).clicked()
-                                                            && !self.new_mapping_trigger.is_empty()
-                                                            && !self.new_mapping_target_keys.is_empty()
-                                                        {
-                                                            let trigger_upper =
-                                                                self.new_mapping_trigger.to_uppercase();
-
-                                                            // Check for duplicate trigger key
-                                                            let is_duplicate = temp_config
-                                                                .mappings
-                                                                .iter()
-                                                                .any(|m| m.trigger_key == trigger_upper);
-
-                                                            if is_duplicate {
-                                                                self.duplicate_mapping_error = Some(
-                                                                    t.duplicate_trigger_error().to_string(),
-                                                                );
-                                                            } else {
-                                                                // Clear any previous error
-                                                                self.duplicate_mapping_error = None;
-
-                                                                let interval = self
-                                                                    .new_mapping_interval
-                                                                    .parse::<u64>()
-                                                                    .ok()
-                                                                    .map(|v| v.max(5));
-                                                                let duration = self
-                                                                    .new_mapping_duration
-                                                                    .parse::<u64>()
-                                                                    .ok()
-                                                                    .map(|v| v.max(2));
-                                                                let move_speed = self
-                                                                    .new_mapping_move_speed
-                                                                    .parse::<i32>()
-                                                                    .unwrap_or(5)
-                                                                    .clamp(1, 100);
-
-                                                                let turbo_enabled = self.new_mapping_turbo;
-
-                                                                temp_config.mappings.push(KeyMapping {
-                                                                    release_targets: Default::default(),
-                                                                    sequence_text: String::new(),
-                                                                    trigger_key: trigger_upper,
-                                                                    target_keys: self.new_mapping_target_keys.iter()
-                                                                        .map(|k| k.to_uppercase())
-                                                                        .collect(),
-                                                                    interval,
-                                                                    event_duration: duration,
-                                                                    turbo_enabled,
-                                                                    move_speed,
-                                                                    double_tap_enabled: self.new_mapping_double_tap,
-                                                                    double_tap_gap_ms: 50,
-                                                                    run_enabled: false,
-                                                                    run_threshold: 80,
-                                                                    run_recheck: true,
-                                                                    lock_enabled: false,
-                                                                    note: self.new_mapping_note.clone(),
-                                                                });
-
-                                                                // Clear input fields
-                                                                self.new_mapping_trigger.clear();
-                                                                self.new_mapping_target.clear();
-                                                                self.new_mapping_target_keys.clear();
-                                                                self.new_mapping_interval.clear();
-                                                                self.new_mapping_duration.clear();
-                                                                self.new_mapping_move_speed = "5".to_string();
-                                                                self.new_mapping_turbo = true; // Reset to default
-                                                                self.new_mapping_double_tap = false; // Reset to default
-                                                                self.new_mapping_note.clear();
-                                                                self.preset_rename_target.clear();
-                                                                self.preset_rename_input.clear();
-                                                            }
-                                                        }
-                                                    });
-
-                                                    // Display duplicate trigger error if exists
-                                                    if let Some(ref error_msg) = self.duplicate_mapping_error {
-                                                        ui.add_space(6.0);
-                                                        ui.label(
-                                                            egui::RichText::new(error_msg)
-                                                                .color(egui::Color32::from_rgb(255, 100, 100))
-                                                                .size(13.0),
-                                                        );
-                                                    }
-                                                });
-                                        });
-
-                                    ui.add_space(10.0);
-
-                                    // Process Whitelist Section
-                                    let card_bg = Theme::new(self.dark_mode).card;
-
-                                    egui::Frame::NONE
-                                        .fill(card_bg)
-                                        .corner_radius(egui::CornerRadius::same(14))
-                                        .inner_margin(egui::Margin::same(16))
-                                        .show(ui, |ui| {
-                                            ui.set_min_width(ui.available_width());
-                                            ui.label(
-                                                egui::RichText::new(t.process_whitelist_hint())
-                                                    .size(16.0)
-                                                    .strong()
-                                                    .color(accent_color),
-                                            );
-                                            ui.add_space(6.0);
-
-                                            // Process list
-                                            egui::ScrollArea::vertical().max_height(80.0).show(
-                                                ui,
-                                                |ui| {
-                                                    let mut to_remove: Option<usize> = None;
-                                                    for (idx, process) in temp_config
-                                                        .process_whitelist
-                                                        .iter()
-                                                        .enumerate()
-                                                    {
-                                                        ui.horizontal(|ui| {
-                                                            ui.label(
-                                                                egui::RichText::new(process)
-                                                                    .size(13.0)
-                                                                    .color(if self.dark_mode {
-                                                                        egui::Color32::from_rgb(
-                                                                            200, 200, 255,
-                                                                        )
-                                                                    } else {
-                                                                        egui::Color32::from_rgb(
-                                                                            60, 60, 120,
-                                                                        )
-                                                                    }),
-                                                            );
-
-                                                            ui.with_layout(
-                                                                egui::Layout::right_to_left(
-                                                                    egui::Align::Center,
-                                                                ),
-                                                                |ui| {
-                                                                    let del_btn = egui::Button::new(
-                                                                    egui::RichText::new("🗑")
-                                                                        .color(egui::Color32::WHITE)
-                                                                        .size(11.0),
-                                                                )
-                                                                .fill(egui::Color32::from_rgb(
-                                                                    255, 182, 193,
-                                                                )) // Soft pink
-                                                                .corner_radius(8.0);
-
-                                                                    if ui
-                                                                        .add_sized(
-                                                                            [28.0, 28.0],
-                                                                            del_btn,
-                                                                        )
-                                                                        .clicked()
-                                                                    {
-                                                                        to_remove = Some(idx);
-                                                                    }
-                                                                },
-                                                            );
-                                                        });
-                                                    }
-
-                                                    if let Some(idx) = to_remove {
-                                                        temp_config.process_whitelist.remove(idx);
-                                                    }
-                                                },
-                                            );
-
-                                            ui.add_space(6.0);
-
-                                            // Add new process
-                                            ui.horizontal(|ui| {
-                                                let process_edit = egui::TextEdit::singleline(
-                                                    &mut self.new_process_name,
-                                                )
-                                                .background_color(Theme::new(self.dark_mode).card_alt)
-                                                .hint_text(t.process_example())
-                                                .desired_width(200.0);
-                                                ui.add_sized([220.0, 32.0], process_edit);
-
-                                                let add_btn = egui::Button::new(
-                                                    egui::RichText::new(t.add_button_text())
-                                                        .color(Theme::new(self.dark_mode).on_emphasis)
-                                                        .size(12.0)
-                                                        .strong(),
-                                                )
-                                                .fill(Theme::new(self.dark_mode).good)
-                                                .corner_radius(8.0);
-
-                                                if ui.add_sized([84.0, 32.0], add_btn).clicked() {
-                                                    let process_name = self.new_process_name.trim();
-                                                    if !process_name.is_empty() {
-                                                        // Check for duplicate process (整串忽略大小写)
-                                                        if temp_config
-                                                            .process_whitelist
-                                                            .iter()
-                                                            .any(|x| x.eq_ignore_ascii_case(process_name))
-                                                        {
-                                                            self.duplicate_process_error = Some(
-                                                                t.duplicate_process_error()
-                                                                    .to_string(),
-                                                            );
-                                                        } else {
-                                                            // Clear any previous error
-                                                            self.duplicate_process_error = None;
-                                                            temp_config
-                                                                .process_whitelist
-                                                                .push(process_name.to_string());
-                                                            self.new_process_name.clear();
-                                                        }
-                                                    }
-                                                }
-
-                                                ui.add_space(8.0);
-
-                                                // Browse button for selecting process
-                                                let browse_btn = egui::Button::new(
-                                                    egui::RichText::new(t.browse_button())
-                                                        .color(Theme::new(self.dark_mode).on_emphasis)
-                                                        .size(12.0)
-                                                        .strong(),
-                                                )
-                                                .fill(Theme::new(self.dark_mode).accent_text)
-                                                .corner_radius(8.0);
-
-                                                if ui.add_sized([96.0, 32.0], browse_btn).clicked()
-                                                {
-                                                    // Open file dialog to select executable
-                                                    if let Some(path) = rfd::FileDialog::new()
-                                                        .add_filter("Executable", &["exe"])
-                                                        .set_title("Select Process")
-                                                        .pick_file()
-                                                    {
-                                                        /* ★登记完整路径 (不再截成文件名):
-                                                         * 同名不同版本的 exe 可各登记一条, 按路径精确匹配。 */
-                                                        let entry = path.to_string_lossy().to_string();
-                                                        // Check for duplicate process (整串忽略大小写)
-                                                        if temp_config
-                                                            .process_whitelist
-                                                            .iter()
-                                                            .any(|x| x.eq_ignore_ascii_case(&entry))
-                                                        {
-                                                            self.duplicate_process_error = Some(
-                                                                t.duplicate_process_error()
-                                                                    .to_string(),
-                                                            );
-                                                        } else {
-                                                            // Clear any previous error
-                                                            self.duplicate_process_error = None;
-                                                            temp_config
-                                                                .process_whitelist
-                                                                .push(entry);
-                                                        }
-                                                    }
-                                                }
-                                            });
-
-                                            // Display duplicate process error if exists
-                                            if let Some(ref error_msg) =
-                                                self.duplicate_process_error
-                                            {
-                                                ui.add_space(8.0);
-                                                ui.label(
-                                                    egui::RichText::new(error_msg)
-                                                        .color(egui::Color32::from_rgb(
-                                                            255, 100, 100,
-                                                        ))
-                                                        .size(13.0),
-                                                );
-                                            }
-                                        });
-
+                                    self.settings_section_toggle_key_and_presets(ui);
+                                    self.settings_section_global(ui);
+                                    self.settings_section_mappings(ui);
+                                    self.settings_section_whitelist(ui);
                                 }); // End of ScrollArea
                         }); // End of Frame
                     ui.separator();
-
-                    // Action buttons - centered (outside ScrollArea, fixed at bottom)
-                    ui.vertical_centered(|ui| {
-                        ui.horizontal(|ui| {
-                            // Calculate total width of buttons and spacing
-                            let button_width = 240.0;
-                            let spacing = 15.0;
-                            let total_buttons_width = button_width * 2.0 + spacing;
-                            let available_width = ui.available_width();
-
-                            // Add left padding to center the buttons
-                            if available_width > total_buttons_width {
-                                ui.add_space((available_width - total_buttons_width) / 2.0);
-                            }
-
-                            let save_btn = egui::Button::new(
-                                egui::RichText::new(t.save())
-                                    .size(14.0)
-                                    .color(egui::Color32::WHITE)
-                                    .strong(),
-                            )
-                            .fill(Theme::new(self.dark_mode).btn_primary)
-                            .corner_radius(8.0);
-
-                            if ui.add_sized([button_width, 32.0], save_btn).clicked() {
-                                should_save = true;
-                            }
-
-                            ui.add_space(spacing);
-
-                            let cancel_btn = egui::Button::new(
-                                egui::RichText::new(t.cancel())
-                                    .size(14.0)
-                                    .color(Theme::new(self.dark_mode).btn_secondary_text),
-                            )
-                            .fill(Theme::new(self.dark_mode).btn_secondary)
-                            .corner_radius(8.0);
-
-                            if ui.add_sized([button_width, 32.0], cancel_btn).clicked() {
-                                should_cancel = true;
-                            }
-                        });
-                    });
-
-                    ui.add_space(2.0);
-
-                    // Hint
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new(t.changes_take_effect_hint())
-                                .size(12.0)
-                                .color(Theme::new(self.dark_mode).accent_text)
-                                .italics(),
-                        );
-                    });
+                    (should_save, should_cancel) = self.settings_action_buttons(ui);
                 }); // End of ui.push_id
             }); // End of egui::Window
 
@@ -2606,5 +741,1920 @@ impl SorahkGui {
             0x06 => Some("XBUTTON2".to_string()),
             _ => None,
         }
+    }
+    /// settings_title_bar — 弹窗自绘标题栏 (原 277-305)
+    fn settings_title_bar(&mut self, ui: &mut egui::Ui) -> bool {
+        let t = &self.translations;
+        let mut should_cancel = false;
+        let accent_color = Theme::new(self.dark_mode).accent_text;
+            // Custom title bar (matching main window style)
+            ui.horizontal(|ui| {
+                ui.add_space(15.0);
+
+                // Settings title - 统一紫色强调
+                ui.label(
+                    egui::RichText::new(t.settings_dialog_title())
+                        .size(18.0)
+                        .strong()
+                        .color(accent_color),
+                );
+
+                // Push close button to the right
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.add_space(10.0);
+
+                    // Close button (matching style)
+                    let close_btn =
+                        egui::Button::new(egui::RichText::new("x").size(16.0).color(
+                            accent_color,
+                        ))
+                        .corner_radius(8.0)
+                        .frame(false);
+
+                    if ui.add(close_btn).clicked() {
+                        should_cancel = true;
+                    }
+                });
+            });
+        should_cancel
+    }
+
+    /// settings_section_toggle_key_and_presets — 连发总开关热键 + 预设管理卡 (原 321-616)
+    fn settings_section_toggle_key_and_presets(&mut self, ui: &mut egui::Ui) {
+        let Some(temp_config) = self.temp_config.as_mut() else { return; };
+        let t = &self.translations;
+        let accent_color = Theme::new(self.dark_mode).accent_text;
+        // Toggle Key Section
+        let card_bg = if self.dark_mode {
+            egui::Color32::from_rgb(26, 29, 37) // #1C1F2D
+        } else {
+            egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
+        };
+
+                            egui::Frame::NONE
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(t.toggle_key())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(8.0);
+
+                                    ui.horizontal(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(t.key_label())
+                                                .size(14.0)
+                                                .color(Theme::new(self.dark_mode).text),
+                                        );
+                                        ui.add_space(8.0);
+
+                                        let is_capturing = self.key_capture_mode
+                                            == KeyCaptureMode::ToggleKey;
+                                        let button_text = if is_capturing {
+                                            t.press_any_key()
+                                        } else if temp_config.switch_key.is_empty() {
+                                            t.click_to_set()
+                                        } else {
+                                            &temp_config.switch_key
+                                        };
+
+                                        let button = egui::Button::new(
+                                            egui::RichText::new(button_text).size(13.0).color(
+                                                if is_capturing {
+                                                    egui::Color32::WHITE
+                                                } else { Theme::new(self.dark_mode).text },
+                                            ),
+                                        )
+                                        .fill(if is_capturing {
+                                            Theme::new(self.dark_mode).accent // 捕获中: 强调色
+                                        } else if self.dark_mode {
+                                            egui::Color32::from_rgb(33, 36, 46) // #232838 输入框底色
+                                        } else {
+                                            egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
+                                        })
+                                        .corner_radius(8.0); // Increased rounding to match buttons
+
+                                        if ui.add_sized([200.0, 34.0], button).clicked()
+                                            && !self.just_captured_input
+                                        {
+                                            self.key_capture_mode =
+                                                KeyCaptureMode::ToggleKey;
+                                            self.capture_pressed_keys.clear();
+                                            self.capture_initial_pressed =
+                                                Self::poll_all_pressed_keys();
+                                            self.app_state.set_raw_input_capture_mode(true);
+                                            // Set flag to skip mouse capture on this frame
+                                            self.just_captured_input = true;
+                                        }
+                                    });
+                                });
+
+                            ui.add_space(10.0);
+
+                            // Preset Management Section
+                            let card_bg = if self.dark_mode {
+                                egui::Color32::from_rgb(26, 29, 37) // #1C1F2D
+                            } else {
+                                egui::Color32::from_rgb(255, 255, 255) // #FFFFFF
+                            };
+
+                            egui::Frame::NONE
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(t.preset_title())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(8.0);
+
+                                    ui.horizontal(|ui| {
+                                        // Current preset display / selection
+                                        let current_name = if temp_config.current_preset.is_empty() {
+                                            t.no_preset().to_string()
+                                        } else {
+                                            temp_config.current_preset.clone()
+                                        };
+
+                                        egui::ComboBox::from_id_salt("preset_selector")
+                                            .selected_text(&current_name)
+                                            .width(180.0)
+                                            .show_ui(ui, |ui| {
+                                                if ui.selectable_label(temp_config.current_preset.is_empty(), t.no_preset()).clicked() {
+                                                    temp_config.current_preset.clear();
+                                                    self.preset_rename_target.clear();
+                                                    self.preset_rename_input.clear();
+                                                }
+                                                for preset in &temp_config.presets {
+                                                    let is_selected = temp_config.current_preset == preset.name;
+                                                    if ui.selectable_label(is_selected, &preset.name).clicked() {
+                                                        temp_config.current_preset = preset.name.clone();
+                                                        temp_config.mappings = preset.mappings.clone();
+                                                        self.preset_rename_target.clear();
+                                                        self.preset_rename_input.clear();
+                                                    }
+                                                }
+                                            });
+
+                                        ui.add_space(8.0);
+
+                                        // Save preset button - 紫色强调
+                                        let save_btn = egui::Button::new(
+                                            egui::RichText::new(t.preset_save_btn())
+                                                .size(13.0)
+                                                .color(egui::Color32::WHITE)
+                                                .strong(),
+                                        )
+                                        .fill(Theme::new(self.dark_mode).btn_primary)
+                                        .corner_radius(8.0);
+
+                                        if ui.add_sized([90.0, 34.0], save_btn).clicked() {
+                                            self.show_preset_name_input = true;
+                                        }
+                                    });
+
+                                    // Preset name input (shown after clicking save)
+                                    if self.show_preset_name_input {
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            let name_edit = egui::TextEdit::singleline(
+                                                &mut self.preset_name_input,
+                                            )
+                                            .background_color(if self.dark_mode {
+                                                egui::Color32::from_rgb(33, 36, 46) // #232838
+                                            } else {
+                                                egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
+                                            })
+                                            .hint_text(t.preset_name_hint())
+                                            .desired_width(160.0);
+                                            ui.add_sized([160.0, 32.0], name_edit);
+
+                                            let confirm_btn = egui::Button::new(
+                                                egui::RichText::new("✓")
+                                                    .size(14.0)
+                                                    .color(Theme::new(self.dark_mode).on_emphasis),
+                                            )
+                                            .fill(Theme::new(self.dark_mode).good)
+                                            .corner_radius(8.0);
+
+                                            if ui.add_sized([36.0, 32.0], confirm_btn).clicked() {
+                                                let name = self.preset_name_input.trim();
+                                                if !name.is_empty() {
+                                                    // Remove existing preset with same name
+                                                    temp_config.presets.retain(|p| p.name != name);
+                                                    // ★v20.3: 同名覆盖时保留已绑定的切换键
+                                                    let switch_key = temp_config
+                                                        .presets
+                                                        .iter()
+                                                        .find(|p| p.name == name)
+                                                        .map(|p| p.switch_key.clone())
+                                                        .unwrap_or_default();
+                                                    // Save current mappings as preset
+                                                    temp_config.presets.push(crate::config::Preset {
+                                                        name: name.to_string(),
+                                                        mappings: temp_config.mappings.clone(),
+                                                        switch_key,
+                                                    });
+                                                    temp_config.current_preset = name.to_string();
+                                                    self.preset_name_input.clear();
+                                                    self.show_preset_name_input = false;
+                                                }
+                                            }
+
+                                            let cancel_name_btn = egui::Button::new(
+                                                egui::RichText::new("✕")
+                                                    .size(14.0)
+                                                    .color(egui::Color32::WHITE),
+                                            )
+                                            .fill(Theme::new(self.dark_mode).btn_danger)
+                                            .corner_radius(8.0);
+
+                                            if ui.add_sized([36.0, 32.0], cancel_name_btn).clicked() {
+                                                self.preset_name_input.clear();
+                                                self.show_preset_name_input = false;
+                                            }
+                                        });
+                                    }
+
+                                    // Delete and Rename preset buttons (only show if a preset is selected)
+                                    if !temp_config.current_preset.is_empty() {
+                                        ui.add_space(6.0);
+                                        ui.horizontal(|ui| {
+                                            let delete_btn = egui::Button::new(
+                                                egui::RichText::new(t.preset_delete_btn())
+                                                    .size(13.0)
+                                                    .color(egui::Color32::WHITE)
+                                                    .strong(),
+                                            )
+                                            .fill(Theme::new(self.dark_mode).btn_danger)
+                                            .corner_radius(8.0);
+
+                                            if ui.add_sized([88.0, 32.0], delete_btn).clicked() {
+                                                let name = temp_config.current_preset.clone();
+                                                temp_config.presets.retain(|p| p.name != name);
+                                                temp_config.current_preset.clear();
+                                                self.preset_rename_target.clear();
+                                                self.preset_rename_input.clear();
+                                            }
+
+                                            let rename_btn = egui::Button::new(
+                                                egui::RichText::new(t.preset_rename_btn())
+                                                    .size(13.0)
+                                                    .color(egui::Color32::WHITE)
+                                                    .strong(),
+                                            )
+                                            .fill(Theme::new(self.dark_mode).btn_primary)
+                                            .corner_radius(8.0);
+
+                                            if ui.add_sized([88.0, 32.0], rename_btn).clicked() {
+                                                self.preset_rename_target = temp_config.current_preset.clone();
+                                                self.preset_rename_input = temp_config.current_preset.clone();
+                                            }
+                                        });
+
+                                        // Rename input (shown after clicking rename)
+                                        if !self.preset_rename_target.is_empty() {
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                let rename_edit = egui::TextEdit::singleline(
+                                                    &mut self.preset_rename_input,
+                                                )
+                                                .background_color(if self.dark_mode {
+                                                    egui::Color32::from_rgb(33, 36, 46) // #232838
+                                                } else {
+                                                    egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
+                                                })
+                                                .hint_text(t.preset_name_hint())
+                                                .desired_width(140.0);
+                                                ui.add_sized([140.0, 32.0], rename_edit);
+
+                                                let confirm_btn = egui::Button::new(
+                                                    egui::RichText::new("✓")
+                                                        .size(14.0)
+                                                        .color(Theme::new(self.dark_mode).on_emphasis),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).good)
+                                                .corner_radius(8.0);
+
+                                                if ui.add_sized([36.0, 32.0], confirm_btn).clicked() {
+                                                    let new_name = self.preset_rename_input.trim();
+                                                    if !new_name.is_empty() && new_name != self.preset_rename_target {
+                                                        let old_name = self.preset_rename_target.clone();
+                                                        if let Some(preset) = temp_config.presets.iter_mut().find(|p| p.name == old_name) {
+                                                            preset.name = new_name.to_string();
+                                                        }
+                                                        if temp_config.current_preset == old_name {
+                                                            temp_config.current_preset = new_name.to_string();
+                                                        }
+                                                    }
+                                                    self.preset_rename_target.clear();
+                                                    self.preset_rename_input.clear();
+                                                }
+
+                                                let cancel_btn = egui::Button::new(
+                                                    egui::RichText::new("✕")
+                                                        .size(14.0)
+                                                        .color(egui::Color32::WHITE),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).btn_danger)
+                                                .corner_radius(8.0);
+
+                                                if ui.add_sized([36.0, 32.0], cancel_btn).clicked() {
+                                                    self.preset_rename_target.clear();
+                                                    self.preset_rename_input.clear();
+                                                }
+                                            });
+                                        }
+                                    }
+                                });
+
+                            ui.add_space(10.0);
+
+    }
+
+    /// settings_section_global — 全局配置区 (原 617-840)
+    fn settings_section_global(&mut self, ui: &mut egui::Ui) {
+        let Some(temp_config) = self.temp_config.as_mut() else { return; };
+        let t = &self.translations;
+        let accent_color = Theme::new(self.dark_mode).accent_text;
+                            // Global Configuration Section
+                            let card_bg = Theme::new(self.dark_mode).card;
+
+                            egui::Frame::NONE
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(t.global_config_title())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(6.0);
+
+                                    let available = ui.available_width();
+                                    egui::Grid::new("config_edit_grid")
+                                        .num_columns(2)
+                                        .spacing([20.0, 8.0])
+                                        .min_col_width(available * 0.35)
+                                        .show(ui, |ui| {
+                                            // Language
+                                            ui.label(t.language());
+                                            egui::ComboBox::from_id_salt(
+                                                "language_selector",
+                                            )
+                                            .selected_text(
+                                                temp_config.language.display_name(),
+                                            )
+                                            .width(120.0)
+                                            .show_ui(ui, |ui| {
+                                                use crate::i18n::Language;
+                                                for lang in Language::all() {
+                                                    ui.selectable_value(
+                                                        &mut temp_config.language,
+                                                        *lang,
+                                                        lang.display_name(),
+                                                    );
+                                                }
+                                            });
+                                            ui.end_row();
+
+                                            // Raw Input Capture Mode selector
+                                            ui.label(t.rawinput_capture_mode_label());
+                                            let current_mode_str = &temp_config.rawinput_capture_mode;
+                                            let current_mode = CaptureMode::from_str(current_mode_str).unwrap();
+                                            let current_mode_name = get_capture_mode_display_name(t, current_mode);
+                                            egui::ComboBox::from_id_salt("rawinput_capture_mode")
+                                                .selected_text(current_mode_name)
+                                                .width(180.0)
+                                                .show_ui(ui, |ui| {
+                                                    for &mode in CaptureMode::all_modes() {
+                                                        let mode_name = get_capture_mode_display_name(t, mode);
+                                                        let is_selected = temp_config.rawinput_capture_mode == mode.as_str();
+                                                        if ui.selectable_label(is_selected, mode_name).clicked() {
+                                                            temp_config.rawinput_capture_mode = mode.as_str().to_string();
+                                                        }
+                                                    }
+                                                });
+                                            ui.end_row();
+
+                                            // XInput Capture Mode selector
+                                            ui.label(t.xinput_capture_mode_label());
+                                            let current_mode_str = &temp_config.xinput_capture_mode;
+                                            let current_mode = crate::config::XInputCaptureMode::from_str(current_mode_str).unwrap();
+                                            let current_mode_name = match current_mode {
+                                                crate::config::XInputCaptureMode::MostSustained => t.capture_mode_most_sustained(),
+                                                crate::config::XInputCaptureMode::LastStable => t.capture_mode_last_stable(),
+                                                crate::config::XInputCaptureMode::DiagonalPriority => t.capture_mode_diagonal_priority(),
+                                            };
+                                            egui::ComboBox::from_id_salt("xinput_capture_mode")
+                                                .selected_text(current_mode_name)
+                                                .width(180.0)
+                                                .show_ui(ui, |ui| {
+                                                    for &mode in crate::config::XInputCaptureMode::all_modes() {
+                                                        let mode_name = match mode {
+                                                            crate::config::XInputCaptureMode::MostSustained => t.capture_mode_most_sustained(),
+                                                            crate::config::XInputCaptureMode::LastStable => t.capture_mode_last_stable(),
+                                                            crate::config::XInputCaptureMode::DiagonalPriority => t.capture_mode_diagonal_priority(),
+                                                        };
+                                                        let is_selected = temp_config.xinput_capture_mode == mode.as_str();
+                                                        if ui.selectable_label(is_selected, mode_name).clicked() {
+                                                            temp_config.xinput_capture_mode = mode.as_str().to_string();
+                                                        }
+                                                    }
+                                                });
+                                            ui.end_row();
+
+                                            ui.label(t.input_timeout_label());
+                                            let mut timeout_str =
+                                                temp_config.input_timeout.to_string();
+                                            ui.add_sized(
+                                                [140.0, 30.0],
+                                                egui::TextEdit::singleline(
+                                                    &mut timeout_str,
+                                                )
+                                                .background_color(Theme::new(self.dark_mode).card_alt),
+                                            );
+                                            if let Ok(val) = timeout_str.parse::<u64>() {
+                                                temp_config.input_timeout = val;
+                                            }
+                                            ui.end_row();
+
+                                            ui.label(t.default_interval_label());
+                                            let mut interval_str =
+                                                temp_config.interval.to_string();
+                                            ui.add_sized(
+                                                [140.0, 30.0],
+                                                egui::TextEdit::singleline(
+                                                    &mut interval_str,
+                                                )
+                                                .background_color(Theme::new(self.dark_mode).card_alt),
+                                            );
+                                            if let Ok(val) = interval_str.parse::<u64>() {
+                                                temp_config.interval = val.max(5);
+                                            }
+                                            ui.end_row();
+
+                                            ui.label(t.default_duration_label());
+                                            let mut duration_str =
+                                                temp_config.event_duration.to_string();
+                                            ui.add_sized(
+                                                [140.0, 30.0],
+                                                egui::TextEdit::singleline(
+                                                    &mut duration_str,
+                                                )
+                                                .background_color(Theme::new(self.dark_mode).card_alt),
+                                            );
+                                            if let Ok(val) = duration_str.parse::<u64>() {
+                                                temp_config.event_duration = val.max(2);
+                                            }
+                                            ui.end_row();
+
+                                            ui.label(t.worker_count_label());
+                                            let mut worker_str =
+                                                temp_config.worker_count.to_string();
+                                            ui.add_sized(
+                                                [140.0, 30.0],
+                                                egui::TextEdit::singleline(&mut worker_str)
+                                                    .hint_text("0 = auto")
+                                                    .background_color(if self.dark_mode {
+                                                        egui::Color32::from_rgb(33, 36, 46)
+                                                    } else {
+                                                        egui::Color32::from_rgb(
+                                                            240, 241, 246,
+                                                        )
+                                                    }),
+                                            );
+                                            if let Ok(val) = worker_str.parse::<usize>() {
+                                                temp_config.worker_count = val;
+                                            }
+                                            ui.end_row();
+
+                                            ui.label(t.show_tray_icon());
+                                            ui.checkbox(
+                                                &mut temp_config.show_tray_icon,
+                                                "",
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(t.show_notifications());
+                                            ui.checkbox(
+                                                &mut temp_config.show_notifications,
+                                                "",
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(t.always_on_top());
+                                            ui.checkbox(&mut temp_config.always_on_top, "");
+                                            ui.end_row();
+
+                                            ui.label(t.dfo_vibration_feature());
+                                            ui.checkbox(&mut temp_config.dfo_player, "");
+                                            ui.end_row();
+
+                                            /* ★客户端版本路线 (仅 DFO 玩家可用):
+                                             * S1 ACT → 老方案 (配老版 DLL 事件语义);
+                                             * S4+ 新版 → 现行新方案。下拉选择。 */
+                                            ui.label(
+                                                egui::RichText::new("客户端版本 (震动方案)")
+                                                    .size(13.0),
+                                            );
+                                            ui.add_enabled_ui(
+                                                temp_config.dfo_player,
+                                                |ui| {
+                                                    let routes =
+                                                        ["S4+ 新版本方案", "S1 ACT 老版本方案 (推荐)"];
+                                                    let idx =
+                                                        if temp_config.vib_legacy_client {
+                                                            1
+                                                        } else {
+                                                            0
+                                                        };
+                                                    egui::ComboBox::from_id_salt(
+                                                        "settings_client_edition",
+                                                    )
+                                                    .selected_text(routes[idx])
+                                                    .width(190.0)
+                                                    .show_ui(ui, |ui| {
+                                                        ui.selectable_value(
+                                                            &mut temp_config.vib_legacy_client,
+                                                            false,
+                                                            routes[0],
+                                                        );
+                                                        ui.selectable_value(
+                                                            &mut temp_config.vib_legacy_client,
+                                                            true,
+                                                            routes[1],
+                                                        );
+                                                    });
+                                                },
+                                            );
+                                            ui.end_row();
+
+                                            ui.label(t.dark_mode());
+                                            ui.checkbox(&mut temp_config.dark_mode, "");
+                                            ui.end_row();
+                                        });
+                                });
+
+                            ui.add_space(10.0);
+
+    }
+
+    /// settings_section_mappings — 键位映射区 (原 841-1929)
+    fn settings_section_mappings(&mut self, ui: &mut egui::Ui) {
+        let Some(temp_config) = self.temp_config.as_mut() else { return; };
+        let t = &self.translations;
+        let accent_color = Theme::new(self.dark_mode).accent_text;
+                            // Key Mappings Section
+                            let card_bg = Theme::new(self.dark_mode).card;
+
+                            egui::Frame::NONE
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(t.key_mappings_title())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(6.0);
+
+                                    ui.add_space(2.0);
+                                    let hint_bg = if self.dark_mode {
+                                        egui::Color32::from_rgba_premultiplied(30, 34, 50, 220)
+                                    } else {
+                                        egui::Color32::from_rgba_premultiplied(240, 241, 246, 230)
+                                    };
+                                    ui.horizontal(|ui| {
+                                        egui::Frame::NONE
+                                            .fill(hint_bg)
+                                            .corner_radius(egui::CornerRadius::same(12))
+                                            .inner_margin(egui::Margin::symmetric(10, 6))
+                                            .show(ui, |ui| {
+                                                ui.set_width(ui.available_width());
+                                                egui::CollapsingHeader::new(
+                                                    egui::RichText::new(t.diagonal_hint_title())
+                                                        .size(12.0)
+                                                        .color(accent_color),
+                                                )
+                                                .default_open(true)
+                                                .show(ui, |ui| {
+                                                    ui.add_space(2.0);
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            egui::RichText::new(
+                                                                t.diagonal_hint(),
+                                                            )
+                                                            .size(11.0)
+                                                            .color(if self.dark_mode {
+                                                                egui::Color32::from_rgb(
+                                                                    230, 230, 230,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    180, 100, 50,
+                                                                )
+                                                            }),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                });
+                                            });
+                                    });
+                                    ui.add_space(4.0);
+                                    // Existing mappings
+                                    let mut to_remove = None;
+                                    for (idx, mapping) in
+                                        temp_config.mappings.iter_mut().enumerate()
+                                    {
+                                        let is_capturing_trigger = self
+                                            .key_capture_mode
+                                            == KeyCaptureMode::MappingTrigger(idx);
+                                        let is_capturing_target = self.key_capture_mode
+                                            == KeyCaptureMode::MappingTarget(idx);
+                                        let full_trigger_text = mapping.trigger_key.clone();
+                                        let target_display = mapping.target_keys_display();
+                                        let first_target = mapping
+                                            .get_target_keys()
+                                            .first()
+                                            .map(|s| s.as_str())
+                                            .unwrap_or("");
+                                        let is_mouse_move_mapping =
+                                            is_mouse_move_target(first_target);
+                                        let is_mouse_scroll_mapping =
+                                            is_mouse_scroll_target(first_target);
+                                        let row_text_color = Theme::new(self.dark_mode).text;
+                                        let input_bg = if self.dark_mode {
+                                            egui::Color32::from_rgb(33, 36, 46) // #232838
+                                        } else {
+                                            egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
+                                        };
+                                        let inner_bg = Theme::new(self.dark_mode).surface;
+
+                                        // 每条映射独立分组卡片: 触发键/目标键分行展示, 长按键名不再溢出
+                                        egui::Frame::NONE
+                                            .fill(inner_bg)
+                                            .corner_radius(egui::CornerRadius::same(12))
+                                            .inner_margin(egui::Margin::same(12))
+                                            .show(ui, |ui| {
+                                                // 行 1: 序号 + 触发键
+                                                ui.horizontal(|ui| {
+                                                    ui.add_sized(
+                                                        [26.0, 34.0],
+                                                        egui::Label::new(
+                                                            egui::RichText::new(format!("{}.", idx + 1))
+                                                                .size(14.0)
+                                                                .strong()
+                                                                .color(Theme::new(self.dark_mode).text_weak),
+                                                        ),
+                                                    );
+                                                    ui.label(
+                                                        egui::RichText::new(t.trigger_short())
+                                                            .size(13.0)
+                                                            .strong()
+                                                            .color(accent_color),
+                                                    );
+                                                    ui.add_space(6.0);
+
+                                                    let trigger_text = if is_capturing_trigger {
+                                                        t.press_any_key()
+                                                    } else {
+                                                        full_trigger_text.as_str()
+                                                    };
+                                                    let display_text = truncate_text_safe(
+                                                        trigger_text,
+                                                        TEXT_TRUNCATE_LEN,
+                                                    );
+                                                    let trigger_btn = egui::Button::new(
+                                                        egui::RichText::new(&display_text)
+                                                            .size(13.0)
+                                                            .color(if is_capturing_trigger {
+                                                                egui::Color32::WHITE
+                                                            } else {
+                                                                row_text_color
+                                                            }),
+                                                    )
+                                                    .fill(if is_capturing_trigger {
+                                                        Theme::new(self.dark_mode).accent
+                                                    } else {
+                                                        input_bg
+                                                    })
+                                                    .corner_radius(8.0);
+                                                    let mut response =
+                                                        ui.add_sized([170.0, 34.0], trigger_btn);
+                                                    // Show full text on hover if truncated
+                                                    if !is_capturing_trigger
+                                                        && trigger_text.len() > TEXT_TRUNCATE_LEN
+                                                    {
+                                                        response =
+                                                            response.on_hover_text(trigger_text);
+                                                    }
+                                                    if response.clicked()
+                                                        && !self.just_captured_input
+                                                    {
+                                                        self.key_capture_mode =
+                                                            KeyCaptureMode::MappingTrigger(idx);
+                                                        self.capture_pressed_keys.clear();
+                                                        self.capture_initial_pressed =
+                                                            Self::poll_all_pressed_keys();
+                                                        self.app_state
+                                                            .set_raw_input_capture_mode(true);
+                                                        // Set flag to skip mouse capture on this frame
+                                                        self.just_captured_input = true;
+                                                    }
+                                                });
+                                                ui.add_space(6.0);
+
+                                                // 行 2: 目标键 + 添加/清空
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(26.0);
+                                                    ui.label(
+                                                        egui::RichText::new(t.target_short())
+                                                            .size(13.0)
+                                                            .strong()
+                                                            .color(accent_color),
+                                                    );
+                                                    ui.add_space(6.0);
+
+                                                    let target_text = if is_capturing_target {
+                                                        t.press_any_key()
+                                                    } else if target_display.is_empty() {
+                                                        t.click_to_set()
+                                                    } else {
+                                                        target_display.as_str()
+                                                    };
+                                                    let display_target_text = if is_capturing_target {
+                                                        target_text.to_string()
+                                                    } else {
+                                                        truncate_text_safe(
+                                                            target_text,
+                                                            TEXT_TRUNCATE_LEN,
+                                                        )
+                                                    };
+                                                    let target_btn = egui::Button::new(
+                                                        egui::RichText::new(&display_target_text)
+                                                            .size(13.0)
+                                                            .color(if is_capturing_target {
+                                                                egui::Color32::WHITE
+                                                            } else {
+                                                                row_text_color
+                                                            }),
+                                                    )
+                                                    .fill(if is_capturing_target {
+                                                        Theme::new(self.dark_mode).accent
+                                                    } else {
+                                                        input_bg
+                                                    })
+                                                    .corner_radius(8.0);
+                                                    let mut target_response = ui
+                                                        .add_sized([170.0, 34.0], target_btn);
+                                                    if !is_capturing_target
+                                                        && target_text.len() > TEXT_TRUNCATE_LEN
+                                                    {
+                                                        target_response = target_response
+                                                            .on_hover_text(target_text);
+                                                    }
+                                                    if target_response.clicked()
+                                                        && !self.just_captured_input
+                                                    {
+                                                        self.key_capture_mode =
+                                                            KeyCaptureMode::MappingTarget(idx);
+                                                        self.capture_pressed_keys.clear();
+                                                        self.capture_initial_pressed =
+                                                            Self::poll_all_pressed_keys();
+                                                    }
+                                                    ui.add_space(8.0);
+
+                                                    // Button 1: Add target key with capture
+                                                    let add_target_btn = egui::Button::new(
+                                                        egui::RichText::new("+")
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(16.0),
+                                                    )
+                                                    .fill(Theme::new(self.dark_mode).accent)
+                                                    .corner_radius(8.0);
+                                                    if ui
+                                                        .add_sized([36.0, 34.0], add_target_btn)
+                                                        .on_hover_text(t.add_target_key_hover())
+                                                        .clicked()
+                                                    {
+                                                        self.key_capture_mode =
+                                                            KeyCaptureMode::MappingTarget(idx);
+                                                        self.capture_pressed_keys.clear();
+                                                        self.capture_initial_pressed =
+                                                            Self::poll_all_pressed_keys();
+                                                    }
+                                                    // Button 1.5: Clear all target keys
+                                                    let clear_btn = egui::Button::new(
+                                                        egui::RichText::new("✖")
+                                                            .color(egui::Color32::WHITE)
+                                                            .size(14.0),
+                                                    )
+                                                    .fill(Theme::new(self.dark_mode).btn_danger)
+                                                    .corner_radius(8.0);
+                                                    if ui
+                                                        .add_sized([36.0, 34.0], clear_btn)
+                                                        .on_hover_text(t.clear_all_target_keys_hover())
+                                                        .clicked()
+                                                    {
+                                                        mapping.clear_target_keys();
+                                                    }
+                                                });
+
+                                                // 多目标键 chips
+                                                if mapping.get_target_keys().len() > 1 {
+                                                    ui.add_space(4.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(26.0);
+                                                        ui.label(
+                                                            egui::RichText::new("🎯")
+                                                                .size(12.0)
+                                                                .color(Theme::new(self.dark_mode).text_weak),
+                                                        );
+                                                        ui.horizontal_wrapped(|ui| {
+                                                            ui.spacing_mut().item_spacing.x = 4.0;
+                                                            let mut key_to_remove: Option<String> = None;
+                                                            for (i, target_key) in mapping.get_target_keys().iter().enumerate() {
+                                                                if i > 0 {
+                                                                    ui.label(
+                                                                        egui::RichText::new("·")
+                                                                            .size(12.0)
+                                                                            .color(egui::Color32::from_rgb(150, 150, 150)),
+                                                                    );
+                                                                }
+                                                                let key_chip = egui::Button::new(
+                                                                    egui::RichText::new(format!("{} ✕", target_key))
+                                                                        .size(12.0)
+                                                                        .color(Theme::new(self.dark_mode).bad),
+                                                                )
+                                                                .fill(Theme::new(self.dark_mode).card_alt)
+                                                                .corner_radius(8.0)
+                                                                .min_size(egui::vec2(0.0, 24.0))
+                                                                .frame(true);
+                                                                if ui.add(key_chip)
+                                                                    .on_hover_text(t.format_remove_target_key_hover(target_key))
+                                                                    .clicked()
+                                                                {
+                                                                    key_to_remove = Some(target_key.clone());
+                                                                }
+                                                            }
+                                                            if let Some(key) = key_to_remove {
+                                                                mapping.remove_target_key(&key);
+                                                            }
+                                                        });
+                                                    });
+                                                }
+
+                                                // 行 3: 鼠标移动/滚轮参数 (仅此类映射)
+                                                if is_mouse_move_mapping || is_mouse_scroll_mapping {
+                                                    ui.add_space(6.0);
+                                                    ui.horizontal(|ui| {
+                                                        ui.add_space(26.0);
+                                                        ui.label(
+                                                            egui::RichText::new(t.interval_short())
+                                                                .size(13.0)
+                                                                .color(row_text_color),
+                                                        );
+                                                        let mut interval_str = mapping
+                                                            .interval
+                                                            .unwrap_or(temp_config.interval)
+                                                            .to_string();
+                                                        let interval_edit = egui::TextEdit::singleline(
+                                                            &mut interval_str,
+                                                        )
+                                                        .background_color(input_bg)
+                                                        .desired_width(50.0)
+                                                        .font(egui::TextStyle::Button);
+                                                        if ui
+                                                            .add_sized([50.0, 30.0], interval_edit)
+                                                            .changed()
+                                                            && let Ok(val) = interval_str.parse::<u64>()
+                                                        {
+                                                            mapping.interval = Some(val.max(5));
+                                                        }
+                                                        ui.add_space(8.0);
+                                                        ui.label(
+                                                            egui::RichText::new(t.speed_label())
+                                                                .size(13.0)
+                                                                .color(row_text_color),
+                                                        );
+                                                        let mut speed_str = mapping
+                                                            .move_speed
+                                                            .to_string();
+                                                        let speed_edit = egui::TextEdit::singleline(
+                                                            &mut speed_str,
+                                                        )
+                                                        .background_color(input_bg)
+                                                        .desired_width(50.0)
+                                                        .font(egui::TextStyle::Button);
+                                                        let max_val = if is_mouse_scroll_mapping { 1200 } else { 100 };
+                                                        if ui
+                                                            .add_sized([50.0, 30.0], speed_edit)
+                                                            .changed()
+                                                            && let Ok(val) = speed_str.parse::<i32>()
+                                                        {
+                                                            mapping.move_speed = val.clamp(1, max_val);
+                                                        }
+                                                        ui.add_space(8.0);
+                                                        ui.label(
+                                                            egui::RichText::new(t.duration_short())
+                                                                .size(13.0)
+                                                                .color(row_text_color),
+                                                        );
+                                                        let mut duration_str = mapping
+                                                            .event_duration
+                                                            .unwrap_or(temp_config.event_duration)
+                                                            .to_string();
+                                                        let duration_edit = egui::TextEdit::singleline(
+                                                            &mut duration_str,
+                                                        )
+                                                        .background_color(input_bg)
+                                                        .desired_width(50.0)
+                                                        .font(egui::TextStyle::Button);
+                                                        if ui
+                                                            .add_sized([50.0, 30.0], duration_edit)
+                                                            .changed()
+                                                            && let Ok(val) = duration_str.parse::<u64>()
+                                                        {
+                                                            mapping.event_duration = Some(val.max(2));
+                                                        }
+                                                    });
+                                                }
+
+                                                // 行 4: 操作按钮 (方向/滚动/连发/双击/删除)
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(26.0);
+                                                    // Button 2: Mouse movement direction
+                                                    let move_btn = egui::Button::new(
+                                                        egui::RichText::new("⌖ 方向")
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(13.0),
+                                                    )
+                                                    .fill(Theme::new(self.dark_mode).accent_hover)
+                                                    .corner_radius(8.0);
+                                                    if ui
+                                                        .add_sized([88.0, 32.0], move_btn)
+                                                        .on_hover_text(t.set_mouse_direction_hover())
+                                                        .clicked()
+                                                    {
+                                                        self.mouse_direction_dialog = Some(
+                                                            crate::gui::mouse_direction_dialog::MouseDirectionDialog::new(),
+                                                        );
+                                                        self.mouse_direction_mapping_idx = Some(idx);
+                                                    }
+                                                    ui.add_space(4.0);
+                                                    // Button 3: Mouse scroll direction
+                                                    let scroll_btn = egui::Button::new(
+                                                        egui::RichText::new("🎡 滚动")
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(13.0),
+                                                    )
+                                                    .fill(Theme::new(self.dark_mode).good)
+                                                    .corner_radius(8.0);
+                                                    if ui
+                                                        .add_sized([88.0, 32.0], scroll_btn)
+                                                        .on_hover_text(t.set_mouse_scroll_direction_hover())
+                                                        .clicked()
+                                                    {
+                                                        self.mouse_scroll_dialog = Some(
+                                                            crate::gui::mouse_scroll_dialog::MouseScrollDialog::new(),
+                                                        );
+                                                        self.mouse_scroll_mapping_idx = Some(idx);
+                                                    }
+                                                    ui.add_space(4.0);
+                                                    // Turbo toggle
+                                                    let turbo_enabled = mapping.turbo_enabled;
+                                                    let turbo_color = if turbo_enabled {
+                                                        Theme::new(self.dark_mode).accent
+                                                    } else { Theme::new(self.dark_mode).hint };
+                                                    let turbo_icon =
+                                                        if turbo_enabled { "⚡ 连发" } else { "○ 连发" };
+                                                    let turbo_btn = egui::Button::new(
+                                                        egui::RichText::new(turbo_icon)
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(12.0),
+                                                    )
+                                                    .fill(turbo_color)
+                                                    .corner_radius(8.0)
+                                                    .sense(egui::Sense::click());
+                                                    let hover_text = if turbo_enabled {
+                                                        self.translations.turbo_on_hover()
+                                                    } else {
+                                                        self.translations.turbo_off_hover()
+                                                    };
+                                                    if ui
+                                                        .add_sized([96.0, 32.0], turbo_btn)
+                                                        .on_hover_text(hover_text)
+                                                        .clicked()
+                                                    {
+                                                        mapping.turbo_enabled = !mapping.turbo_enabled;
+                                                    }
+                                                    ui.add_space(4.0);
+                                                    // Double-tap toggle (DNF run on first press)
+                                                    let double_tap_enabled = mapping.double_tap_enabled;
+                                                    let run_on = mapping.run_enabled;
+                                                    let double_tap_color = if double_tap_enabled {
+                                                        Theme::new(self.dark_mode).good
+                                                    } else { Theme::new(self.dark_mode).hint };
+                                                    let double_tap_icon =
+                                                        if double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
+                                                    let double_tap_btn = egui::Button::new(
+                                                        egui::RichText::new(double_tap_icon)
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(12.0),
+                                                    )
+                                                    .fill(double_tap_color)
+                                                    .corner_radius(8.0)
+                                                    .sense(egui::Sense::click());
+                                                    let double_tap_hover = if run_on {
+                                                        "已勾选「重推奔跑」, 两者互斥 —— 先关掉重推奔跑"
+                                                    } else if double_tap_enabled {
+                                                        self.translations.double_tap_on_hover()
+                                                    } else {
+                                                        self.translations.double_tap_off_hover()
+                                                    };
+                                                    /* ★v21.5: 重推奔跑开启时此项禁用 (互斥) */
+                                                    if ui
+                                                        .add_enabled_ui(!run_on, |ui| {
+                                                            ui.add_sized([96.0, 32.0], double_tap_btn)
+                                                                .on_hover_text(double_tap_hover)
+                                                        })
+                                                        .inner
+                                                        .clicked()
+                                                    {
+                                                        mapping.double_tap_enabled = !mapping.double_tap_enabled;
+                                                    }
+                                                    ui.add_space(4.0);
+                                                    // ★v21.0 重推奔跑开关 (与连发/简易奔跑互斥, 勾选后二者失效)
+                                                    let run_enabled = mapping.run_enabled;
+                                                    let dtap_on = mapping.double_tap_enabled;
+                                                    let run_color = if run_enabled {
+                                                        Theme::new(self.dark_mode).good
+                                                    } else { Theme::new(self.dark_mode).hint };
+                                                    let run_icon =
+                                                        if run_enabled { "🏃 重推奔跑:开" } else { "🏃 重推奔跑" };
+                                                    let run_btn = egui::Button::new(
+                                                        egui::RichText::new(run_icon)
+                                                            .color(Theme::new(self.dark_mode).on_emphasis)
+                                                            .size(12.0),
+                                                    )
+                                                    .fill(run_color)
+                                                    .corner_radius(8.0)
+                                                    .sense(egui::Sense::click());
+                                                    let run_hover = if dtap_on {
+                                                        "已勾选「简易奔跑」, 两者互斥 —— 先关掉简易奔跑"
+                                                    } else if run_enabled {
+                                                        "重推奔跑: 开\n轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (双击→奔跑)\n勾选后本条映射的 连发/简易奔跑 不生效\n重推阈值与二次敲击间隔在连发页编辑面板调整\n点击关闭"
+                                                    } else {
+                                                        "重推奔跑: 关\n开启后: 轻推摇杆=走路, 推过重推阈值=自动补一次松开再按下 (游戏判定双击→奔跑)\n仅对摇杆方向映射有效; 勾选后本条的 连发/简易奔跑 不生效"
+                                                    };
+                                                    /* ★v21.5: 简易奔跑开启时此项禁用 (互斥) */
+                                                    if ui
+                                                        .add_enabled_ui(!dtap_on, |ui| {
+                                                            ui.add_sized([96.0, 32.0], run_btn)
+                                                                .on_hover_text(run_hover)
+                                                        })
+                                                        .inner
+                                                        .clicked()
+                                                    {
+                                                        mapping.run_enabled = !mapping.run_enabled;
+                                                    }
+                                                    ui.add_space(4.0);
+                                                    // Delete mapping
+                                                    let delete_btn = egui::Button::new(
+                                                        egui::RichText::new("🗑 删除")
+                                                            .color(egui::Color32::WHITE)
+                                                            .size(12.0),
+                                                    )
+                                                    .fill(Theme::new(self.dark_mode).btn_danger)
+                                                    .corner_radius(8.0);
+                                                    if ui
+                                                        .add_sized([88.0, 32.0], delete_btn)
+                                                        .clicked()
+                                                    {
+                                                        to_remove = Some(idx);
+                                                    }
+                                                });
+
+                                                // 行 5: 备注
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.add_space(26.0);
+                                                    ui.label(
+                                                        egui::RichText::new(t.note_label())
+                                                            .size(12.0)
+                                                            .color(Theme::new(self.dark_mode).text_weak),
+                                                    );
+                                                    let note_width =
+                                                        ((ui.available_width() - 8.0).max(120.0)).min(520.0);
+                                                    let note_edit = egui::TextEdit::singleline(
+                                                        &mut mapping.note,
+                                                    )
+                                                    .background_color(input_bg)
+                                                    .hint_text(t.note_hint())
+                                                    .desired_width(note_width);
+                                                    ui.add(note_edit);
+                                                });
+                                            });
+                                        ui.add_space(6.0);
+                                    }
+
+                                    if let Some(idx) = to_remove {
+                                        temp_config.mappings.remove(idx);
+                                    }
+
+                                    ui.add_space(10.0);
+                                    ui.separator();
+                                    ui.add_space(10.0);
+                                    // Add new mapping
+                                    ui.label(
+                                        egui::RichText::new(t.add_new_mapping_title())
+                                            .size(14.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(8.0);
+
+                                    let new_row_text_color = Theme::new(self.dark_mode).text;
+                                    let new_input_bg = if self.dark_mode {
+                                        egui::Color32::from_rgb(33, 36, 46) // #232838
+                                    } else {
+                                        egui::Color32::from_rgb(231, 233, 238) // #F0F1F6
+                                    };
+                                    let new_inner_bg = Theme::new(self.dark_mode).surface;
+                                    egui::Frame::NONE
+                                        .fill(new_inner_bg)
+                                        .corner_radius(egui::CornerRadius::same(12))
+                                        .inner_margin(egui::Margin::same(12))
+                                        .show(ui, |ui| {
+                                            // 行 1: 触发键
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(t.trigger_short())
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(accent_color),
+                                                );
+                                                ui.add_space(6.0);
+                                                let is_capturing_new_trigger = self
+                                                    .key_capture_mode
+                                                    == KeyCaptureMode::NewMappingTrigger;
+                                                let full_new_trigger_text =
+                                                    if is_capturing_new_trigger {
+                                                        t.press_any_key()
+                                                    } else if self.new_mapping_trigger.is_empty() {
+                                                        t.click_to_set()
+                                                    } else {
+                                                        self.new_mapping_trigger.as_str()
+                                                    };
+                                                // Truncate text to fit in button
+                                                let new_display_text = truncate_text_safe(
+                                                    full_new_trigger_text,
+                                                    TEXT_TRUNCATE_LEN,
+                                                );
+                                                let new_trigger_btn = egui::Button::new(
+                                                    egui::RichText::new(&new_display_text)
+                                                        .size(13.0)
+                                                        .color(if is_capturing_new_trigger {
+                                                            egui::Color32::WHITE
+                                                        } else {
+                                                            new_row_text_color
+                                                        }),
+                                                )
+                                                .fill(if is_capturing_new_trigger {
+                                                    Theme::new(self.dark_mode).accent
+                                                } else {
+                                                    new_input_bg
+                                                })
+                                                .corner_radius(8.0);
+                                                let mut new_trigger_response =
+                                                    ui.add_sized([170.0, 34.0], new_trigger_btn);
+                                                // Show full text on hover if truncated
+                                                if !is_capturing_new_trigger
+                                                    && !self.new_mapping_trigger.is_empty()
+                                                    && full_new_trigger_text.len() > TEXT_TRUNCATE_LEN
+                                                {
+                                                    new_trigger_response = new_trigger_response
+                                                        .on_hover_text(full_new_trigger_text);
+                                                }
+                                                if new_trigger_response.clicked()
+                                                    && !self.just_captured_input
+                                                {
+                                                    self.key_capture_mode =
+                                                        KeyCaptureMode::NewMappingTrigger;
+                                                    self.capture_pressed_keys.clear();
+                                                    self.capture_initial_pressed =
+                                                        Self::poll_all_pressed_keys();
+                                                    self.app_state.set_raw_input_capture_mode(true);
+                                                    // Set flag to skip mouse capture on this frame
+                                                    self.just_captured_input = true;
+                                                    // Clear error when user starts to modify trigger
+                                                    self.duplicate_mapping_error = None;
+                                                }
+                                            });
+                                            ui.add_space(6.0);
+
+                                            // 行 2: 目标键 + 添加/清空
+                                            ui.horizontal(|ui| {
+                                                ui.label(
+                                                    egui::RichText::new(t.target_short())
+                                                        .size(13.0)
+                                                        .strong()
+                                                        .color(accent_color),
+                                                );
+                                                ui.add_space(6.0);
+                                                let is_capturing_new_target = self.key_capture_mode
+                                                    == KeyCaptureMode::NewMappingTarget;
+                                                let new_target_text = if is_capturing_new_target {
+                                                    t.press_any_key()
+                                                } else if self.new_mapping_target.is_empty() {
+                                                    t.click_to_set()
+                                                } else {
+                                                    self.new_mapping_target.as_str()
+                                                };
+                                                let display_new_target_text = if is_capturing_new_target
+                                                    || self.new_mapping_target.is_empty()
+                                                {
+                                                    new_target_text.to_string()
+                                                } else {
+                                                    truncate_text_safe(
+                                                        new_target_text,
+                                                        TEXT_TRUNCATE_LEN,
+                                                    )
+                                                };
+                                                let new_target_btn = egui::Button::new(
+                                                    egui::RichText::new(&display_new_target_text)
+                                                        .size(13.0)
+                                                        .color(if is_capturing_new_target {
+                                                            egui::Color32::WHITE
+                                                        } else {
+                                                            new_row_text_color
+                                                        }),
+                                                )
+                                                .fill(if is_capturing_new_target {
+                                                    Theme::new(self.dark_mode).accent
+                                                } else {
+                                                    new_input_bg
+                                                })
+                                                .corner_radius(8.0);
+                                                let mut new_target_response = ui
+                                                    .add_sized([170.0, 34.0], new_target_btn);
+                                                if !is_capturing_new_target
+                                                    && !self.new_mapping_target.is_empty()
+                                                    && new_target_text.len() > TEXT_TRUNCATE_LEN
+                                                {
+                                                    new_target_response = new_target_response
+                                                        .on_hover_text(new_target_text);
+                                                }
+                                                if new_target_response.clicked()
+                                                    && !self.just_captured_input
+                                                {
+                                                    self.key_capture_mode =
+                                                        KeyCaptureMode::NewMappingTarget;
+                                                    self.capture_pressed_keys.clear();
+                                                    self.capture_initial_pressed =
+                                                        Self::poll_all_pressed_keys();
+                                                }
+                                                ui.add_space(8.0);
+
+                                                // Button 1: Add target key
+                                                let add_target_btn = egui::Button::new(
+                                                    egui::RichText::new("+")
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(16.0),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).accent)
+                                                .corner_radius(8.0);
+                                                if ui
+                                                    .add_sized([36.0, 34.0], add_target_btn)
+                                                    .on_hover_text(t.add_target_key_hover())
+                                                    .clicked()
+                                                {
+                                                    self.key_capture_mode = KeyCaptureMode::NewMappingTarget;
+                                                    self.capture_pressed_keys.clear();
+                                                    self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                                                    self.just_captured_input = true;
+                                                }
+                                                // Button 1.5: Clear all target keys
+                                                let clear_btn = egui::Button::new(
+                                                    egui::RichText::new("✖")
+                                                        .color(egui::Color32::WHITE)
+                                                        .size(14.0),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).btn_danger)
+                                                .corner_radius(8.0);
+                                                if ui
+                                                    .add_sized([36.0, 34.0], clear_btn)
+                                                    .on_hover_text(t.clear_all_target_keys_hover())
+                                                    .clicked()
+                                                {
+                                                    self.new_mapping_target_keys.clear();
+                                                    self.new_mapping_target.clear();
+                                                }
+                                            });
+
+                                            // Display new mapping target keys list
+                                            if self.new_mapping_target_keys.len() > 1 {
+                                                ui.add_space(4.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new("🎯")
+                                                            .size(12.0)
+                                                            .color(Theme::new(self.dark_mode).text_weak),
+                                                    );
+                                                    // Wrap target keys within max width
+                                                    ui.horizontal_wrapped(|ui| {
+                                                        ui.spacing_mut().item_spacing.x = 4.0;
+                                                        let mut key_to_remove: Option<String> = None;
+                                                        for (i, target_key) in self.new_mapping_target_keys.iter().enumerate() {
+                                                            if i > 0 {
+                                                                ui.label(
+                                                                    egui::RichText::new("·")
+                                                                        .size(12.0)
+                                                                        .color(egui::Color32::from_rgb(150, 150, 150)),
+                                                                );
+                                                            }
+                                                            let key_chip = egui::Button::new(
+                                                                egui::RichText::new(format!("{} ✕", target_key))
+                                                                    .size(12.0)
+                                                                    .color(Theme::new(self.dark_mode).bad),
+                                                            )
+                                                            .fill(Theme::new(self.dark_mode).card_alt)
+                                                            .corner_radius(8.0)
+                                                            .min_size(egui::vec2(0.0, 24.0))
+                                                            .frame(true);
+                                                            if ui.add(key_chip)
+                                                                .on_hover_text(t.format_remove_target_key_hover(target_key))
+                                                                .clicked()
+                                                            {
+                                                                key_to_remove = Some(target_key.clone());
+                                                            }
+                                                        }
+                                                        if let Some(key) = key_to_remove {
+                                                            self.new_mapping_target_keys.retain(|k| k != &key);
+                                                            if self.new_mapping_target_keys.len() == 1 {
+                                                                self.new_mapping_target = self.new_mapping_target_keys[0].clone();
+                                                            } else if self.new_mapping_target == key {
+                                                                self.new_mapping_target.clear();
+                                                            }
+                                                        }
+                                                    });
+                                                });
+                                            }
+
+                                            // 行 3: 参数 (鼠标移动/滚轮 vs 普通按键)
+                                            let first_target = self.new_mapping_target_keys.first().map(|s| s.as_str()).unwrap_or("");
+                                            let is_mouse_move = is_mouse_move_target(first_target);
+                                            let is_mouse_scroll = is_mouse_scroll_target(first_target);
+                                            if is_mouse_move || is_mouse_scroll {
+                                                // Show interval and speed for mouse movement/scroll
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(t.interval_short())
+                                                            .size(13.0)
+                                                            .color(new_row_text_color),
+                                                    );
+                                                    let interval_edit = egui::TextEdit::singleline(
+                                                        &mut self.new_mapping_interval,
+                                                    )
+                                                    .background_color(new_input_bg)
+                                                    .hint_text("5")
+                                                    .desired_width(50.0)
+                                                    .font(egui::TextStyle::Button);
+                                                    ui.add_sized([50.0, 30.0], interval_edit);
+                                                    ui.add_space(8.0);
+                                                    ui.label(
+                                                        egui::RichText::new(t.speed_label())
+                                                            .size(13.0)
+                                                            .color(new_row_text_color),
+                                                    );
+                                                    let hint = if is_mouse_scroll { "120" } else { "5" };
+                                                    let speed_edit = egui::TextEdit::singleline(
+                                                        &mut self.new_mapping_move_speed,
+                                                    )
+                                                    .background_color(new_input_bg)
+                                                    .hint_text(hint)
+                                                    .desired_width(50.0)
+                                                    .font(egui::TextStyle::Button);
+                                                    ui.add_sized([50.0, 30.0], speed_edit);
+                                                });
+                                            } else {
+                                                // Show interval and duration for regular keys
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(t.interval_short())
+                                                            .size(13.0)
+                                                            .color(new_row_text_color),
+                                                    );
+                                                    let interval_edit = egui::TextEdit::singleline(
+                                                        &mut self.new_mapping_interval,
+                                                    )
+                                                    .background_color(new_input_bg)
+                                                    .hint_text("5")
+                                                    .desired_width(50.0)
+                                                    .font(egui::TextStyle::Button);
+                                                    ui.add_sized([50.0, 30.0], interval_edit);
+                                                    ui.add_space(8.0);
+                                                    ui.label(
+                                                        egui::RichText::new(t.duration_short())
+                                                            .size(13.0)
+                                                            .color(new_row_text_color),
+                                                    );
+                                                    let duration_edit = egui::TextEdit::singleline(
+                                                        &mut self.new_mapping_duration,
+                                                    )
+                                                    .background_color(new_input_bg)
+                                                    .hint_text("5")
+                                                    .desired_width(50.0)
+                                                    .font(egui::TextStyle::Button);
+                                                    ui.add_sized([50.0, 30.0], duration_edit);
+                                                });
+                                            }
+
+                                            // 行 4: 操作按钮 (方向/滚动/连发/双击)
+                                            ui.add_space(6.0);
+                                            ui.horizontal(|ui| {
+                                                // Button 2: Mouse movement direction
+                                                let move_btn = egui::Button::new(
+                                                    egui::RichText::new("⌖ 方向")
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(13.0),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).accent_hover)
+                                                .corner_radius(8.0);
+                                                if ui
+                                                    .add_sized([88.0, 32.0], move_btn)
+                                                    .on_hover_text(t.set_mouse_direction_hover())
+                                                    .clicked()
+                                                {
+                                                    self.mouse_direction_dialog = Some(
+                                                        crate::gui::mouse_direction_dialog::MouseDirectionDialog::new(),
+                                                    );
+                                                    self.mouse_direction_mapping_idx = None;
+                                                }
+                                                ui.add_space(4.0);
+                                                // Button 3: Mouse scroll direction
+                                                let scroll_btn = egui::Button::new(
+                                                    egui::RichText::new("🎡 滚动")
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(13.0),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).good)
+                                                .corner_radius(8.0);
+                                                if ui
+                                                    .add_sized([88.0, 32.0], scroll_btn)
+                                                    .on_hover_text(t.set_mouse_scroll_direction_hover())
+                                                    .clicked()
+                                                {
+                                                    self.mouse_scroll_dialog = Some(
+                                                        crate::gui::mouse_scroll_dialog::MouseScrollDialog::new(),
+                                                    );
+                                                    self.mouse_scroll_mapping_idx = None;
+                                                }
+                                                ui.add_space(4.0);
+                                                // Turbo toggle for new mapping
+                                                let new_turbo_enabled = self.new_mapping_turbo;
+                                                let new_turbo_color = if new_turbo_enabled {
+                                                    Theme::new(self.dark_mode).accent
+                                                } else { Theme::new(self.dark_mode).hint };
+                                                let new_turbo_icon =
+                                                    if new_turbo_enabled { "⚡ 连发" } else { "○ 连发" };
+                                                let new_turbo_btn = egui::Button::new(
+                                                    egui::RichText::new(new_turbo_icon)
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(12.0),
+                                                )
+                                                .fill(new_turbo_color)
+                                                .corner_radius(8.0)
+                                                .sense(egui::Sense::click());
+                                                let new_hover_text = if new_turbo_enabled {
+                                                    self.translations.turbo_on_hover()
+                                                } else {
+                                                    self.translations.turbo_off_hover()
+                                                };
+                                                if ui
+                                                    .add_sized([96.0, 32.0], new_turbo_btn)
+                                                    .on_hover_text(new_hover_text)
+                                                    .clicked()
+                                                {
+                                                    self.new_mapping_turbo = !self.new_mapping_turbo;
+                                                }
+                                                ui.add_space(4.0);
+                                                // New mapping double-tap toggle (DNF run on first press)
+                                                let new_double_tap_enabled = self.new_mapping_double_tap;
+                                                let new_double_tap_color = if new_double_tap_enabled {
+                                                    Theme::new(self.dark_mode).good
+                                                } else { Theme::new(self.dark_mode).hint };
+                                                let new_double_tap_icon =
+                                                    if new_double_tap_enabled { "简易奔跑:开" } else { "简易奔跑" };
+                                                let new_double_tap_btn = egui::Button::new(
+                                                    egui::RichText::new(new_double_tap_icon)
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(12.0),
+                                                )
+                                                .fill(new_double_tap_color)
+                                                .corner_radius(8.0)
+                                                .sense(egui::Sense::click());
+                                                let new_double_tap_hover = if new_double_tap_enabled {
+                                                    self.translations.double_tap_on_hover()
+                                                } else {
+                                                    self.translations.double_tap_off_hover()
+                                                };
+                                                if ui
+                                                    .add_sized([96.0, 32.0], new_double_tap_btn)
+                                                    .on_hover_text(new_double_tap_hover)
+                                                    .clicked()
+                                                {
+                                                    self.new_mapping_double_tap = !self.new_mapping_double_tap;
+                                                }
+                                            });
+
+                                            // 行 5: 备注 (触发键已设置时显示)
+                                            if !self.new_mapping_trigger.is_empty() {
+                                                ui.add_space(6.0);
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(t.note_label())
+                                                            .size(12.0)
+                                                            .color(Theme::new(self.dark_mode).text_weak),
+                                                    );
+                                                    let note_edit = egui::TextEdit::singleline(
+                                                        &mut self.new_mapping_note,
+                                                    )
+                                                    .background_color(new_input_bg)
+                                                    .hint_text(t.note_hint())
+                                                    .desired_width(220.0);
+                                                    ui.add(note_edit);
+                                                });
+                                            }
+
+                                            // 行 6: 添加按钮
+                                            ui.add_space(8.0);
+                                            ui.horizontal(|ui| {
+                                                let add_btn = egui::Button::new(
+                                                    egui::RichText::new(t.add_button_text())
+                                                        .color(Theme::new(self.dark_mode).on_emphasis)
+                                                        .size(14.0)
+                                                        .strong(),
+                                                )
+                                                .fill(Theme::new(self.dark_mode).accent)
+                                                .corner_radius(8.0);
+                                                if ui.add_sized([140.0, 36.0], add_btn).clicked()
+                                                    && !self.new_mapping_trigger.is_empty()
+                                                    && !self.new_mapping_target_keys.is_empty()
+                                                {
+                                                    let trigger_upper =
+                                                        self.new_mapping_trigger.to_uppercase();
+
+                                                    // Check for duplicate trigger key
+                                                    let is_duplicate = temp_config
+                                                        .mappings
+                                                        .iter()
+                                                        .any(|m| m.trigger_key == trigger_upper);
+
+                                                    if is_duplicate {
+                                                        self.duplicate_mapping_error = Some(
+                                                            t.duplicate_trigger_error().to_string(),
+                                                        );
+                                                    } else {
+                                                        // Clear any previous error
+                                                        self.duplicate_mapping_error = None;
+
+                                                        let interval = self
+                                                            .new_mapping_interval
+                                                            .parse::<u64>()
+                                                            .ok()
+                                                            .map(|v| v.max(5));
+                                                        let duration = self
+                                                            .new_mapping_duration
+                                                            .parse::<u64>()
+                                                            .ok()
+                                                            .map(|v| v.max(2));
+                                                        let move_speed = self
+                                                            .new_mapping_move_speed
+                                                            .parse::<i32>()
+                                                            .unwrap_or(5)
+                                                            .clamp(1, 100);
+
+                                                        let turbo_enabled = self.new_mapping_turbo;
+
+                                                        temp_config.mappings.push(KeyMapping {
+                                                            release_targets: Default::default(),
+                                                            sequence_text: String::new(),
+                                                            trigger_key: trigger_upper,
+                                                            target_keys: self.new_mapping_target_keys.iter()
+                                                                .map(|k| k.to_uppercase())
+                                                                .collect(),
+                                                            interval,
+                                                            event_duration: duration,
+                                                            turbo_enabled,
+                                                            move_speed,
+                                                            double_tap_enabled: self.new_mapping_double_tap,
+                                                            double_tap_gap_ms: 50,
+                                                            run_enabled: false,
+                                                            run_threshold: 80,
+                                                            run_recheck: true,
+                                                            lock_enabled: false,
+                                                            note: self.new_mapping_note.clone(),
+                                                        });
+
+                                                        // Clear input fields
+                                                        self.new_mapping_trigger.clear();
+                                                        self.new_mapping_target.clear();
+                                                        self.new_mapping_target_keys.clear();
+                                                        self.new_mapping_interval.clear();
+                                                        self.new_mapping_duration.clear();
+                                                        self.new_mapping_move_speed = "5".to_string();
+                                                        self.new_mapping_turbo = true; // Reset to default
+                                                        self.new_mapping_double_tap = false; // Reset to default
+                                                        self.new_mapping_note.clear();
+                                                        self.preset_rename_target.clear();
+                                                        self.preset_rename_input.clear();
+                                                    }
+                                                }
+                                            });
+
+                                            // Display duplicate trigger error if exists
+                                            if let Some(ref error_msg) = self.duplicate_mapping_error {
+                                                ui.add_space(6.0);
+                                                ui.label(
+                                                    egui::RichText::new(error_msg)
+                                                        .color(egui::Color32::from_rgb(255, 100, 100))
+                                                        .size(13.0),
+                                                );
+                                            }
+                                        });
+                                });
+
+                            ui.add_space(10.0);
+
+    }
+
+    /// settings_section_whitelist — 进程白名单区 (原 1930-2107)
+    fn settings_section_whitelist(&mut self, ui: &mut egui::Ui) {
+        let Some(temp_config) = self.temp_config.as_mut() else { return; };
+        let t = &self.translations;
+        let accent_color = Theme::new(self.dark_mode).accent_text;
+                            // Process Whitelist Section
+                            let card_bg = Theme::new(self.dark_mode).card;
+
+                            egui::Frame::NONE
+                                .fill(card_bg)
+                                .corner_radius(egui::CornerRadius::same(14))
+                                .inner_margin(egui::Margin::same(16))
+                                .show(ui, |ui| {
+                                    ui.set_min_width(ui.available_width());
+                                    ui.label(
+                                        egui::RichText::new(t.process_whitelist_hint())
+                                            .size(16.0)
+                                            .strong()
+                                            .color(accent_color),
+                                    );
+                                    ui.add_space(6.0);
+
+                                    // Process list
+                                    egui::ScrollArea::vertical().max_height(80.0).show(
+                                        ui,
+                                        |ui| {
+                                            let mut to_remove: Option<usize> = None;
+                                            for (idx, process) in temp_config
+                                                .process_whitelist
+                                                .iter()
+                                                .enumerate()
+                                            {
+                                                ui.horizontal(|ui| {
+                                                    ui.label(
+                                                        egui::RichText::new(process)
+                                                            .size(13.0)
+                                                            .color(if self.dark_mode {
+                                                                egui::Color32::from_rgb(
+                                                                    200, 200, 255,
+                                                                )
+                                                            } else {
+                                                                egui::Color32::from_rgb(
+                                                                    60, 60, 120,
+                                                                )
+                                                            }),
+                                                    );
+
+                                                    ui.with_layout(
+                                                        egui::Layout::right_to_left(
+                                                            egui::Align::Center,
+                                                        ),
+                                                        |ui| {
+                                                            let del_btn = egui::Button::new(
+                                                            egui::RichText::new("🗑")
+                                                                .color(egui::Color32::WHITE)
+                                                                .size(11.0),
+                                                        )
+                                                        .fill(egui::Color32::from_rgb(
+                                                            255, 182, 193,
+                                                        )) // Soft pink
+                                                        .corner_radius(8.0);
+
+                                                            if ui
+                                                                .add_sized(
+                                                                    [28.0, 28.0],
+                                                                    del_btn,
+                                                                )
+                                                                .clicked()
+                                                            {
+                                                                to_remove = Some(idx);
+                                                            }
+                                                        },
+                                                    );
+                                                });
+                                            }
+
+                                            if let Some(idx) = to_remove {
+                                                temp_config.process_whitelist.remove(idx);
+                                            }
+                                        },
+                                    );
+
+                                    ui.add_space(6.0);
+
+                                    // Add new process
+                                    ui.horizontal(|ui| {
+                                        let process_edit = egui::TextEdit::singleline(
+                                            &mut self.new_process_name,
+                                        )
+                                        .background_color(Theme::new(self.dark_mode).card_alt)
+                                        .hint_text(t.process_example())
+                                        .desired_width(200.0);
+                                        ui.add_sized([220.0, 32.0], process_edit);
+
+                                        let add_btn = egui::Button::new(
+                                            egui::RichText::new(t.add_button_text())
+                                                .color(Theme::new(self.dark_mode).on_emphasis)
+                                                .size(12.0)
+                                                .strong(),
+                                        )
+                                        .fill(Theme::new(self.dark_mode).good)
+                                        .corner_radius(8.0);
+
+                                        if ui.add_sized([84.0, 32.0], add_btn).clicked() {
+                                            let process_name = self.new_process_name.trim();
+                                            if !process_name.is_empty() {
+                                                // Check for duplicate process (整串忽略大小写)
+                                                if temp_config
+                                                    .process_whitelist
+                                                    .iter()
+                                                    .any(|x| x.eq_ignore_ascii_case(process_name))
+                                                {
+                                                    self.duplicate_process_error = Some(
+                                                        t.duplicate_process_error()
+                                                            .to_string(),
+                                                    );
+                                                } else {
+                                                    // Clear any previous error
+                                                    self.duplicate_process_error = None;
+                                                    temp_config
+                                                        .process_whitelist
+                                                        .push(process_name.to_string());
+                                                    self.new_process_name.clear();
+                                                }
+                                            }
+                                        }
+
+                                        ui.add_space(8.0);
+
+                                        // Browse button for selecting process
+                                        let browse_btn = egui::Button::new(
+                                            egui::RichText::new(t.browse_button())
+                                                .color(Theme::new(self.dark_mode).on_emphasis)
+                                                .size(12.0)
+                                                .strong(),
+                                        )
+                                        .fill(Theme::new(self.dark_mode).accent_text)
+                                        .corner_radius(8.0);
+
+                                        if ui.add_sized([96.0, 32.0], browse_btn).clicked()
+                                        {
+                                            // Open file dialog to select executable
+                                            if let Some(path) = rfd::FileDialog::new()
+                                                .add_filter("Executable", &["exe"])
+                                                .set_title("Select Process")
+                                                .pick_file()
+                                            {
+                                                /* ★登记完整路径 (不再截成文件名):
+                                                 * 同名不同版本的 exe 可各登记一条, 按路径精确匹配。 */
+                                                let entry = path.to_string_lossy().to_string();
+                                                // Check for duplicate process (整串忽略大小写)
+                                                if temp_config
+                                                    .process_whitelist
+                                                    .iter()
+                                                    .any(|x| x.eq_ignore_ascii_case(&entry))
+                                                {
+                                                    self.duplicate_process_error = Some(
+                                                        t.duplicate_process_error()
+                                                            .to_string(),
+                                                    );
+                                                } else {
+                                                    // Clear any previous error
+                                                    self.duplicate_process_error = None;
+                                                    temp_config
+                                                        .process_whitelist
+                                                        .push(entry);
+                                                }
+                                            }
+                                        }
+                                    });
+
+                                    // Display duplicate process error if exists
+                                    if let Some(ref error_msg) =
+                                        self.duplicate_process_error
+                                    {
+                                        ui.add_space(8.0);
+                                        ui.label(
+                                            egui::RichText::new(error_msg)
+                                                .color(egui::Color32::from_rgb(
+                                                    255, 100, 100,
+                                                ))
+                                                .size(13.0),
+                                        );
+                                    }
+                                });
+    }
+
+    /// settings_action_buttons — 底部保存/取消按钮 + 提示 (原 2114-2168); 返回 (should_save, should_cancel)
+    fn settings_action_buttons(&mut self, ui: &mut egui::Ui) -> (bool, bool) {
+        let t = &self.translations;
+        let mut should_save = false;
+        let mut should_cancel = false;
+
+            // Action buttons - centered (outside ScrollArea, fixed at bottom)
+            ui.vertical_centered(|ui| {
+                ui.horizontal(|ui| {
+                    // Calculate total width of buttons and spacing
+                    let button_width = 240.0;
+                    let spacing = 15.0;
+                    let total_buttons_width = button_width * 2.0 + spacing;
+                    let available_width = ui.available_width();
+
+                    // Add left padding to center the buttons
+                    if available_width > total_buttons_width {
+                        ui.add_space((available_width - total_buttons_width) / 2.0);
+                    }
+
+                    let save_btn = egui::Button::new(
+                        egui::RichText::new(t.save())
+                            .size(14.0)
+                            .color(egui::Color32::WHITE)
+                            .strong(),
+                    )
+                    .fill(Theme::new(self.dark_mode).btn_primary)
+                    .corner_radius(8.0);
+
+                    if ui.add_sized([button_width, 32.0], save_btn).clicked() {
+                        should_save = true;
+                    }
+
+                    ui.add_space(spacing);
+
+                    let cancel_btn = egui::Button::new(
+                        egui::RichText::new(t.cancel())
+                            .size(14.0)
+                            .color(Theme::new(self.dark_mode).btn_secondary_text),
+                    )
+                    .fill(Theme::new(self.dark_mode).btn_secondary)
+                    .corner_radius(8.0);
+
+                    if ui.add_sized([button_width, 32.0], cancel_btn).clicked() {
+                        should_cancel = true;
+                    }
+                });
+            });
+
+            ui.add_space(2.0);
+
+            // Hint
+            ui.vertical_centered(|ui| {
+                ui.label(
+                    egui::RichText::new(t.changes_take_effect_hint())
+                        .size(12.0)
+                        .color(Theme::new(self.dark_mode).accent_text)
+                        .italics(),
+                );
+            });
+        (should_save, should_cancel)
     }
 }

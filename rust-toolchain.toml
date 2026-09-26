@@ -1,0 +1,6 @@
+# 工具链钉扎 (★R1.1 长期稳定性): 本项目 MinGW 工具链对 rustc 版本敏感 (链接行为/依赖编译),
+# 固定当前验证过的版本, 保证"任何时候 clone 下来都能构建"。
+# 完整三元组写法避免 host 歧义 (本项目必须 windows-gnu, MSVC 会踩中文路径/链接器差异)。
+# 升级流程: 改版本号 → sync_and_build 重跑全量测试 → 提交 (流程见 docs/开发维护规范.md)。
+[toolchain]
+channel = "1.96.0-x86_64-pc-windows-gnu"

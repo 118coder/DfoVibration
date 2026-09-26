@@ -4,29 +4,12 @@
 //! including vibration testing, deadzone configuration, and API selection.
 
 use crate::config::DeviceApiPreference;
+use crate::rawinput::HidDeviceInfo;
+use crate::xinput::XInputDeviceInfo;
 use crate::gui::device_info::{get_device_model, get_hid_device_type, get_vendor_name};
 use crate::i18n::CachedTranslations;
 use crate::gui::theme::Theme;
 use eframe::egui;
-
-/// Information about an XInput device.
-#[derive(Clone, Debug)]
-pub struct XInputDeviceInfo {
-    pub user_index: u32,
-    pub vid: u16,
-    pub pid: u16,
-    pub device_type: String,
-}
-
-/// Information about a HID device.
-#[derive(Clone, Debug)]
-pub struct HidDeviceInfo {
-    pub vid: u16,
-    pub pid: u16,
-    pub device_name: String,
-    pub usage_page: u16,
-    pub usage: u16,
-}
 
 /// Device manager dialog state.
 pub struct DeviceManagerDialog {

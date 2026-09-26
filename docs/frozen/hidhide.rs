@@ -1,5 +1,8 @@
 /* ★★★ v24.19b 手柄隐藏暂时下线 (2026-09-14) ★★★
  *
+ * ★2026-09-27 架构重构 G (导航卫生): 本文件已从 src/hidhide.rs 移至 docs/frozen/hidhide.rs,
+ *   彻底离开编译目录 —— AI/grep 不再把它误当活代码。恢复时执行下方"步骤 0"。
+ *
  * 用户决策 (原话): "感觉不太行, 本次更新的相关功能先暂时注释掉吧, 也就是HidHide相关的。
  * 等未来有空的时候再启用。" 随后澄清: "相关功能和代码全部注释掉, 避免影响主功能。"
  *
@@ -7,6 +10,7 @@
  * 的完整实现 (IOCTL 契约 / 反向白名单 / 持久黑名单降级 / 崩溃自愈 / 12 条单测)。
  *
  * 未来重新启用步骤 (约 5 处接线):
+ *   0. 把本文件移回 src/hidhide.rs (git mv docs/frozen/hidhide.rs src/hidhide.rs);
  *   1. 本文件: 删掉最外层这对 /* */ (其余原样);
  *   2. src/lib.rs 与 src/main.rs: 取消 `pub mod hidhide;` / `mod hidhide;` 的注释;
  *   3. src/config.rs: 取消 hidhide_enabled / hidhide_snapshot / hidhide_learned_paths

@@ -7,7 +7,7 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
+**当前状态**: 基线 = **R1+R1.1 已上交** (2026-09-27: **PR #6** → 合并提交 `bf5c819` 为远端 main 顶端, 分支已删; 794 测试全绿; **CI 首次全绿** — runner MSVC, 跳过环境敏感输入测试) · 此前基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
 
 > **🎨 v24.30 深色配色重制 v5 (2026-09-23, 743 全绿 + 逐页截图验收)**: 用户"深色页面不好看"
 > → v4 三阶灰全带紫调整屏发糊、强调紫大面积饱和块、语义色互相打架。本版**只重做深色**
@@ -3484,13 +3484,14 @@ E. **预设列表 + 群怪手感 (09-09 晨新增, 本轮核心)**: ① S1 路�
       `CONTEXT.md`(领域词汇+模块地图) + `docs/adr/`(ADR-0001..0004) + AGENTS.md 重写。
     - **R1 终验 (2026-09-27)**: 全量 789 测试全绿 (lib 354 + bin 381 + 集成 54, 0 失败);
       release 交付构建通过 (3m53s, 与 v24.36 的 3m59s 同级; exe md5 `bafbbc67f0de554b112b88b3396783bd`,
-      E:\Sorahk-build	argetelease\sorahk.exe, 未覆盖项目根交付别名); 冒烟视觉验收通过
+      E:\Sorahk-build	arget
+elease\sorahk.exe, 未覆盖项目根交付别名); 冒烟视觉验收通过
       (work/r1_smoke_default.png: 新 exe 离屏启动渲染正常 —— 侧边栏/SVG 热点/震动状态/向导弹窗,
       SORAHK_NO_AUTO_INJECT=1, 全新工作目录未触碰用户真实配置); **逐页交互走查 + 真机连发/震动
       手感回归 = 待用户实测** (重构为纯结构搬家, 渲染次序逐块保序)。环境敏感测试
       (`poller_captures_synthesized_keys`) 在锁屏/无人值守会话会假失败 —— 对照 HEAD 复测定性,
       属环境非回归。
-    - 每步独立 commit (fa6bb05..6ef1742 共 21 个), 可单独 revert; 未上交, 等口令走 PR。
+    - 每步独立 commit (fa6bb05..6ef1742 共 21 个), 可单独 revert。已上交: **PR #6** 合并 `bf5c819` (2026-09-27), CI 首次全绿。
 90. **★R1 防冲突复审 (2026-09-27, 应用户"以防万一"要求, 全部通过)**: 用 diagnosing-bugs
     纪律建了**红绿灯反馈环**再审计, 防止"看起来没问题"的自我确认:
     - **工具**: `work/_r1_equiv_check.py` (留存, 可随时重跑) — ①多重集校验: 6 次拆分的原始

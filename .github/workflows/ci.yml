@@ -1,7 +1,8 @@
 # CI (★R1.1): 每个 PR 在干净 Windows 环境自动构建 + 全量测试。
 # RUSTUP_TOOLCHAIN 环境变量覆盖 rust-toolchain.toml 的 gnu 钉扎 (runner 走 MSVC,
 # 本机交付仍以 MinGW 为准); 首跑失败根因 = runner rustup 无法解析 gnu 三元组工具链。
-# 环境敏感测试跳过 (真实按键注入/键盘钩子需要交互桌面, runner 上必然假失败)。
+# 环境敏感测试跳过 (真实按键注入/键盘钩子需要交互桌面, runner 上必然假失败);
+# xinput1_3 解析测试已环境无关化 (无 DLL 跳过), 无需跳过。
 name: CI
 on:
   pull_request:

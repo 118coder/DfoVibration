@@ -72,7 +72,10 @@ impl SorahkGui {
         self.render_mouse_map_dialog(ctx, &th);
     }
 
-    /// ★v21.9: 「鼠标映射」小弹窗 —— 明确选择【滚动】或【点击】, 不再靠鼠标捕获 (避免污染)。
+    /// ★v21.9: 「鼠标映射」小弹窗 —— 明确选择【方向/滚动/点击】, 不再靠鼠标捕获 (避免污染)。
+    /// ★v24.40: 补上缺失的【方向】(鼠标移动 8 向 —— 摇杆当鼠标的核心用法);
+    /// 移除无效的「左滚/右滚」(引擎滚轮目标只有上/下, 选了会导致映射加载失败);
+    /// 排版重排: 徽章标题 + 分区小标题 + 统一按钮网格。
     pub(super) fn render_mouse_map_dialog(&mut self, ctx: &egui::Context, th: &Theme) {
         if !self.gamepad_mouse_menu {
             return;
@@ -100,44 +103,113 @@ impl SorahkGui {
                     .stroke(egui::Stroke::new(1.0, th.stroke)),
             )
             .show(ctx, |ui| {
-                ui.set_min_width(320.0);
-                ui.label(
-                    egui::RichText::new(format!("鼠标映射 · {}", slot.label))
-                        .size(15.0)
-                        .strong()
-                        .color(th.title),
-                );
+                ui.set_min_width(236.0);
+                /* 标题行: 徽章 + 槽位名 + 右侧 ✕ (★v24.40b 视觉重制, ui-ux-pro-max) */
+                ui.horizontal(|ui| {
+                    th.badge(ui, "鼠标映射", th.accent_text, th.accent_soft);
+                    ui.add_space(6.0);
+                    ui.label(
+                        egui::RichText::new(slot.label)
+                            .size(15.0)
+                            .strong()
+                            .color(th.title),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if crate::gui::widgets::icon_x(ui, th).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(10.0);
+
+                /* ── 方向: 3×3 方位罗盘 (46px 方格 + 图标, 中心 = 装饰鼠标) ──
+                 * ★v24.40c: 固定宽度容器 + Align::Center → 罗盘水平居中
+                 * (horizontal_centered 会占满可用宽度把 Window 撑爆, 禁用) */
+                let cell = 46.0;
+                let gap = 5.0;
+                let row_w = 3.0 * cell + 2.0 * gap; // 148
+                use egui_phosphor::variants::regular as ic;
+                ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                    ui.label(th.weak("方向 · 移动"));
+                });
+                ui.add_space(4.0);
+                let compass = [
+                    [
+                        (ic::ARROW_UP_LEFT, "MOUSE_UP_LEFT"),
+                        (ic::ARROW_UP, "MOUSE_UP"),
+                        (ic::ARROW_UP_RIGHT, "MOUSE_UP_RIGHT"),
+                    ],
+                    [
+                        (ic::ARROW_LEFT, "MOUSE_LEFT"),
+                        (ic::MOUSE_SIMPLE, ""),
+                        (ic::ARROW_RIGHT, "MOUSE_RIGHT"),
+                    ],
+                    [
+                        (ic::ARROW_DOWN_LEFT, "MOUSE_DOWN_LEFT"),
+                        (ic::ARROW_DOWN, "MOUSE_DOWN"),
+                        (ic::ARROW_DOWN_RIGHT, "MOUSE_DOWN_RIGHT"),
+                    ],
+                ];
+                let dir_names = [
+                    ["↖ 左上移动", "↑ 向上移动", "↗ 右上移动"],
+                    ["← 向左移动", "", "→ 向右移动"],
+                    ["↙ 左下移动", "↓ 向下移动", "↘ 右下移动"],
+                ];
+                let compass_pad = ((ui.available_width() - row_w) * 0.5).max(0.0);
+                for (r, row) in compass.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(compass_pad);
+                        for (c, (glyph, key)) in row.iter().enumerate() {
+                            let tip = dir_names[r][c].to_string();
+                            if key.is_empty() {
+                                /* 中心装饰格: 受控的鼠标 (不可点) */
+                                let _ = mouse_key_cell(
+                                    ui,
+                                    th,
+                                    glyph,
+                                    cell,
+                                    false,
+                                    "用摇杆控制这只鼠标".to_string(),
+                                );
+                            } else if mouse_key_cell(ui, th, glyph, cell, true, tip) {
+                                pick = Some(key);
+                            }
+                            if c < 2 {
+                                ui.add_space(gap);
+                            }
+                        }
+                    });
+                    ui.add_space(gap);
+                }
                 ui.add_space(8.0);
-                ui.label(th.weak("滚动"));
-                ui.horizontal_wrapped(|ui| {
-                    for (label, key) in [
-                        ("↑ 上滚", "SCROLL_UP"),
-                        ("↓ 下滚", "SCROLL_DOWN"),
-                        ("← 左滚", "SCROLL_LEFT"),
-                        ("→ 右滚", "SCROLL_RIGHT"),
+
+                /* ── 滚动 / 点击: 图标 + 文字宽格 ── */
+                ui.label(th.weak("滚动 · 点击"));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    for (glyph, label, key, tip) in [
+                        (ic::MOUSE_SCROLL, "上滚", "SCROLL_UP", "滚轮向上"),
+                        (ic::MOUSE_SCROLL, "下滚", "SCROLL_DOWN", "滚轮向下"),
+                        (ic::MOUSE_LEFT_CLICK, "左键", "LBUTTON", "鼠标左键"),
+                        (ic::MOUSE_RIGHT_CLICK, "右键", "RBUTTON", "鼠标右键"),
+                        (ic::MOUSE_MIDDLE_CLICK, "中键", "MBUTTON", "鼠标中键"),
                     ] {
-                        if ui.add(th.secondary_button(label)).clicked() {
+                        if mouse_key_cell_wide(ui, th, glyph, label, 76.0, tip.to_string()) {
                             pick = Some(key);
                         }
+                        ui.add_space(gap);
                     }
                 });
                 ui.add_space(10.0);
-                ui.label(th.weak("点击"));
-                ui.horizontal_wrapped(|ui| {
-                    for (label, key) in
-                        [("鼠标左键", "LBUTTON"), ("鼠标右键", "RBUTTON"), ("鼠标中键", "MBUTTON")]
-                    {
-                        if ui.add(th.secondary_button(label)).clicked() {
-                            pick = Some(key);
-                        }
-                    }
-                });
-                ui.add_space(12.0);
+                ui.separator();
+                ui.add_space(2.0);
                 ui.horizontal(|ui| {
-                    if ui.add(th.secondary_button("关闭")).clicked() {
-                        close = true;
-                    }
                     ui.label(th.hint_text("选一个即加入这个键位的映射"));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(th.ghost_button("关闭")).clicked() {
+                            close = true;
+                        }
+                    });
                 });
             });
         if let Some(key) = pick {
@@ -640,3 +712,90 @@ impl SorahkGui {
         clicked
     }
 }
+
+/// ★v24.40b 键位格: 方形可点单元 (图标居中), hover 强调 —— 鼠标映射弹窗专用。
+/// 色板全部取自 [`Theme`] 令牌 (色板单点纪律)。`enabled=false` 时为装饰格。
+fn mouse_key_cell(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    glyph: &str,
+    size: f32,
+    enabled: bool,
+    tip: String,
+) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::click());
+    let hovered = enabled && resp.hovered();
+    let fill = if hovered { th.accent_soft } else { th.faint };
+    let stroke_c = if hovered { th.accent } else { th.stroke };
+    let fg = if hovered { th.accent_text } else { th.title };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(10), fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(10),
+        egui::Stroke::new(if hovered { 1.4 } else { 1.0 }, stroke_c),
+        egui::StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(size * 0.42),
+        if enabled { fg } else { th.hint },
+    );
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if !tip.is_empty() {
+        resp.on_hover_text(tip)
+    } else {
+        resp
+    }
+    .clicked()
+}
+
+/// ★v24.40b 宽格: 图标 + 文字 (滚动/点击), hover 强调。
+fn mouse_key_cell_wide(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    glyph: &str,
+    label: &str,
+    w: f32,
+    tip: String,
+) -> bool {
+    let h = 30.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
+    let hovered = resp.hovered();
+    let fill = if hovered { th.accent_soft } else { th.faint };
+    let stroke_c = if hovered { th.accent } else { th.stroke };
+    let fg = if hovered { th.accent_text } else { th.title };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(8), fill);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(8),
+        egui::Stroke::new(if hovered { 1.4 } else { 1.0 }, stroke_c),
+        egui::StrokeKind::Inside,
+    );
+    let icon_x = rect.min.x + 16.0;
+    ui.painter().text(
+        egui::pos2(icon_x, rect.center().y),
+        egui::Align2::CENTER_CENTER,
+        glyph,
+        egui::FontId::proportional(14.0),
+        fg,
+    );
+    ui.painter().text(
+        egui::pos2(icon_x + 14.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(12.5),
+        fg,
+    );
+    let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if !tip.is_empty() {
+        resp.on_hover_text(tip)
+    } else {
+        resp
+    }
+    .clicked()
+}
+

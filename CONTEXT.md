@@ -21,6 +21,8 @@
 | **连发** | 触发键按住 → 目标键重复敲击；`KeyMapping`（触发键/目标键 SmallVec/间隔/时长/连发开关/备注） |
 | **序列宏** | 目标键替换为序列脚本（`sequence.rs` 引擎，`KeySequenceToggle/Pause/Continue` 控制键）；v24.31 起"序列接管输出"（与目标键互斥） |
 | **通用宏** | 序列文本里 `宏(名字)` 引用的公共片段（v24.32，连发页管理） |
+| **友好名显示** | `gui/utils.rs::friendly_input_name`: 原始 HID 命名 (`GAMEPAD_20BC_5159_DEV…_H8`) 在 UI 翻译为标准语义名 (RT/LB/左摇杆·上/扳机/键位2.0), **仅显示层** —— Config/运行时仍用完整原名 (悬停可看) |
+| **白名单匹配模式** | `whitelist_simple_mode` (Config): 简易 = 所有条目按文件名尾段比对 (旧版行为, 换目录不失效); 精细 = 路径条目完整路径精确匹配 (v24.29 同名双版本语义)。匹配核心 = `state/whitelist.rs::whitelist_entry_matches_in` |
 | **序列步模式** | `SeqStepMode`: Tap=按下→保持→抬起（`键⏱毫秒`）；PressHold=只按下（`键↓`）；Release=只抬起（`键↑`）。录制器 v24.38 起逐事件产出 ↓/↑ 步忠实重放时序；`run_sequence` 结束时安全网释放所有仍按住的键。序列文本变更唯一出口 = `apply_sequence_text`（即时落盘+热重载） |
 | **预设切换键** | 一键切换连发预设的热键；`preset_switch_conflict` 家族测试锁定冲突语义 |
 | **组合键 (chord)** | 手柄**多键组合**触发 (如 RB+X=Space)：一条普通映射 (触发键 `GAMEPAD_<vid>_RB+X`)。运行时 = 大组合独占仲裁 + **成员键延迟抑制** (既在组合里又有单独映射的按钮，单独按下挂起 `CHORD_SOLO_GRACE_MS`=150ms：组合补全则取消、点按/到期则补发 —— `xinput.rs`)；建键冲突校验 (重复/部分重叠/与切换键共享) 在 `gui/gamepad_mapping/chord.rs` |

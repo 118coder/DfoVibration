@@ -195,6 +195,8 @@ pub struct AppState {
     process_whitelist: Mutex<Vec<String>>,
     /// 白名单总开关 (false = 全部放行, 列表保留)
     whitelist_enabled: std::sync::atomic::AtomicBool,
+    /// ★v24.40 白名单简易模式 (true = 条目只按文件名比对)
+    whitelist_simple_mode: std::sync::atomic::AtomicBool,
     /// ★S1 老方案总开关: true = 震动引擎走 S1 ACT1 老方案 (配老版 DLL 事件语义),
     /// false = S4+ 新方案 (现行)。设置里切换, 震动线程每轮读取, 即时生效。
     pub vib_legacy_client: std::sync::atomic::AtomicBool,
@@ -595,6 +597,7 @@ impl AppState {
             worker_count: AtomicU64::new(0),
             process_whitelist: Mutex::new(config.process_whitelist.clone()),
             whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
+            whitelist_simple_mode: std::sync::atomic::AtomicBool::new(config.whitelist_simple_mode),
             vib_legacy_client: std::sync::atomic::AtomicBool::new(config.vib_legacy_client),
             configured_worker_count: config.worker_count,
             input_mappings,
@@ -935,6 +938,8 @@ impl AppState {
         }
         self.whitelist_enabled
             .store(config.whitelist_enabled, Ordering::Relaxed);
+        self.whitelist_simple_mode
+            .store(config.whitelist_simple_mode, Ordering::Relaxed);
 
         // Clear process name cache
         if let Ok(mut cache) = self.cached_process_info.write() {

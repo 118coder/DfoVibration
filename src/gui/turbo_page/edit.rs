@@ -79,7 +79,9 @@ impl SorahkGui {
                     if trigger.trim().is_empty() {
                         ui.label(th.hint_text("尚未捕获触发键"));
                     } else {
-                        widgets::keycap_typed(ui, &th, &trigger, utils::key_kind(&trigger));
+                        let trigger_disp = utils::friendly_input_name(&trigger);
+                        widgets::keycap_typed(ui, &th, &trigger_disp, utils::key_kind(&trigger))
+                            .on_hover_text(trigger.clone());
                     }
                     let capturing = matches!(
                         self.key_capture_mode,
@@ -510,7 +512,7 @@ impl SorahkGui {
             KeyCaptureMode::MappingTarget(i) => (i, false, false),
             KeyCaptureMode::MappingRelease(i) => (i, false, true),
             /* ★v24.32 序列步骤捕获由 handle_sequence_step_capture 独立轮询 */
-            KeyCaptureMode::SequenceStepKey(_, _) => return,
+            KeyCaptureMode::SequenceStepKey(_, _, _) => return,
             _ => return,
         };
         if self.edit_mapping_idx != Some(idx) {
@@ -633,7 +635,7 @@ impl SorahkGui {
             .load(std::sync::atomic::Ordering::Relaxed);
         let capturing_step = matches!(
             self.key_capture_mode,
-            KeyCaptureMode::SequenceStepKey(i, _) if i == idx
+            KeyCaptureMode::SequenceStepKey(i, _, _) if i == idx
         );
 
         ui.horizontal_wrapped(|ui| {
@@ -723,7 +725,42 @@ impl SorahkGui {
                 .on_hover_text("新增一个按键步骤: 点按钮 → 按一个键盘键 → 自动加入")
                 .clicked()
             {
-                self.key_capture_mode = KeyCaptureMode::SequenceStepKey(idx, steps.len());
+                self.key_capture_mode =
+                    KeyCaptureMode::SequenceStepKey(idx, steps.len(), crate::state::SeqStepMode::Tap);
+                self.capture_pressed_keys.clear();
+                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.just_captured_input = true;
+            }
+
+            /* ★v24.40: ＋ 按下步 (↓) —— 只按下保持, 等配对的抬起步 */
+            if !capturing_step
+                && ui
+                    .add(th.secondary_button("＋ 按下步"))
+                    .on_hover_text("新增一个「按下」步骤 (键按住不放) —— 用于按住方向键期间打技能")
+                    .clicked()
+            {
+                self.key_capture_mode = KeyCaptureMode::SequenceStepKey(
+                    idx,
+                    steps.len(),
+                    crate::state::SeqStepMode::PressHold,
+                );
+                self.capture_pressed_keys.clear();
+                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.just_captured_input = true;
+            }
+
+            /* ★v24.40: ＋ 抬起步 (↑) —— 松开之前按下的键 */
+            if !capturing_step
+                && ui
+                    .add(th.secondary_button("＋ 抬起步"))
+                    .on_hover_text("新增一个「抬起」步骤 (松开配对按下的键)")
+                    .clicked()
+            {
+                self.key_capture_mode = KeyCaptureMode::SequenceStepKey(
+                    idx,
+                    steps.len(),
+                    crate::state::SeqStepMode::Release,
+                );
                 self.capture_pressed_keys.clear();
                 self.capture_initial_pressed = Self::poll_all_pressed_keys();
                 self.just_captured_input = true;
@@ -755,6 +792,28 @@ impl SorahkGui {
             {
                 self.seq_macro_picker_open = !self.seq_macro_picker_open;
             }
+
+            /* ★v24.40: 全部设置为 20ms (Tap/等待步; ↓/↑ 模式步不带时长不受影响) */
+            let all_20ms = ui
+                .add_enabled(
+                    !steps.is_empty(),
+                    th.secondary_button("⏱ 全部 20ms"),
+                )
+                .on_disabled_hover_text("先添加步骤 (录制或 ＋ 按钮)")
+                .on_hover_text(
+                    "把所有步骤的「按住/等待」时长统一设为 20ms (打连招常用); 按下(↓)/抬起(↑)步骤不带时长, 不受影响",
+                )
+                .clicked();
+            if all_20ms {
+                for st in steps.iter_mut() {
+                    if st.keys.is_empty() || st.mode == crate::state::SeqStepMode::Tap {
+                        st.hold_ms = Some(20);
+                    }
+                }
+                let text = crate::sequence::steps_to_text(&steps, default_hold);
+                self.apply_sequence_text(idx, text);
+            }
+
             if !seq_now.trim().is_empty()
                 && ui
                     .add(th.secondary_button("✕ 清空"))
@@ -953,8 +1012,8 @@ impl SorahkGui {
     /// ★v24.32 序列步骤捕获轮询 (任意页面; Esc 取消; 松开按键即填入)。
     /// 独立于 handle_turbo_edit_capture —— 手柄映射页没有 edit_mapping_idx。
     pub(crate) fn handle_sequence_step_capture(&mut self, ctx: &egui::Context) {
-        let (idx, step) = match self.key_capture_mode {
-            KeyCaptureMode::SequenceStepKey(i, s) => (i, s),
+        let (idx, step, mode) = match self.key_capture_mode {
+            KeyCaptureMode::SequenceStepKey(i, s, m) => (i, s, m),
             _ => return,
         };
 
@@ -996,14 +1055,19 @@ impl SorahkGui {
             let upper = name.to_uppercase();
             match steps.get_mut(step) {
                 Some(st) => {
-                    if !st.keys.contains(&upper) {
+                    /* ★v24.40: 已有步骤只在同模式下追加键 (↓/↑ 步不混入 Tap 键) */
+                    if st.mode == mode && !st.keys.contains(&upper) {
                         st.keys.push(upper);
                     }
                 }
                 None => steps.push(crate::sequence::SeqStep {
                     keys: vec![upper],
-                    hold_ms: Some(default_hold),
-                    ..Default::default()
+                    /* ★v24.40: 按钮选择的模式 (按下↓/抬起↑ 不带时长) */
+                    hold_ms: match mode {
+                        crate::state::SeqStepMode::Tap => Some(default_hold),
+                        _ => None,
+                    },
+                    mode,
                 }),
             }
             self.apply_sequence_text(

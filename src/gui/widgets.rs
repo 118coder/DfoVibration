@@ -29,6 +29,8 @@ pub enum Icon {
     Pause,
     Exit,
     Sliders,
+    /// ★v24.40b 关闭 ✕ (弹窗角标)
+    X,
 }
 
 impl Icon {
@@ -51,6 +53,7 @@ impl Icon {
             Icon::Pause => ic::PAUSE,
             Icon::Exit => ic::SIGN_OUT,
             Icon::Sliders => ic::SLIDERS_HORIZONTAL,
+            Icon::X => ic::X,
         }
     }
 
@@ -260,6 +263,11 @@ pub fn status_dot(ui: &mut egui::Ui, color: egui::Color32, pulsing: bool, radius
 }
 
 /// 图标按钮 (32px 命中区, 18px 图标, 带 tooltip)。
+/// ★v24.40b 关闭 ✕ 小圆钮 (弹窗右上角)。
+pub fn icon_x(ui: &mut egui::Ui, th: &Theme) -> egui::Response {
+    icon_button(ui, th, Icon::X, "关闭")
+}
+
 pub fn icon_button(ui: &mut egui::Ui, th: &Theme, icon: Icon, tip: &str) -> egui::Response {
     let (rect, mut response) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::click());
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);

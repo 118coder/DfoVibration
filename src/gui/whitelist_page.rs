@@ -44,6 +44,28 @@ impl SorahkGui {
                 "条目可以是进程名 (匹配任意位置的同名程序) 或完整路径 (只匹配该文件 ——\
                  有两个同名但版本不同的 exe 时, 用「浏览…」分别登记各自的完整路径即可)。",
             ));
+            ui.add_space(theme::SP_XS);
+            /* ★v24.40: 简易/精细模式切换 (点击即生效) */
+            let simple = self.config.whitelist_simple_mode;
+            ui.horizontal(|ui| {
+                if ui
+                    .add(th.status_pill(
+                        if simple { "匹配 · 简易" } else { "匹配 · 精细" },
+                        if simple { th.warn } else { th.good },
+                        if simple { th.warn_soft } else { th.good_soft },
+                    ))
+                    .clicked()
+                {
+                    self.config.whitelist_simple_mode = !simple;
+                    let _ = self.config.save_to_file("Config.toml");
+                    let _ = self.app_state.reload_config(self.config.clone());
+                }
+                ui.label(th.hint_text(if simple {
+                    "只认文件名 —— 条目与进程都按文件名比对, 换目录/换盘不失效 (旧版行为)"
+                } else {
+                    "路径条目精确到完整路径 —— 同名不同版本的 exe 各归各 (双版本场景)"
+                }));
+            });
         });
 
         /* 卡2: 进程列表 (标题行右侧计数徽章) */

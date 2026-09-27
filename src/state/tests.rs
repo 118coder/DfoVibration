@@ -1256,6 +1256,38 @@
         assert!(!AppState::whitelist_entry_matches("  ", Some(path_a)));
     }
 
+    /// ★v24.40 白名单简易模式: **所有**条目 (含完整路径) 都退化为文件名尾段比对 ——
+    /// 旧版行为, 换目录/换盘不失效; 精细模式保持路径条目精确匹配语义。
+    #[test]
+    fn test_whitelist_simple_mode_matches_by_filename_only() {
+        let path_a = r"E:\games\A\DFO.exe";
+
+        // 简易模式: 路径条目挪了目录/换了盘符仍命中 (旧版行为的核心诉求)
+        assert!(AppState::whitelist_entry_matches_in(
+            true,
+            path_a,
+            Some(r"E:\games\B\DFO.exe")
+        ));
+        assert!(AppState::whitelist_entry_matches_in(
+            true,
+            path_a,
+            Some(r"D:\backup\dfo.exe")
+        ));
+        // 简易模式下不同名仍然不放行
+        assert!(!AppState::whitelist_entry_matches_in(
+            true,
+            path_a,
+            Some(r"E:\games\A\game.exe")
+        ));
+        // 精细模式 (simple=false): 路径条目保持精确匹配
+        assert!(!AppState::whitelist_entry_matches_in(
+            false,
+            path_a,
+            Some(r"E:\games\B\DFO.exe")
+        ));
+        assert!(AppState::whitelist_entry_matches_in(false, path_a, Some(path_a)));
+    }
+
     #[test]
     fn test_process_whitelist_cache() {
         use std::thread;

@@ -7,7 +7,7 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **R1+R1.1 已上交** (2026-09-27: **PR #6** → 合并提交 `bf5c819` 为远端 main 顶端, 分支已删; 794 测试全绿; **CI 首次全绿** — runner MSVC, 跳过环境敏感输入测试) · 此前基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
+**当前状态**: 本地开发基线 = **v24.39 未上交** (2026-09-27: 🐛LB+LT 组合捕获只捕到单键修复(DiagonalPriority 对纯按键组合优先级恒同取先 → 组合捕获期间强制 max-inputs 帧选择, capture_prefers_max_inputs 标志) · ✨组合键面板直接挂序列宏(行内折叠区嵌入共享步骤编辑器 + ⚡宏徽章; 槽位多键捕获引导到组合键面板) · 📌优先级语义入界面(组合>单键, 无需设置) · **845 测试全绿(+4)**) · 此前 = **v24.38 未上交** (2026-09-27: 🐛序列宏"录制不生效"修复(录制/加步/清空/改文本只改内存不落盘 → apply_sequence_text 唯一出口即时落盘+热重载; 手柄页无保存按钮=用户实测重灾区; 连发页取消连引擎一起回滚) · ✨录制保真"按下→等待→抬起"(SeqStepMode ↓/↑ + 逐事件重放录制器 + run_sequence 安全网释放; 老序列零迁移) · **841 测试全绿(+12)**) · 此前 = **v24.37 未上交** (2026-09-27: 🐛小键盘2/4/6/8映射修复(scancode bit8 小键盘标记, 注入 E0 统一收口 keyboard_press_flags; DIVIDE 顺手修复) · 🐛右摇杆模拟鼠标修复(无OS重复设备持续移动) · ✨手柄组合键(RB+X=Space: 运行时成员键150ms延迟抑制 + GUI组合键面板/冲突校验; 数据层零新概念) · **829 测试全绿(+35)**; E 盘 HEAD 领先远端; 上传等用户口令) · 此前基线 = **R1.2 已上交** (2026-09-27: 用户向 README+截图、交付部署文档、发行包 R1.1; **PR #7** → 合并 `ac120bf`; GitHub Release **R1.1** 含发行包资产; 此前 PR #6 → `bf5c819`; 794 测试全绿; CI 常绿) · 此前基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
 
 > **🎨 v24.30 深色配色重制 v5 (2026-09-23, 743 全绿 + 逐页截图验收)**: 用户"深色页面不好看"
 > → v4 三阶灰全带紫调整屏发糊、强调紫大面积饱和块、语义色互相打架。本版**只重做深色**
@@ -3523,3 +3523,113 @@ elease\sorahk.exe, 未覆盖项目根交付别名); 冒烟视觉验收通过
       发版/重构安全网), 每张标注会拦住你的守卫测试。
     - 决策: ADR-0005 (三层长期保障: 契约护栏/演进食谱/工程基础设施)。
     - 验证: 守卫 5/5 + 全量 794 全绿。上传仍等口令。
+92. **★R1.2 用户文档 + 发行包 (2026-09-27, 已上交 PR #7 → 合并 `ac120bf`, 分支已删)**:
+    - **README 重写为用户向**: 一眼看懂用途 → 六大功能(截图) → 快速上手 5 步 → 客户端 DLL
+      对照表 → FAQ(应急热键 Ctrl+Alt+Shift+A / 杀毒误报 / 分享配置) → 维护者入口。
+      截图 6 张在 docs/images/, 由 work/_shot_readme.ps1 自动化生成
+      (空 scratch 配置 → 依次关三个首启向导: 是→S1推荐→开始使用 → 逐页抓帧+暗色+设置弹窗;
+      ⚠ 脚本必须 UTF-8 **单 BOM** 保存, PowerShell 5.1 才能正确解析中文)。
+    - **旧说明转维护者向**: docs/使用说明.txt + 更新说明.txt (v1.6 时代) 删除, 内容并入
+      docs/交付与部署说明.md (交付物构成/部署规则/日志排障/应急保险) 与 CHANGELOG。
+    - **发行包**: `（适配ACT手柄震动+连发映射）DfoVibration-Sorahk_R1.1正式版.zip` (7.6MB,
+      老包 43MB → 剔除全部 DLL 源码树/编译缓存): 新 exe (d5621913…) + 7 客户端 DLL 产物 +
+      使用说明.txt + Vibration*.toml 模板 + 手柄映射键位参考.png。
+      GitHub Release: tag **R1.1**, 资产 `DfoVibration-Sorahk_R1.1.zip`
+      (⚠ GitHub 资产名不允许中文, 自动替换; 本地 zip 保留中文名)。
+    - **工具**: work/_gh_pr.py 重建并首次入库 (09-26 版本丢失; 凭据管理器读 token +
+      curl --config stdin 注入不落盘; release 资产上传走 uploads.github.com, 中文文件名
+      必须 urllib.parse.quote)。
+    - 流程教训: **修复必须先归位 E 主线再 _sync_to_d.py** —— 否则同步会把 D 分支上的修复
+      覆盖回旧版 (本次 CI 修复曾因此被回滚一次)。
+    - CI: PR #6/#7 均绿 (runner MSVC + RUSTUP_TOOLCHAIN 覆盖 + 环境敏感测试跳过)。
+    - 未上交: 本条与后续 E 盘提交 (下次随内容同步)。
+93. **★v24.37 小键盘/右摇杆修复 + 手柄组合键 (2026-09-27, 本地已提交未上交)**:
+    - **BUG1 小键盘 2/4/6/8 映射无效 (用户实测)**: 根因 = `is_extended_scancode` 位图把
+      0x47-0x53 一律加 KEYEVENTF_EXTENDEDKEY, 而 NUMPAD0-9 与方向/编辑键**共用 scancode**
+      (0x50=NUMPAD2 也=DOWN) → 注入"小键盘2"被系统翻译成方向键; NUMPAD5(0x4C) 不在位图
+      所以正常 —— 与"只有 2/4/6/8 无效"精确吻合。**修复**: OutputAction scancode 引入
+      bit8 标记 `SCANCODE_NUMPAD_FLAG` (key_names 解析 VK 0x60..=0x6F 时打标; scancode
+      本身表达不了"小键盘 vs 方向键"), 注入层 10 处 flags 计算统一收口
+      `AppState::keyboard_press_flags` (小键盘禁 E0 / 其余按位图 / **DIVIDE 反向强制 E0**
+      —— 顺手修复 DIVIDE 被注入成主键盘 `/` 的同类老 bug)。KeyCombo 成员同样打标。
+      回归: state/tests 6 条 (NUMPAD0-9+DECIMAL 全表 / 组合成员 / 方向键保持 E0 / DIVIDE)。
+    - **BUG2 右摇杆无法模拟鼠标 (用户实测)**: 根因 = 鼠标移动 worker 对非连发映射只在
+      Pressed 移动一个步长 (5px); 键盘触发靠 OS 自动重复, 而手柄/原始HID/鼠标键**没有
+      OS 重复** → 推住只动 5px。**修复**: `WorkerPool::mouse_move_effective_turbo` —
+      无 OS 重复的触发设备映射到 MouseMove 时按 interval 持续移动 (键盘类行为不变;
+      滚轮保持一推一格)。回归: keyboard/tests 1 条 (三类设备 × 键盘对照 × 显式连发)。
+    - **✨ 手柄组合键 (用户需求: RB+X=Space, "无冲突且兼顾易用")**:
+      * **运行时 (xinput.rs)**: 多键位图匹配+大组合独占仲裁 v22 已有 (按 RB+X 只触发
+        组合, 松开恢复单键) —— 缺的是"先按下的成员键已触发单独功能"。新增**成员键延迟
+        抑制**: `chord_solo_bits` (组合成员∩单键映射, 随 combo_masks 重建/失效) 命中的
+        单键按下先挂起 `pending_solos` (`CHORD_SOLO_GRACE_MS`=150ms, 每帧结算, 非仅
+        变化帧): 组合补全→取消挂起 (**RB+X 不带出 X**); 宽限内松开→立即补发完整点击
+        (点按无感); 到期仍按住→正常派发并登记 active_combos。簿记细节: 挂起中的键**不进
+        active_combos** (防无源 Released), 挂起去重, 重载/断连同步失效, 采集/暂停态不结算。
+      * **GUI (gui/gamepad_mapping/chord.rs 新模块 + GpFlow 三状态)**: AwaitChordPad
+        (同时按住≥2键, `pick_chord_device` 要求 XInput 通道多键候选) → AwaitChordKb
+        (键盘目标, 复用 AwaitKb 捕获通道) → ConfirmChord (确认/再加一个键/取消);
+        面板 = 列表 (改目标/删除) + 添加按钮。**建键冲突校验** `validate_chord_trigger`:
+        完全重复 / 组合间部分重叠 (共享≥1键且互不包含 → 拒绝; 包含关系允许=大组合独占) /
+        与连发切换键·预设切换键共享任一键 (拒绝)。成员键已有单独映射 → 保存后提示
+        "单独按住约0.15秒触发, 组合不受影响"。
+      * **数据层零新概念**: 组合键 = 普通映射 (触发键 `GAMEPAD_045E_RB+X`,
+        `normalize_key_combo` 的 carry/compact 逻辑天然兼容), Config.toml 契约不变。
+      * 回归: xinput 6 条 (成员集/到期补发/点按成对/宽限等待/组合取消) + chord.rs 5 条
+        (规范名roundtrip/多键过滤/重复与重叠/切换键冲突/成员提示) + types 2 条 (状态机
+        happy path + 护栏)。
+    - **验证**: 829 全绿 (基线 794 → +35) · 手柄页截图验收
+      (work/_shot_chord.ps1, SORAHK_NO_AUTO_INJECT=1: 空态/添加/捕获态/取消四帧;
+      揪出 egui 不解析 markdown 的 `**` 直显问题并修复)。
+    - **交付**: release 构建 (fat LTO) exe md5 `7fdecbb039bd1ffab2e47b159e80ac4f`
+      (9.6MB, 字节验证含组合键功能串); 已部署 项目根 4 别名
+      (DfoVibration-Sorahk / SorahkDFO / SorahkDFO-新UI版 / sorahk) + 版本别名
+      `DfoVibration-Sorahk_v24.37_小键盘右摇杆修复+手柄组合键.exe` +
+      release_backup 入库。
+    - **教训**: ① egui RichText 无 markdown —— 用户可见文案禁 `**`;
+      ② 测试夹具与常量名要对齐真实 id 表 (LB=0x09/RB=0x0A/X=0x0D/Y=0x0E, 曾把肩键当 XY);
+      ③ AppConfig::default() 自带 Q→Q 映射 —— 涉及 mappings 下标的测试按触发键名定位。
+94. **★v24.38 序列宏修复 + 录制保真 (2026-09-27, 本地已提交未上交)**:
+    - **BUG (用户实测): 录制并应用序列宏后, 触发仍直接按目标键 A**。根因 = 序列编辑器
+      7 个变更入口只有「＋按键步」即时落盘 (其注释"手柄页/连发页都要立即生效"),
+      录制填入/＋等待步/清空/引用宏/删步改时长/高级文本全部只改 GUI 内存; 手柄页槽位
+      序列宏区**没有保存按钮** → 引擎里 sequence 恒为空 → 永远走旧目标键。修复 =
+      `apply_sequence_text` 唯一出口 (写 Config.toml + reload_config), 7 处收口;
+      连发页「取消」补"快照写回+热重载" (即时生效后取消要连引擎回滚)。
+      契约测试红→绿: sequence_apply_tests ×2 (引擎立即接管 / 坏序列整条停用不回退)。
+    - **✨ 录制保真**: 旧录制器把重叠按键合并成一步 `DOWN+Z⏱总时长` (按住方向连打
+      技能键被压扁); 新版逐事件重放: `键↓`/`键↑` 模式步 + `NONE⏱gap` 等待步
+      (≥10ms, 采样粒度), 尾部未抬起键补 `↑`。SeqStepMode {Tap,PressHold,Release}
+      (state/types.rs) + parse/`steps_to_text` 往返 + `run_sequence` 按模式执行 +
+      结束安全网释放 (↓ 无 ↑ 不卡键)。老序列零迁移; ASCII 备选 `_`/`^`。
+      单测 +7: 模式解析/文本往返/按住方向连打/交叠与同瞬间合并/未知vk跳过不产幽灵等待。
+    - **验证**: 841 全绿 (+12); 种子序列可视化验收 (映射行「🔒已由序列宏接管」)。
+    - **教训**: ① GUI "多入口改同一字段" 必须收口单一出口 (v24.32 埋下 6 处漏网);
+      ② 本会话 UI 自动化滚轮/End/滚动条拖拽均不稳定 (偶发), e2e 只做到"接管可视化";
+      契约测试 (调真实入口函数) 是可靠替代 —— 布局型 e2e 需要窗口尺寸稳定的会话;
+      ③ AppConfig::default() 自带 Q→Q —— 测试按触发键定位下标 (再次踩到, 已成惯例)。
+95. **★v24.39 组合键挂宏 + LB+LT 捕获修复 + 优先级明示 (2026-09-27, 本地已提交未上交)**:
+    - **用户场景**: 想把 LB+LT 组合键挂序列宏; 在槽位捕获里同时按两键被拒
+      ("只按一个键"), 以为和 LB/LT 已有映射冲突, 问优先级。
+    - **真根因 (LB+LT 捕不到)**: XInput 捕获帧选择 DiagonalPriority 的优先级表对
+      纯按键组合 (无方向) 恒为 1, 各帧并列取先 → 组合帧被先按下的 [LB] 帧顶掉,
+      组合捕获只收到 1 键。修复 = `capture_prefers_max_inputs` (AppState 原子标志):
+      AwaitChordPad 期间强制 MostSustained (输入数优先) 帧选择; 成功/取消/离开页面
+      复位 (flow.rs Ok 路径 + gp_capture_cleanup)。校准策略配置不受影响。
+    - **组合键挂宏**: 组合键面板行内「☰ 序列宏 (连招)」折叠区嵌入共享步骤编辑器
+      (render_sequence_steps_editor → apply_sequence_text 即时生效); 已挂宏行显示
+      ⚡宏 徽章, 目标列显示 "(序列宏)"。槽位捕获多键报错改为引导组合键面板+优先级说明。
+    - **优先级语义 (用户问"有没有优先级的设定")**: 组合 > 单键, 内建于运行时
+      (v24.37 大组合独占 + 成员键 150ms 延迟抑制), 无需用户设置; 已写进组合键
+      确认卡/README。
+    - **验证**: 845 全绿 (+4: LB+LT 捕获契约 / 槽位多键引导 / 既有回归);
+      组合键面板可视化 (LB+LT → ⚡宏 SPACE)。
+    - **交付**: release 构建 exe md5 `95d54d4f9eb1ecb632f3fc7991be49fd` (9.6MB,
+      字节验证含组合键/序列宏串); 已部署 项目根 4 别名 + 版本别名
+      `DfoVibration-Sorahk_v24.39_组合键挂宏+LB+LT捕获修复.exe` + release_backup 入库。
+    - **⚠ 环境事故 (2026-09-27)**: E 盘 `E:\Sorahk-build	argetelease` 目录树出现
+      文件系统损坏口袋 (所有文件报 "No such device" / os error 433, rm 也删不掉;
+      盘符本体与源码仓库读写正常)。解法 = `CARGO_TARGET_DIR=/e/Sorahk-build/target2`
+      全新目标目录构建 (4m31s); target/release 留待用户方便时 `chkdsk E: /f` 修复
+      (需管理员+可能要求重启), 或直接整目录删除后由 cargo 重建。
+      ⚠ E 盘空间 96% 已用 (剩 49GB), 注意清理。

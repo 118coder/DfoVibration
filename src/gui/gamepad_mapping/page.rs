@@ -67,6 +67,8 @@ impl SorahkGui {
         });
 
         self.render_gamepad_overview(ui, &th);
+        /* ★v24.37: 手柄组合键面板 (列表 + 捕获/确认流程) */
+        self.render_gamepad_chord_panel(ui, &th);
         self.render_mouse_map_dialog(ctx, &th);
     }
 

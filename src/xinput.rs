@@ -162,6 +162,11 @@ const MAX_INPUTS: usize = 20;
 /// Maximum number of capture frames to record
 const CAPTURE_FRAMES: usize = 16;
 
+/// ★v24.37 组合键成员单独按下的挂起宽限 (ms): 单键成员按下后先不派发,
+/// 等这么久看组合是否补全。宽限内松开 = 快速点按, 立即补发完整点击;
+/// 只影响「既属于某组合又有单独映射」的按钮, 其它按键零影响。
+const CHORD_SOLO_GRACE_MS: u64 = 150;
+
 /// Captured input frame with timestamp.
 #[derive(Clone)]
 struct CaptureFrame {
@@ -241,6 +246,13 @@ struct XInputDeviceState {
     axis_hist: [[i16; 8]; 32],
     axis_hist_t: [std::time::Instant; 32],
     axis_hist_len: u8,
+    /// ★v24.37 手柄组合键成员集 (位图): 同时出现在**多键组合**与**单键映射**里的按钮。
+    /// 这类按钮单独按下时不立即派发, 先挂起 [`Self::pending_solos`]:
+    /// 组合在宽限期内完成 → 取消挂起 (成员不先触发单独功能, "RB+X=Space 不带出 X");
+    /// 宽限期满或提前松开 → 补发 (快速点按不受影响)。与 combo_masks 同生命周期。
+    chord_solo_bits: u32,
+    /// ★v24.37 挂起中的单键组合: (按钮 id, 补发截止时刻)
+    pending_solos: SmallVec<[(u32, std::time::Instant); 4]>,
 }
 
 /// XInput handler for Xbox controller input.
@@ -299,6 +311,8 @@ run_gap_ms: [0; 8],
 axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
+chord_solo_bits: 0,
+pending_solos: SmallVec::new(),
                     });
 
                     // Register device display info
@@ -387,6 +401,9 @@ axis_hist_len: 0,
                 device_state.combo_masks.clear();
                 device_state.layered_index = LayeredComboIndex::new();
                 device_state.last_input_bits = 0;
+                /* ★v24.37: 组合键成员集/挂起与缓存同步失效 (下帧按新配置重建) */
+                device_state.chord_solo_bits = 0;
+                device_state.pending_solos.clear();
                 /* ★v21.0: 奔跑阈值缓存与三区状态同步失效 (下帧按新配置重建) */
                 device_state.run_thr = [0; 8];
                 device_state.run_gap_ms = [0; 8];
@@ -455,7 +472,18 @@ axis_hist_len: 0,
                             );
                         }
 
-                        device_state.active_inputs = current_inputs;
+                        device_state.active_inputs = current_inputs.clone();
+                    }
+
+                    /* ★v24.37 组合键成员挂起: **每帧**处理 (不只在输入变化帧) ——
+                     * 到期补发单独按下 / 提前松开保住快速点按。采集模式与暂停时不派发。
+                     * 放在边沿处理之后: 同帧既有组合完成又到期的极端情况下, 组合取消优先。 */
+                    if !self.state.is_raw_input_capture_active()
+                        && !self.state.is_paused()
+                        && !device_state.pending_solos.is_empty()
+                        && let Some(pool) = self.state.get_worker_pool()
+                    {
+                        Self::process_pending_solos(device_state, &current_inputs, pool, vid_pid.0);
                     }
                 } else if self.device_states[idx].is_none() {
                     let vid_pid =
@@ -483,6 +511,8 @@ run_gap_ms: [0; 8],
 axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
+chord_solo_bits: 0,
+pending_solos: SmallVec::new(),
                         });
                     }
                 }
@@ -514,7 +544,17 @@ axis_hist_len: 0,
         vid_pid: (u16, u16),
         state: &Arc<AppState>,
     ) {
-        let capture_mode = state.get_xinput_capture_mode();
+        /* ★v24.39 组合键捕获: 强制「输入数最多」帧选择 —— 校准策略
+         * (DiagonalPriority 等) 对纯按键组合 (LB+LT) 优先级恒同、并列取先,
+         * 会把组合帧判给先按下的单键帧, 组合捕获就只剩 1 个键。 */
+        let capture_mode = if state
+            .capture_prefers_max_inputs
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            crate::config::XInputCaptureMode::MostSustained
+        } else {
+            state.get_xinput_capture_mode()
+        };
         let current_button_id = if !current_inputs.is_empty() {
             let stable_device_id = Self::hash_vid_pid_static(vid_pid) as u64;
             Some(Self::hash_inputs_fast(current_inputs, stable_device_id))
@@ -723,11 +763,33 @@ axis_hist_len: 0,
             .collect();
 
         // Compare with previously active combos
-        let prev_active = &device_state.active_combos;
+        // (★v24.37: 克隆成局部 —— 派发循环里要写 pending_solos, 不能持有借用)
+        let prev_active = device_state.active_combos.clone();
 
         // Find newly activated combos
         for combo in &new_active_combos {
-            if !Self::contains_combo(prev_active, combo) {
+            if !Self::contains_combo(&prev_active, combo) {
+                /* ★v24.37 组合键成员延迟抑制: 单键成员 (既有单独映射又属于某组合)
+                 * 按下时不立即派发, 挂起等待 —— 组合在宽限期内完成则取消 (成员不先
+                 * 触发单独功能); 到期/提前松开由 process_pending_solos 补发。 */
+                if combo.len() == 1
+                    && device_state.chord_solo_bits & (1u32 << (combo[0] & 31)) != 0
+                {
+                    /* 挂起期间 [X] 不进 active_combos → 每帧都会重新命中"新激活",
+                     * 靠这里的去重保证只挂起一次; 到期补发后 [X] 才进 active_combos */
+                    if !device_state
+                        .pending_solos
+                        .iter()
+                        .any(|(b, _)| *b == combo[0])
+                    {
+                        device_state.pending_solos.push((
+                            combo[0],
+                            std::time::Instant::now()
+                                + std::time::Duration::from_millis(CHORD_SOLO_GRACE_MS),
+                        ));
+                    }
+                    continue;
+                }
                 let device = InputDevice::XInputCombo {
                     device_type,
                     button_ids: combo.clone(),
@@ -736,8 +798,16 @@ axis_hist_len: 0,
             }
         }
 
+        // ★v24.37: 多键组合新激活 → 取消其成员的挂起 (如 X 已单独按下挂起中,
+        // 此刻 RB 按下补全 [X,RB] → X 的挂起取消, 只触发组合)
+        for combo in &new_active_combos {
+            if combo.len() >= 2 && !device_state.pending_solos.is_empty() {
+                Self::cancel_pending_solos(device_state, combo);
+            }
+        }
+
         // Find deactivated combos
-        for combo in prev_active {
+        for combo in &prev_active {
             if !Self::contains_combo(&new_active_combos, combo) {
                 let device = InputDevice::XInputCombo {
                     device_type,
@@ -747,8 +817,82 @@ axis_hist_len: 0,
             }
         }
 
-        device_state.active_combos = new_active_combos;
+        // ★v24.37: active_combos 只记录**已派发**的组合 —— 挂起中的单键不在此列
+        // (否则松开时会派发无源的 Released; 到期补发时由 process_pending_solos 登记)
+        device_state.active_combos = new_active_combos
+            .into_iter()
+            .filter(|combo| {
+                combo.len() != 1
+                    || !device_state
+                        .pending_solos
+                        .iter()
+                        .any(|(b, _)| *b == combo[0])
+            })
+            .collect();
         device_state.last_input_bits = current_bits;
+    }
+
+    /// ★v24.37 组合键成员集 (纯函数): 同时出现在**多键组合**与**单键映射**里的按钮位图。
+    /// 只有这些按钮的单独按下需要延迟挂起; 其余按键行为与旧版逐字节一致。
+    #[inline]
+    fn chord_solo_bits_from_combos(combos: &[Vec<u32>]) -> u32 {
+        let mut member_bits = 0u32;
+        let mut solo_bits = 0u32;
+        for combo in combos {
+            if combo.len() >= 2 {
+                for &id in combo {
+                    if id < 32 {
+                        member_bits |= 1u32 << id;
+                    }
+                }
+            } else if let Some(&id) = combo.first()
+                && id < 32
+            {
+                solo_bits |= 1u32 << id;
+            }
+        }
+        member_bits & solo_bits
+    }
+
+    /// ★v24.37 取消组合成员的挂起 (组合新激活时调用)。
+    #[inline]
+    fn cancel_pending_solos(device_state: &mut XInputDeviceState, combo: &[u32]) {
+        device_state
+            .pending_solos
+            .retain(|(b, _)| !combo.contains(b));
+    }
+
+    /// ★v24.37 挂起单键的每帧结算 ( poll_device 每帧调用, 不只在输入变化帧 ):
+    /// - 按钮已松开 (宽限内点按) → 补发完整点击 (Pressed+Released), 点按手感不变;
+    /// - 宽限到期仍按住 → 正常派发 Pressed 并登记 active_combos (后续松开走常规路径);
+    /// - 其余 → 继续挂起。
+    /// 调用方保证: 非采集模式、非暂停、pending 非空。
+    fn process_pending_solos(
+        device_state: &mut XInputDeviceState,
+        current_inputs: &[u32],
+        pool: &std::sync::Arc<dyn crate::state::EventDispatcher>,
+        vid: u16,
+    ) {
+        let now = std::time::Instant::now();
+        let mut still_pending = SmallVec::<[(u32, std::time::Instant); 4]>::new();
+        for (button_id, deadline) in device_state.pending_solos.drain(..) {
+            let device = InputDevice::XInputCombo {
+                device_type: DeviceType::Gamepad(vid),
+                button_ids: vec![button_id],
+            };
+            if !current_inputs.contains(&button_id) {
+                /* 宽限内松开 = 快速点按: 立即补发完整点击 (不进 active_combos) */
+                pool.dispatch(InputEvent::Pressed(device.clone()));
+                pool.dispatch(InputEvent::Released(device));
+            } else if now >= deadline {
+                /* 宽限到期仍按住 = 单独使用该键: 正常派发 */
+                pool.dispatch(InputEvent::Pressed(device));
+                device_state.active_combos.push(vec![button_id]);
+            } else {
+                still_pending.push((button_id, deadline));
+            }
+        }
+        device_state.pending_solos = still_pending;
     }
 
     /// Converts input IDs to bitset representation
@@ -1661,6 +1805,8 @@ run_gap_ms: [0; 8],
 axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
+chord_solo_bits: 0,
+pending_solos: SmallVec::new(),
         }
     }
 
@@ -1732,6 +1878,117 @@ axis_hist_len: 0,
             self.events.lock().unwrap().push(event);
         }
         fn clear_cache(&self) {}
+    }
+
+    /* ===== ★v24.37 组合键成员延迟抑制 ===== */
+
+    const LB: u32 = 0x09;
+    const RB: u32 = 0x0A;
+
+    /// 成员集 = 多键组合 ∩ 单键映射 的交集; 只有交集里的键需要挂起
+    #[test]
+    fn test_chord_solo_bits_from_combos() {
+        let combos = vec![
+            vec![RB],    // RB 有单独映射
+            vec![LB, RB], // LB+RB 组合
+            vec![0x0B],  // A 只有单独映射 (非组合成员) → 不挂起
+        ];
+        let bits = XInputHandler::chord_solo_bits_from_combos(&combos);
+        assert_eq!(bits, 1u32 << RB, "只有 RB 既是组合成员又有单独映射");
+        // LB 也有单独映射时同样入集
+        assert_eq!(
+            XInputHandler::chord_solo_bits_from_combos(&[vec![LB], vec![LB, RB]]),
+            1u32 << LB
+        );
+        // 纯单键 / 纯组合: 交集为空
+        assert_eq!(
+            XInputHandler::chord_solo_bits_from_combos(&[vec![0x0B], vec![LB, RB]]),
+            0
+        );
+    }
+
+    /// 宽限到期仍按住 → 补发 Pressed 并登记 active_combos (松开走常规 Released)
+    #[test]
+    fn test_pending_solo_fires_on_deadline() {
+        let mut ds = make_device_state([0; 8]);
+        ds.chord_solo_bits = 1 << RB;
+        ds.pending_solos
+            .push((RB, std::time::Instant::now() - std::time::Duration::from_millis(10)));
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID);
+        let ev = mock.events.lock().unwrap();
+        assert_eq!(ev.len(), 1, "到期只补发 Pressed: {ev:?}");
+        match &ev[0] {
+            crate::state::InputEvent::Pressed(crate::state::InputDevice::XInputCombo {
+                button_ids,
+                ..
+            }) => assert_eq!(button_ids.as_slice(), &[RB]),
+            other => panic!("应派发 Pressed, 实际 {other:?}"),
+        }
+        drop(ev);
+        assert_eq!(ds.active_combos.len(), 1, "补发后应登记 active_combos");
+        assert!(ds.pending_solos.is_empty());
+    }
+
+    /// 宽限内松开 = 快速点按 → 补发完整点击 (Pressed+Released), 不进 active_combos
+    #[test]
+    fn test_pending_solo_quick_tap_fires_press_and_release() {
+        let mut ds = make_device_state([0; 8]);
+        ds.chord_solo_bits = 1 << RB;
+        ds.pending_solos.push((
+            RB,
+            std::time::Instant::now() + std::time::Duration::from_millis(100),
+        ));
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        XInputHandler::process_pending_solos(&mut ds, &[], &pool, XBOX_VID);
+        let ev = mock.events.lock().unwrap();
+        assert_eq!(ev.len(), 2, "点按 = Pressed+Released 成对补发: {ev:?}");
+        assert!(matches!(
+            &ev[0],
+            crate::state::InputEvent::Pressed(_)
+        ));
+        assert!(matches!(
+            &ev[1],
+            crate::state::InputEvent::Released(_)
+        ));
+        drop(ev);
+        assert!(ds.active_combos.is_empty());
+        assert!(ds.pending_solos.is_empty());
+    }
+
+    /// 宽限内仍按住 → 继续等待, 不派发
+    #[test]
+    fn test_pending_solo_keeps_waiting_within_grace() {
+        let mut ds = make_device_state([0; 8]);
+        ds.chord_solo_bits = 1 << RB;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        ds.pending_solos.push((RB, deadline));
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID);
+        assert!(mock.events.lock().unwrap().is_empty());
+        assert_eq!(ds.pending_solos.as_slice(), &[(RB, deadline)]);
+        assert!(ds.active_combos.is_empty());
+    }
+
+    /// 组合新激活 → 其成员的挂起被取消, 非成员保留
+    #[test]
+    fn test_pending_solo_cancelled_by_chord() {
+        let mut ds = make_device_state([0; 8]);
+        let future = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        ds.pending_solos.push((RB, future));
+        ds.pending_solos.push((0x0B, future));
+        XInputHandler::cancel_pending_solos(&mut ds, &[LB, RB]);
+        assert_eq!(ds.pending_solos.len(), 1);
+        assert_eq!(ds.pending_solos[0].0, 0x0B);
     }
 
     /// 构造急推判定测试态: 方向 0 配奔跑 (阈值 80%, 间隔 gap_ms), 其余无

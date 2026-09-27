@@ -43,6 +43,8 @@ impl SorahkGui {
             GpFlow::ConfirmDelete { slot } => self.render_slot_confirm_delete(ui, th, slot),
             GpFlow::MapDone { slot } => self.render_slot_map_done(ui, th, slot),
             GpFlow::Calibrate { step, total } => self.render_slot_calibrate(ui, th, step, total),
+            /* ★v24.37: 组合键流程由 render_gamepad_chord_panel 渲染 (页面下方), 右栏让位 */
+            GpFlow::AwaitChordPad | GpFlow::AwaitChordKb { .. } | GpFlow::ConfirmChord { .. } => {}
         }
     }
 
@@ -663,6 +665,10 @@ impl SorahkGui {
         self.gp_pad_capture.reset();
         self.gp_quick_listen = false;
         self.app_state.set_raw_input_capture_mode(false);
+        /* ★v24.39: 组合捕获的「输入数最多」帧选择同步关闭 (取消/离开页面) */
+        self.app_state
+            .capture_prefers_max_inputs
+            .store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// 停止识别 → 回初始状态 (现在唯一的"退出识别"入口)。

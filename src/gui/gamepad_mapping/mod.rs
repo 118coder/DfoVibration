@@ -10,6 +10,7 @@
 //! 顶层 pub 项经 pub use 再导出, crate::gui::gamepad_mapping::X 路径保持不变。
 
 mod capture;
+mod chord;
 mod flow;
 mod helpers;
 mod model;
@@ -21,6 +22,7 @@ mod svg;
 mod tests;
 
 pub use capture::*;
+pub use chord::*;
 pub use helpers::*;
 pub use model::*;
 pub use svg::*;

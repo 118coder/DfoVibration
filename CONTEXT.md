@@ -21,7 +21,10 @@
 | **连发** | 触发键按住 → 目标键重复敲击；`KeyMapping`（触发键/目标键 SmallVec/间隔/时长/连发开关/备注） |
 | **序列宏** | 目标键替换为序列脚本（`sequence.rs` 引擎，`KeySequenceToggle/Pause/Continue` 控制键）；v24.31 起"序列接管输出"（与目标键互斥） |
 | **通用宏** | 序列文本里 `宏(名字)` 引用的公共片段（v24.32，连发页管理） |
+| **序列步模式** | `SeqStepMode`: Tap=按下→保持→抬起（`键⏱毫秒`）；PressHold=只按下（`键↓`）；Release=只抬起（`键↑`）。录制器 v24.38 起逐事件产出 ↓/↑ 步忠实重放时序；`run_sequence` 结束时安全网释放所有仍按住的键。序列文本变更唯一出口 = `apply_sequence_text`（即时落盘+热重载） |
 | **预设切换键** | 一键切换连发预设的热键；`preset_switch_conflict` 家族测试锁定冲突语义 |
+| **组合键 (chord)** | 手柄**多键组合**触发 (如 RB+X=Space)：一条普通映射 (触发键 `GAMEPAD_<vid>_RB+X`)。运行时 = 大组合独占仲裁 + **成员键延迟抑制** (既在组合里又有单独映射的按钮，单独按下挂起 `CHORD_SOLO_GRACE_MS`=150ms：组合补全则取消、点按/到期则补发 —— `xinput.rs`)；建键冲突校验 (重复/部分重叠/与切换键共享) 在 `gui/gamepad_mapping/chord.rs` |
+| **小键盘标记位** | `OutputAction` scancode bit8 (`SCANCODE_NUMPAD_FLAG`)：小键盘键与方向键**共用 scancode**，注入靠它决定 E0 标志 —— 唯一出口 `state/inject.rs::keyboard_press_flags` (小键盘禁 E0；DIVIDE 例外强制 E0)。解析打标在 `state/key_names.rs` (VK 0x60..=0x6F) |
 | **注入安全保险** | `state/mod.rs` 顶部滑动窗口（≤900 注入单元/秒，超限冷却 1 秒），防连发失控锁死键鼠 |
 
 ## 三、震动域（vibration）
@@ -99,7 +102,7 @@ src/
     ├── classic_mode.rs / minimal.rs             双形态皮肤
     ├── settings_dialog.rs        设置弹窗 (主编排 + 6 个分区方法)
     ├── vibration_page/  通用震动+全职业预设页 (page/sections/hints/export/presets)
-    ├── gamepad_mapping/ 手柄可视化映射页 (model/capture/helpers/svg/page/quick_connect/flow/panel)
+    ├── gamepad_mapping/ 手柄可视化映射页 (model/capture/helpers/svg/page/quick_connect/flow/panel/chord)
     ├── turbo_page/      连发映射页 (page/presets/edit/macros)
     └── about/error/hid_activation/mouse_*/whitelist/device_*/keyboard_quick   其余弹窗与页
 ```

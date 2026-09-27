@@ -436,6 +436,12 @@ impl SorahkGui {
                         }
                         self.edit_mapping_idx = None;
                         self.edit_mapping_is_new = false;
+                        /* ★v24.38: 序列编辑是即时生效的 (apply_sequence_text 边改边落盘)
+                         * → 取消必须把快照写回文件并热重载, 否则引擎里还留着已取消的序列 */
+                        let _ = self.config.save_to_file("Config.toml");
+                        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+                            eprintln!("Failed to reload config after mapping edit cancel: {e}");
+                        }
                     }
                     /* 删除推到操作行最右端: 与保存/取消拉开距离,
                      * 消除"点完编辑按钮后同位置再点即误删"的隐患 */
@@ -589,13 +595,28 @@ impl SorahkGui {
 
     /// ★v24.32 序列宏可视化步骤编辑器 (连发页 / 手柄映射页共用)。
     /// 步骤列表 + 添加/录制/引用通用宏 + 高级文本, 全部无需记语法。
+    /// ★v24.38 序列文本变更的**唯一出口**: 写入 + 即时落盘 + 热重载 (引擎立即接管)。
+    ///
+    /// 修用户实测 bug: v24.32 只有「＋按键步」捕获路径做了即时生效 (其注释明言
+    /// "手柄页/连发页都要立即生效"), 而 **录制填入 / ＋等待步 / 清空 / 引用宏 /
+    /// 删步改时长 / 高级文本** 都只改 GUI 内存 —— 手柄页没有「保存修改」按钮,
+    /// 录完的序列永远到不了引擎, 触发键仍然按旧目标键 (如 A)。
+    pub(crate) fn apply_sequence_text(&mut self, idx: usize, text: String) {
+        if let Some(m) = self.config.mappings.get_mut(idx) {
+            m.sequence_text = text;
+        }
+        let _ = self.config.save_to_file("Config.toml");
+        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+            eprintln!("Failed to reload config after sequence edit: {e}");
+        }
+    }
+
     pub(crate) fn render_sequence_steps_editor(
         &mut self,
         ui: &mut egui::Ui,
         idx: usize,
         th: &Theme,
-    ) {
-        let macros: std::collections::HashMap<String, String> = self
+    ) {        let macros: std::collections::HashMap<String, String> = self
             .config
             .universal_macros
             .iter()
@@ -660,9 +681,10 @@ impl SorahkGui {
                             } else {
                                 format!("{existing}»{text}")
                             };
-                            self.config.mappings[idx].sequence_text = combined;
+                            /* ★v24.38: 走统一出口 —— 即时落盘+热重载 (录制完即生效) */
+                            self.apply_sequence_text(idx, combined);
                             self.seq_record_hint = Some((
-                                "✓ 已填入 (下方步骤列表)".to_string(),
+                                "✓ 已填入并生效 (下方步骤列表)".to_string(),
                                 std::time::Instant::now(),
                             ));
                         }
@@ -676,7 +698,8 @@ impl SorahkGui {
             } else if ui
                 .add(th.secondary_button("● 录制按键"))
                 .on_hover_text(
-                    "录制【键盘】按键 → 自动生成步骤 (手柄按键无法录)\n录完再点一次停止",
+                    "录制【键盘】按键 → 自动生成完整时序 (按下→等待→抬起, 含按住时长与间隔,\n\
+                     尽量还原真实操作; 手柄按键无法录)。录完点「停止并填入」立即生效",
                 )
                 .clicked()
             {
@@ -716,9 +739,11 @@ impl SorahkGui {
                 steps.push(crate::sequence::SeqStep {
                     keys: Vec::new(),
                     hold_ms: Some(200),
+                    ..Default::default()
                 });
-                self.config.mappings[idx].sequence_text =
-                    crate::sequence::steps_to_text(&steps, default_hold);
+                /* ★v24.38: 即时生效 */
+                let text = crate::sequence::steps_to_text(&steps, default_hold);
+                self.apply_sequence_text(idx, text);
             }
 
             /* ＋ 引用通用宏: 展开通用宏列表, 点一个就插入 */
@@ -736,7 +761,8 @@ impl SorahkGui {
                     .on_hover_text("清空序列 (退回普通目标键模式)")
                     .clicked()
                 {
-                    self.config.mappings[idx].sequence_text = String::new();
+                    /* ★v24.38: 即时生效 (引擎立即恢复目标键模式) */
+                    self.apply_sequence_text(idx, String::new());
                     self.seq_macro_picker_open = false;
                     self.seq_record_hint = None;
                 }
@@ -759,12 +785,13 @@ impl SorahkGui {
                 if let Some(i) = picked {
                     let m = &self.config.universal_macros[i];
                     let existing = self.config.mappings[idx].sequence_text.clone();
-                    self.config.mappings[idx].sequence_text =
-                        if existing.trim().is_empty() {
-                            format!("宏({})", m.name)
-                        } else {
-                            format!("{existing}»宏({})", m.name)
-                        };
+                    let combined = if existing.trim().is_empty() {
+                        format!("宏({})", m.name)
+                    } else {
+                        format!("{existing}»宏({})", m.name)
+                    };
+                    /* ★v24.38: 即时生效 */
+                    self.apply_sequence_text(idx, combined);
                     self.seq_macro_picker_open = false;
                 }
             });
@@ -817,20 +844,31 @@ impl SorahkGui {
                                     chip.on_hover_text(format!("{k}\n点击移除该键"));
                                 }
                             }
-                            ui.label(th.weak(if step.keys.is_empty() { "时长" } else { "按住" }));
-                            let mut hold = step.hold_ms.unwrap_or(default_hold) as f32;
-                            if ui
-                                .add(
-                                    egui::DragValue::new(&mut hold)
-                                        .range(10.0..=60000.0)
-                                        .suffix("ms")
-                                        .speed(10.0),
-                                )
-                                .changed()
-                            {
-                                steps[si].hold_ms =
-                                    Some(hold.round().clamp(10.0, 60000.0) as u64);
-                                hold_changed = true;
+                            ui.label(th.weak(if step.keys.is_empty() {
+                                "时长"
+                            } else {
+                                match step.mode {
+                                    crate::state::SeqStepMode::Tap => "按住",
+                                    crate::state::SeqStepMode::PressHold => "按下",
+                                    crate::state::SeqStepMode::Release => "抬起",
+                                }
+                            }));
+                            /* ★v24.38: ↓/↑ 步不带时长 (节奏由配对间距决定), 只有 Tap/等待步可调 */
+                            if step.keys.is_empty() || step.mode == crate::state::SeqStepMode::Tap {
+                                let mut hold = step.hold_ms.unwrap_or(default_hold) as f32;
+                                if ui
+                                    .add(
+                                        egui::DragValue::new(&mut hold)
+                                            .range(10.0..=60000.0)
+                                            .suffix("ms")
+                                            .speed(10.0),
+                                    )
+                                    .changed()
+                                {
+                                    steps[si].hold_ms =
+                                        Some(hold.round().clamp(10.0, 60000.0) as u64);
+                                    hold_changed = true;
+                                }
                             }
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
@@ -866,8 +904,9 @@ impl SorahkGui {
                         steps.remove(si);
                     }
                     if remove_step.is_some() || remove_key.is_some() || hold_changed {
-                        self.config.mappings[idx].sequence_text =
-                            crate::sequence::steps_to_text(&steps, default_hold);
+                        /* ★v24.38: 即时生效 */
+                        let text = crate::sequence::steps_to_text(&steps, default_hold);
+                        self.apply_sequence_text(idx, text);
                     }
                 } else {
                     ui.vertical_centered(|ui| {
@@ -902,7 +941,9 @@ impl SorahkGui {
                         .hint_text("A+B:50 > NONE:200 > C:50 (等价写法: ⏱ » @)")
                         .show(ui);
                     if resp.response.changed() {
-                        self.config.mappings[idx].sequence_text = seq_edit.trim().to_string();
+                        /* ★v24.38: 即时生效 (手输文本也立即接管/恢复) */
+                        let text = seq_edit.trim().to_string();
+                        self.apply_sequence_text(idx, text);
                     }
                 });
             }
@@ -962,18 +1003,17 @@ impl SorahkGui {
                 None => steps.push(crate::sequence::SeqStep {
                     keys: vec![upper],
                     hold_ms: Some(default_hold),
+                    ..Default::default()
                 }),
             }
-            self.config.mappings[idx].sequence_text =
-                crate::sequence::steps_to_text(&steps, default_hold);
+            self.apply_sequence_text(
+                idx,
+                crate::sequence::steps_to_text(&steps, default_hold),
+            );
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
             self.just_captured_input = false;
-            /* 即时落盘 + 热重载 (手柄页/连发页都要立即生效) */
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after sequence step capture: {}", e);
-            }
+            /* 即时落盘 + 热重载由 apply_sequence_text 统一完成 (v24.38 收口) */
         } else if self.just_captured_input {
             self.just_captured_input = false;
         }

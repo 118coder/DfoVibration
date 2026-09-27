@@ -885,10 +885,98 @@
         assert!(action.is_some());
 
         if let Some(OutputAction::KeyboardKey(scancode)) = action {
-            assert_eq!(scancode, 0x4C); // NUMPAD5 scancode
+            // ★v24.37: 带小键盘标记位 (bit 8) + 原始 scancode 不变
+            assert_eq!(scancode, 0x14C); // NUMPAD_FLAG | 0x4C
         } else {
             panic!("Expected KeyboardKey action");
         }
+    }
+
+    /// ★v24.37 回归 (用户实测 bug: 小键盘 2/4/6/8 映射无效):
+    /// NUMPAD2/4/6/8 的 scancode (0x50/0x4B/0x4D/0x48) 与方向键共用, 注入层曾一律
+    /// 加 KEYEVENTF_EXTENDEDKEY → 系统把小键盘键翻译成方向键。契约 = 所有 NUMPAD*
+    /// 目标带 NUMPAD 标记, 注入 flags 不含 EXTENDED、wScan 保持原 scancode。
+    #[test]
+    fn test_numpad_output_never_extended() {
+        const EXT: u32 = windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_EXTENDEDKEY.0;
+        for (name, raw_scan) in [
+            ("NUMPAD0", 0x52u16),
+            ("NUMPAD1", 0x4F),
+            ("NUMPAD2", 0x50),
+            ("NUMPAD3", 0x51),
+            ("NUMPAD4", 0x4B),
+            ("NUMPAD5", 0x4C),
+            ("NUMPAD6", 0x4D),
+            ("NUMPAD7", 0x47),
+            ("NUMPAD8", 0x48),
+            ("NUMPAD9", 0x49),
+            ("DECIMAL", 0x53),
+        ] {
+            let action = AppState::input_name_to_output(name)
+                .unwrap_or_else(|| panic!("{name} 应可解析为输出"));
+            let OutputAction::KeyboardKey(sc) = action else {
+                panic!("{name} 应解析为 KeyboardKey");
+            };
+            assert!(AppState::is_numpad_scancode(sc), "{name} 缺少小键盘标记 (sc={sc:#x})");
+            assert_eq!(AppState::raw_scancode(sc), raw_scan, "{name} 原始 scancode 错误");
+            assert_eq!(
+                AppState::keyboard_press_flags(sc).0 & EXT,
+                0,
+                "{name} 被注入成扩展键 (会被系统当作方向键/编辑键)"
+            );
+        }
+    }
+
+    /// 组合键成员里的小键盘键同样不能被注入成扩展键 (如 LCTRL+NUMPAD2)。
+    #[test]
+    fn test_numpad_combo_member_not_extended() {
+        let action = AppState::input_name_to_output("LCTRL+NUMPAD2");
+        let Some(OutputAction::KeyCombo(scans)) = action else {
+            panic!("LCTRL+NUMPAD2 应解析为 KeyCombo");
+        };
+        assert!(
+            scans
+                .iter()
+                .any(|&s| AppState::is_numpad_scancode(s) && AppState::raw_scancode(s) == 0x50),
+            "NUMPAD2 部件缺少小键盘标记: {scans:?}"
+        );
+    }
+
+    /// 方向键/编辑键行为必须保持不变: 同一批 scancode 靠 EXTENDED 与小键盘区分。
+    #[test]
+    fn test_direction_keys_still_extended() {
+        const EXT: u32 = windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_EXTENDEDKEY.0;
+        for name in ["UP", "DOWN", "LEFT", "RIGHT", "HOME", "END", "INSERT", "DELETE"] {
+            let action = AppState::input_name_to_output(name)
+                .unwrap_or_else(|| panic!("{name} 应可解析为输出"));
+            let OutputAction::KeyboardKey(sc) = action else {
+                panic!("{name} 应解析为 KeyboardKey");
+            };
+            assert!(!AppState::is_numpad_scancode(sc), "{name} 不该带小键盘标记");
+            assert_eq!(
+                AppState::keyboard_press_flags(sc).0 & EXT,
+                EXT,
+                "{name} 必须保持扩展键注入"
+            );
+        }
+    }
+
+    /// DIVIDE 是例外: 小键盘 ÷ 物理上就是 E0-0x35 (非扩展 0x35 是主键盘 /)。
+    /// 打小键盘标记, 但注入层对 0x35 反向强制 E0。
+    #[test]
+    fn test_divide_stays_extended() {
+        const EXT: u32 = windows::Win32::UI::Input::KeyboardAndMouse::KEYEVENTF_EXTENDEDKEY.0;
+        let action = AppState::input_name_to_output("DIVIDE").unwrap();
+        let OutputAction::KeyboardKey(sc) = action else {
+            panic!("DIVIDE 应解析为 KeyboardKey");
+        };
+        assert!(AppState::is_numpad_scancode(sc), "DIVIDE 应带小键盘标记");
+        assert_eq!(AppState::raw_scancode(sc), 0x35);
+        assert_eq!(
+            AppState::keyboard_press_flags(sc).0 & EXT,
+            EXT,
+            "DIVIDE 必须保持扩展键注入 (E0-0x35 = 小键盘 ÷)"
+        );
     }
 
     #[test]

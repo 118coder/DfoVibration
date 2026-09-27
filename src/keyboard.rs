@@ -181,6 +181,22 @@ impl WorkerPool {
         }
     }
 
+    /// ★v24.37 鼠标移动目标的"按住持续"判定: 该触发设备有没有 OS 级自动重复。
+    /// 键盘/键盘组合按住时系统会持续发重复键 → 非连发也能断续移动 (旧行为, 保持)。
+    /// 鼠标键 / XInput 手柄 / 原始 HID 设备**没有** OS 自动重复 —— XInput 轮询只在
+    /// 状态变化瞬间派发一次 Pressed, 非连发 = 只移动一个步长 (5px) 就停。
+    /// 用户实测 bug: 右摇杆推住 → 鼠标"无法模拟操作"。契约 = 这三类设备按住期间
+    /// 必须按 interval 持续移动 (等价 turbo 语义); 用户显式关不了这一条
+    /// (关掉 = 摇杆推住只动一下, 等于功能不可用)。
+    #[inline]
+    fn mouse_move_effective_turbo(device: &crate::state::InputDevice, turbo_enabled: bool) -> bool {
+        use crate::state::InputDevice;
+        if turbo_enabled {
+            return true;
+        }
+        !matches!(device, InputDevice::Keyboard(_) | InputDevice::KeyCombo(_))
+    }
+
     /// Hash generic device for worker distribution using FNV-1a.
     #[inline(always)]
     fn hash_generic_device(device_type: &crate::state::DeviceType, button_id: u64) -> usize {
@@ -1028,7 +1044,8 @@ impl KeyboardHook {
             direction_devices[*dir_idx] = Some(device.clone());
             direction_intervals[*dir_idx] = interval;
             direction_last_times[*dir_idx] = now;
-            direction_turbo[*dir_idx] = turbo_enabled;
+            /* ★v24.37: 无 OS 自动重复的设备 (手柄/原始HID/鼠标键) 必须持续移动 */
+            direction_turbo[*dir_idx] = WorkerPool::mouse_move_effective_turbo(device, turbo_enabled);
         }
 
         if !move_directions.is_empty() {
@@ -1191,7 +1208,16 @@ impl KeyboardHook {
 
                             mapping_cache.insert(
                                 device.clone(),
-                                (dir_idx, *speed, mapping.interval, mapping.turbo_enabled),
+                                (
+                                    dir_idx,
+                                    *speed,
+                                    mapping.interval,
+                                    /* ★v24.37: 无 OS 自动重复的设备必须持续移动 */
+                                    WorkerPool::mouse_move_effective_turbo(
+                                        &device,
+                                        mapping.turbo_enabled,
+                                    ),
+                                ),
                             );
 
                             if !*has_first_speed {
@@ -1476,6 +1502,47 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use crate::config::default_double_tap_gap_ms;
+
+    /// ★v24.37 回归 (用户实测 bug: 右摇杆无法模拟鼠标操作):
+    /// 无 OS 自动重复的触发设备 (手柄/原始HID/鼠标键) 映射到鼠标移动时,
+    /// 必须视为"按住持续移动"; 键盘类保持旧行为 (靠系统重复驱动)。
+    #[test]
+    fn test_mouse_move_effective_turbo_non_repeat_devices() {
+        use crate::state::{DeviceType, InputDevice, MouseButton};
+        let pad = InputDevice::XInputCombo {
+            device_type: DeviceType::Gamepad(0x045E),
+            button_ids: vec![0x14], // RS_Right
+        };
+        assert!(
+            WorkerPool::mouse_move_effective_turbo(&pad, false),
+            "手柄摇杆方向推住必须持续移动鼠标"
+        );
+        assert!(WorkerPool::mouse_move_effective_turbo(
+            &InputDevice::Mouse(MouseButton::Left),
+            false
+        ));
+        assert!(WorkerPool::mouse_move_effective_turbo(
+            &InputDevice::GenericDevice {
+                device_type: DeviceType::Gamepad(0x045E),
+                button_id: 5,
+            },
+            false
+        ));
+        // 键盘类有 OS 自动重复 → 保持旧语义 (非连发不持续)
+        assert!(!WorkerPool::mouse_move_effective_turbo(
+            &InputDevice::Keyboard(0x41),
+            false
+        ));
+        assert!(!WorkerPool::mouse_move_effective_turbo(
+            &InputDevice::KeyCombo(vec![0x12, 0x41]),
+            false
+        ));
+        // 用户显式开连发 → 永远持续
+        assert!(WorkerPool::mouse_move_effective_turbo(
+            &InputDevice::Keyboard(0x41),
+            true
+        ));
+    }
 
     #[test]
     fn test_worker_pool_creation() {

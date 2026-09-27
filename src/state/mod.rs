@@ -212,6 +212,11 @@ pub struct AppState {
     key_record: std::sync::Mutex<Option<KeyRecordState>>,
     /// ★v24.31 录制中标志 (钩子热路径的廉价检查)
     pub key_record_active: std::sync::atomic::AtomicBool,
+    /// ★v24.39 组合键捕获中 (GUI AwaitChordPad): XInput 捕获帧选择改用
+    /// 「输入数最多」策略 —— 组合键需要完整的多键帧; DiagonalPriority 等
+    /// 校准策略对纯按键组合 (LB+LT) 优先级恒同、并列取先, 会把组合帧判给
+    /// 先按下的单键帧, 导致组合捕获只收到 1 个键。
+    pub capture_prefers_max_inputs: std::sync::atomic::AtomicBool,
     /// Currently pressed keys for combo detection
     pressed_keys: scc::HashSet<u32>,
     /// Active combo triggers (multiple combos can be active simultaneously)
@@ -601,6 +606,7 @@ impl AppState {
             sequence_runs: std::sync::Mutex::new(HashMap::new()),
             key_record: std::sync::Mutex::new(None),
             key_record_active: std::sync::atomic::AtomicBool::new(false),
+            capture_prefers_max_inputs: std::sync::atomic::AtomicBool::new(false),
             pressed_keys: scc::HashSet::new(),
             active_combo_triggers: scc::HashMap::new(),
             cached_turbo_keyboard,

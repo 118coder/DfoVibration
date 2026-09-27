@@ -197,7 +197,34 @@ pub fn pick_calibration_device(
                 button_ids,
             });
         }
-        return Err("同时按了多个键 — 请只按一个键".to_string());
+        return Err(
+            "同时按了多个键 — 槽位一次只绑一个键; 多键组合 (如 LB+LT) 请用页面下方             「手柄组合键 → ＋添加组合键」录制, 组合优先级高于单键"
+                .to_string(),
+        );
     }
     Err("没等到手柄输入 — 请按一下再松开".to_string())
+}
+
+/// ★v24.37 组合键捕获: 从一次按压的候选里挑出**多键组合** (XInput 通道)。
+/// 与 [`pick_calibration_device`] 相反 —— 这里**要求** ≥2 个键同时按住。
+/// 返回 `(vid, 排序去重后的按钮 id 列表)`; `Err(提示)` = 这次输入不干净, 保持捕获态。
+pub fn pick_chord_device(cands: &PadCaptureCandidates) -> Result<(u16, Vec<u32>), String> {
+    if let Some(crate::state::InputDevice::XInputCombo {
+        device_type,
+        button_ids,
+    }) = &cands.xinput
+    {
+        let vid = match device_type {
+            crate::state::DeviceType::Gamepad(v) | crate::state::DeviceType::Joystick(v) => *v,
+            _ => 0,
+        };
+        let mut ids = button_ids.clone();
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() >= 2 {
+            return Ok((vid, ids));
+        }
+        return Err("要 2 个键同时按住 — 请把组合键一起按下去再松开".to_string());
+    }
+    Err("没等到手柄输入 — 请同时按住 2 个以上按键再松开".to_string())
 }

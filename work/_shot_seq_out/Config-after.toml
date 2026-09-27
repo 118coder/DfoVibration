@@ -1,0 +1,65 @@
+# ═══════════════════════════════════════════════════════
+#  🌸 Sorahk Configuration File 🌸
+# ═══════════════════════════════════════════════════════
+# 本文件由程序自动管理: 请在 GUI 内修改设置, 手改内容会在下次保存时被覆盖。
+#
+# 字段速查:
+#   language = "English" / "SimplifiedChinese" / "TraditionalChinese" / "Japanese"
+#   xinput_capture_mode / rawinput_capture_mode = "DiagonalPriority" / "MostSustained" / "LastStable"
+#   组合键: 用 + 连接, 如 "LALT+1"; 左右修饰键区分: "LALT1" 只响应左 Alt
+#   鼠标按键: LBUTTON / RBUTTON / MBUTTON / XBUTTON1 / XBUTTON2
+#   鼠标移动/滚轮: MOUSE_UP / MOUSE_DOWN / MOUSE_LEFT / MOUSE_RIGHT / SCROLL_UP / SCROLL_DOWN
+#   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 "GAMEPAD_045E_LS_RightUp+A"
+#   Raw Input 设备: DEVICE_VID_PID_SERIAL_Bx.x (首次使用会在 GUI 引导激活)
+#
+# 震动设置在旁边的 Vibration.toml (S1 ACT 路线为 Vibration-ACT.toml, 两者互不干扰);
+# 全职业微调在 JobVibration.toml。
+
+show_tray_icon = true
+show_notifications = true
+always_on_top = false
+dark_mode = false
+language = "SimplifiedChinese"
+guide_seen = true
+minimal_mode = false
+classic_mode = false
+minimal_vib_preset_job = false
+dfo_player = true
+vib_legacy_client = true
+vib_edition_asked = true
+switch_key = "DELETE"
+universal_macros = []
+input_timeout = 5
+interval = 5
+event_duration = 5
+combo_key_gap_ms = 40
+worker_count = 0
+process_whitelist = []
+whitelist_enabled = true
+hid_baselines = []
+hid_slot_usages = []
+rawinput_capture_mode = "MostSustained"
+xinput_capture_mode = "MostSustained"
+current_preset = ""
+
+[[mappings]]
+trigger_key = "Q"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 10
+double_tap_enabled = false
+double_tap_gap_ms = 50
+run_enabled = false
+run_threshold = 80
+run_recheck = true
+lock_enabled = false
+sequence_text = "DOWN↓»NONE⏱150»Z↓»NONE⏱80»Z↑»NONE⏱170»Z↓»NONE⏱70»Z↑»DOWN↑"
+release_targets = []
+note = ""
+
+[device_api_preferences]
+
+[[presets]]
+name = "默认"
+mappings = []
+switch_key = ""

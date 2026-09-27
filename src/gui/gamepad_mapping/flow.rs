@@ -79,8 +79,12 @@ impl SorahkGui {
             self.gp_prev_xinput = now_x;
         }
 
-        /* ② AwaitKb: 键盘捕获 (松开判定) —— ★v22.1 排除鼠标键, 避免点热区被记成鼠标 */
-        if matches!(self.gp_flow, GpFlow::AwaitKb { .. }) {
+        /* ② AwaitKb: 键盘捕获 (松开判定) —— ★v22.1 排除鼠标键, 避免点热区被记成鼠标。
+         * ★v24.37: 组合键流程的目标键捕获共用同一通道 (AwaitChordKb)。 */
+        if matches!(
+            self.gp_flow,
+            GpFlow::AwaitKb { .. } | GpFlow::AwaitChordKb { .. }
+        ) {
             self.capture_pressed_keys.retain(|vk| !is_mouse_vk(*vk));
             let current: std::collections::HashSet<u32> = Self::poll_all_pressed_keys()
                 .into_iter()
@@ -117,6 +121,28 @@ impl SorahkGui {
                 }
                 Some(Err(msg)) => self.set_gamepad_warn(msg),
                 None => {}
+            }
+        }
+
+        /* ★v24.37 ③b AwaitChordPad: 组合键捕获 —— **要求** ≥2 键同按;
+         * 通过冲突校验才进入目标键捕获, 否则提示并保持捕获态。 */
+        if matches!(self.gp_flow, GpFlow::AwaitChordPad)
+            && let Some(cands) = self.poll_pad_capture()
+        {
+            match pick_chord_device(&cands) {
+                Ok((vid, ids)) => match validate_chord_trigger(&self.config, vid, &ids) {
+                    Ok(()) => {
+                        self.app_state.set_raw_input_capture_mode(false);
+                        self.app_state
+                            .capture_prefers_max_inputs
+                            .store(false, std::sync::atomic::Ordering::Relaxed);
+                        self.gp_flow = self
+                            .gp_flow
+                            .transition(GpEvent::ChordPadCaptured { vid, ids });
+                    }
+                    Err(msg) => self.set_gamepad_warn(msg),
+                },
+                Err(msg) => self.set_gamepad_warn(msg),
             }
         }
 

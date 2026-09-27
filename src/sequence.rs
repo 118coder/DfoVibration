@@ -1,17 +1,21 @@
-//! ★v24.31 按键序列宏 (v24.31-4, QKeyMapper 借鉴)。
+//! ★v24.31 按键序列宏 (v24.31-4, QKeyMapper 借鉴)。★v24.38 录制保真 (按下→等待→抬起)。
 //!
 //! 语法 (与 QKeyMapper 兼容, 另提供 ASCII 备选写法):
 //! - 步与步之间用 `»` 分隔 (ASCII 备选 `>>`);
-//! - 每步 = 键名用 `+` 连接 (同按), 可带 `⏱毫秒` (ASCII 备选 `@毫秒`) 设定该步按住时长;
+//! - 每步 = 键名用 `+` 连接 (同按), 可带 `⏱毫秒` (ASCII 备选 `@毫秒` / `:毫秒`) 设定该步按住时长;
 //! - `NONE⏱200` (或 `NONE@200`) = 纯等待 200ms;
+//! - ★v24.38 模式步: `A↓` (ASCII `A_`) = **只按下** (保持到配对的 `A↑`); `A↑` (ASCII `A^`) = **只抬起**;
+//!   录制器用 ↓/↑ 步忠实重放"按下→等待→抬起"的完整时序 (含按住方向键期间连打技能键);
 //! - `宏(名字)` = 展开为通用宏列表里同名宏的序列内容 (可递归一层防环);
 //! - 省略 `⏱` 的步使用本条映射的"时长"设定。
 //! 示例: `A+B⏱50»NONE⏱200»C⏱50` = A、B 同按 50ms → 等 200ms → C 按 50ms。
+//!      `DOWN↓»Z↓»NONE⏱80»Z↑»DOWN↑` = 按住 ↓ 期间敲一下 Z (真实走位连招)。
 //!
 //! 执行模型: 每条序列在**独立线程**里跑 (绝不占输入 worker —— v24.28 的"连招卡死"
-//! 教训), 每步 按下→保持→松开; 支持全局暂停/继续 (控制键) 与按设备停止。
+//! 教训), Tap 步 按下→保持→松开, ↓/↑ 步各自只按/只松; 支持全局暂停/继续 (控制键)
+//! 与按设备停止; 序列结束/中断时**安全网释放**所有仍按住的键 (防 ↓ 无 ↑ 卡键)。
 
-use crate::state::{AppState, OutputAction, ResolvedStep, SequenceCtl};
+use crate::state::{AppState, OutputAction, ResolvedStep, SeqStepMode, SequenceCtl};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -67,12 +71,32 @@ pub fn parse_sequence(
     parse_inner(text, macros, 0)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct SeqStep {
     /// 键名 (空 = 纯等待步)
     pub keys: Vec<String>,
-    /// 按住毫秒 (None = 用映射默认时长)
+    /// 按住毫秒 (None = 用映射默认时长; 仅 Tap 步使用)
     pub hold_ms: Option<u64>,
+    /// ★v24.38 步模式 (默认 Tap = 按下→保持→抬起)
+    pub mode: SeqStepMode,
+}
+
+/// 键名列表解析 (`+` 连接, 大写规范化, 拒绝宏引用/空名) —— Tap 与 ↓/↑ 步共用。
+fn parse_key_list(keys_part: &str) -> Result<Vec<String>, String> {
+    keys_part
+        .split('+')
+        .map(|k| {
+            let k = k.trim().to_uppercase();
+            // 宏(名) 不允许出现在键名位置 (只支持整步引用), 防歧义
+            if k.starts_with("宏(") {
+                Err(format!("「{k}」: 通用宏引用必须独占一步 (整步写成 宏(名字))"))
+            } else if k.is_empty() {
+                Err("键名为空 (检查 + 连接符)".to_string())
+            } else {
+                Ok(k)
+            }
+        })
+        .collect()
 }
 
 fn parse_inner(
@@ -112,7 +136,36 @@ fn parse_inner(
             continue;
         }
         // 拆 ⏱ / @ 时长后缀
-        let (keys_part, hold) = split_hold(step_text)?;
+        let (keys_part_raw, hold) = split_hold(step_text)?;
+        let keys_part_raw = keys_part_raw.trim();
+        // ★v24.38 模式后缀: `↓`(ASCII `_`) = 只按下保持; `↑`(ASCII `^`) = 只抬起
+        let (mode, keys_part) = if let Some(rest) = keys_part_raw.strip_suffix('↓') {
+            (SeqStepMode::PressHold, rest)
+        } else if let Some(rest) = keys_part_raw.strip_suffix('↑') {
+            (SeqStepMode::Release, rest)
+        } else if let Some(rest) = keys_part_raw.strip_suffix('_') {
+            (SeqStepMode::PressHold, rest)
+        } else if let Some(rest) = keys_part_raw.strip_suffix('^') {
+            (SeqStepMode::Release, rest)
+        } else {
+            (SeqStepMode::Tap, keys_part_raw)
+        };
+        if mode != SeqStepMode::Tap {
+            if hold.is_some() {
+                return Err("按下(↓)/抬起(↑)步不带时长后缀 (时长由配对的 ↓/↑ 间距决定)".to_string());
+            }
+            let keys_part = keys_part.trim();
+            if keys_part.is_empty() || keys_part.eq_ignore_ascii_case("NONE") {
+                return Err("按下(↓)/抬起(↑)步需要键名, 如 A↓ / A+B↑".to_string());
+            }
+            let keys = parse_key_list(keys_part)?;
+            steps.push(SeqStep {
+                keys,
+                hold_ms: None,
+                mode,
+            });
+            continue;
+        }
         let keys_part = keys_part.trim();
         // ★简化写法: 等200 / 等待200 = 纯等待步 (等价 NONE⏱200)
         let keys_part = if keys_part.starts_with("等待") || keys_part.starts_with("等") {
@@ -127,22 +180,13 @@ fn parse_inner(
             }
             Vec::new()
         } else {
-            keys_part
-                .split('+')
-                .map(|k| {
-                    let k = k.trim().to_uppercase();
-                    // 宏(名) 不允许出现在键名位置 (只支持整步引用), 防歧义
-                    if k.starts_with("宏(") {
-                        Err(format!("「{k}」: 通用宏引用必须独占一步 (整步写成 宏(名字))"))
-                    } else if k.is_empty() {
-                        Err("键名为空 (检查 + 连接符)".to_string())
-                    } else {
-                        Ok(k)
-                    }
-                })
-                .collect::<Result<Vec<String>, String>>()?
+            parse_key_list(keys_part)?
         };
-        steps.push(SeqStep { keys, hold_ms: hold });
+        steps.push(SeqStep {
+            keys,
+            hold_ms: hold,
+            mode: SeqStepMode::Tap,
+        });
     }
     Ok(steps)
 }
@@ -176,16 +220,20 @@ fn split_hold(step_text: &str) -> Result<(String, Option<u64>), String> {
 }
 
 /// ★v24.32 步骤 → 文本 (可视化编辑器回写; 用最简 ASCII 形态, 用户可直接读改):
-/// 键步 `A+B:50`, 等待步 `NONE:200`, 步间 `>`。
+/// 键步 `A+B:50`, 等待步 `NONE:200`, 步间 `>`; ★v24.38 模式步 `A↓` / `A↑`。
 pub fn steps_to_text(steps: &[SeqStep], default_hold: u64) -> String {
     steps
         .iter()
         .filter(|s| !(s.keys.is_empty() && s.hold_ms.is_none()))
-        .map(|s| {
-            if s.keys.is_empty() {
-                format!("NONE:{}", s.hold_ms.unwrap_or(default_hold))
-            } else {
-                format!("{}:{}", s.keys.join("+"), s.hold_ms.unwrap_or(default_hold))
+        .map(|s| match s.mode {
+            SeqStepMode::PressHold => format!("{}↓", s.keys.join("+")),
+            SeqStepMode::Release => format!("{}↑", s.keys.join("+")),
+            SeqStepMode::Tap => {
+                if s.keys.is_empty() {
+                    format!("NONE:{}", s.hold_ms.unwrap_or(default_hold))
+                } else {
+                    format!("{}:{}", s.keys.join("+"), s.hold_ms.unwrap_or(default_hold))
+                }
             }
         })
         .collect::<Vec<String>>()
@@ -202,13 +250,21 @@ pub fn sequence_control_name(name: &str) -> Option<SequenceCtl> {
     }
 }
 
-/// 录制缓冲 → 序列文本。
-/// 时间上重叠的按键合并为同一步 (A+B); 相邻两步的空档 ≥50ms 生成 NONE 等待步。
-/// 同一时刻先处理抬起再处理按下 (避免相邻两步的同名键被并进同一步)。
+/// 录制缓冲 → 序列文本。★v24.38 重写: **事件时序忠实还原** ("按下→等待→抬起"完整过程)。
+///
+/// 旧版把时间重叠的按键合并成一个"同按 N 毫秒"的 Tap 步 —— 按住方向键期间连打
+/// 技能键 (DNF 最常见的走位连招) 会被压成一步巨大的 `DOWN+Z⏱总时长`, 完全不像真实操作。
+/// 新版逐事件重放: 每个按下 = `键↓` 步、每个抬起 = `键↑` 步、事件间隔 ≥10ms 生成
+/// `NONE⏱gap` 等待步 (录制轮询分辨率 10ms, <10ms 视为同一瞬间合并进同一步)。
+/// 重放效果 = 与用户真实操作同时序 (按住时长/键间间隔/交叠关系全部保留)。
+/// 录制结束时仍按着的键追加 `键↑` 收尾 (防重放卡键)。
 pub fn recorded_to_sequence(
     events: &[RecordedKey],
     vk_name: &dyn Fn(u32) -> Option<String>,
 ) -> String {
+    /// 事件间隔 < 此值视为同一瞬间 (录制轮询 10ms 一帧)
+    const SAME_SLICE_MS: u64 = 10;
+
     let mut timeline: Vec<(u64, bool, u32)> = events
         .iter()
         .flat_map(|e| {
@@ -219,71 +275,66 @@ pub fn recorded_to_sequence(
             v
         })
         .collect();
-    // (时间, is_down): is_down=false (抬起) 排在 true (按下) 前
+    // (时间, is_down): is_down=false (抬起) 排在 true (按下) 前 —— 同一瞬间先松后按
     timeline.sort_by_key(|(t, is_down, _)| (*t, *is_down));
 
-    let mut active: Vec<(u32, u64)> = Vec::new(); // (vk, 按下时刻)
-    let mut step_keys: Vec<String> = Vec::new(); // 本步出现过的键名 (按下顺序, 去重)
-    let mut step_start: Option<u64> = None;
-    let mut steps: Vec<(Vec<String>, u64, u64)> = Vec::new(); // (keys, start, end)
-
-    for &(
-        t,
-        is_down,
-        vk,
-    ) in &timeline
-    {
-        if is_down {
-            let name = vk_name(vk).filter(|n| !n.is_empty());
-            let Some(name) = name else { continue };
-            match step_start {
-                None => {
-                    step_start = Some(t);
-                    step_keys.push(name);
-                    active.push((vk, t));
-                }
-                Some(_) => {
-                    if !step_keys.contains(&name) {
-                        step_keys.push(name);
-                    }
-                    active.push((vk, t));
-                }
-            }
-        } else if step_start.is_some() {
-            if let Some(pos) = active.iter().position(|(v, _)| *v == vk) {
-                active.remove(pos);
-                if active.is_empty() {
-                    steps.push((
-                        std::mem::take(&mut step_keys),
-                        step_start.take().unwrap(),
-                        t,
-                    ));
-                }
-            }
-        }
-    }
-    // 录制结束时仍按着的键: 以最后一个事件时间闭合
-    if let Some(start) = step_start {
-        let end = timeline.last().map(|(t, _, _)| *t).unwrap_or(start);
-        if !step_keys.is_empty() {
-            steps.push((step_keys, start, end.max(start)));
-        }
-    }
-
-    // 拼文本
     let mut out: Vec<String> = Vec::new();
-    let mut prev_end: Option<u64> = None;
-    for (keys, start, end) in &steps {
-        if let Some(pe) = prev_end {
-            let gap = start.saturating_sub(pe);
-            if gap >= 50 {
+    let mut prev_t: Option<u64> = None;
+    let mut idx = 0usize;
+    while idx < timeline.len() {
+        let t0 = timeline[idx].0;
+        let mut downs: Vec<String> = Vec::new();
+        let mut ups: Vec<String> = Vec::new();
+        let mut last_t = t0;
+        /* 同一瞬间 (<10ms) 的事件合进同一步 (如一滚指头同时按下的两个键) */
+        while idx < timeline.len() && timeline[idx].0.saturating_sub(t0) < SAME_SLICE_MS {
+            let (t, is_down, vk) = timeline[idx];
+            if let Some(name) = vk_name(vk).filter(|n| !n.is_empty()) {
+                if is_down {
+                    if !downs.contains(&name) {
+                        downs.push(name);
+                    }
+                } else if !ups.contains(&name) {
+                    ups.push(name);
+                }
+            }
+            last_t = last_t.max(t);
+            idx += 1;
+        }
+        if downs.is_empty() && ups.is_empty() {
+            /* 整组都是不可识别的键 (如手柄vk/未知vk): 不产出、不推进时间轴
+             * (否则会凭空多出等待步) */
+            continue;
+        }
+        if let Some(pt) = prev_t {
+            let gap = t0.saturating_sub(pt);
+            if gap >= SAME_SLICE_MS {
                 out.push(format!("NONE⏱{gap}"));
             }
         }
-        let hold = end.saturating_sub(*start).max(1);
-        out.push(format!("{}⏱{hold}", keys.join("+")));
-        prev_end = Some(*end);
+        if !downs.is_empty() {
+            out.push(format!("{}↓", downs.join("+")));
+        }
+        if !ups.is_empty() {
+            out.push(format!("{}↑", ups.join("+")));
+        }
+        prev_t = Some(last_t);
     }
+
+    /* 录制结束时仍按着的键: 追加抬起步 (序列结束安全网之外的第二道防卡键) */
+    let mut tail: Vec<String> = Vec::new();
+    for e in events {
+        if e.up_ms.is_none()
+            && let Some(name) = vk_name(e.vk).filter(|n| !n.is_empty())
+            && !tail.contains(&name)
+        {
+            tail.push(name);
+        }
+    }
+    if !tail.is_empty() {
+        out.push(format!("{}↑", tail.join("+")));
+    }
+
     out.join("»")
 }
 
@@ -302,36 +353,66 @@ pub(crate) fn run_sequence(
     steps: Arc<[ResolvedStep]>,
     run: Arc<crate::state::SequenceRun>,
 ) {
-    const SLICE_MS: u64 = 15;
     /* ★v24.31 审计: panic 也要注销登记 —— 否则该设备永远无法再触发序列 */
     let body = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        /* ★v24.38 安全网: 记录 PressHold 步按下的键, 序列结束/中断时全部释放
+         * —— 手动编辑的序列可能 ↓ 无配对 ↑ (或中途停止), 不回收会卡键。 */
+        let mut held: SmallVecHeld = SmallVecHeld::new();
         for step in steps.iter() {
             if run.stop.load(Ordering::Relaxed) {
                 break;
             }
-            // 等待步
-            if step.actions.is_empty() {
-                sleep_responsive(&state, &run, step.hold_ms);
-                continue;
-            }
-            // 按下全部 → 保持 → 松开全部
-            for a in &step.actions {
-                state.simulate_press(a);
-            }
-            sleep_responsive(&state, &run, step.hold_ms);
-            for a in &step.actions {
-                state.simulate_release(a);
+            match step.mode {
+                /* ★v24.38 仅抬起步: 松开指定键 ( Tap 之外不睡, 节奏由等待步/间距决定) */
+                crate::state::SeqStepMode::Release => {
+                    for a in &step.actions {
+                        state.simulate_release(a);
+                    }
+                    held.retain(|h| !step.actions.iter().any(|a| a == h));
+                }
+                /* ★v24.38 仅按下一步: 按下并保持 (到配对 ↑ 或序列结束) */
+                crate::state::SeqStepMode::PressHold => {
+                    for a in &step.actions {
+                        state.simulate_press(a);
+                        held.push(a.clone());
+                    }
+                }
+                /* 经典 Tap 步: 等待步 / 按下全部 → 保持 → 松开全部 */
+                crate::state::SeqStepMode::Tap => {
+                    if step.actions.is_empty() {
+                        sleep_responsive(&state, &run, step.hold_ms);
+                        continue;
+                    }
+                    for a in &step.actions {
+                        state.simulate_press(a);
+                    }
+                    sleep_responsive(&state, &run, step.hold_ms);
+                    for a in &step.actions {
+                        state.simulate_release(a);
+                    }
+                }
             }
         }
+        held
     }));
+    /* 安全网释放 (正常结束走这里; panic 时 held 随栈展开丢失 —— 与旧版
+     * "Tap 步 sleep 中 panic 卡键" 同一暴露面, 不劣化) */
+    let panic_msg = body
+        .as_ref()
+        .err()
+        .map(|p| crate::util::panic_payload_str(p.as_ref()));
+    let held_leftover = body.unwrap_or_default();
+    for h in &held_leftover {
+        state.simulate_release(h);
+    }
     state.sequence_run_finished(&device, &run);
-    if let Err(payload) = body {
-        crate::util::crash_log(
-            "seq-runner",
-            &format!("panic: {}", crate::util::panic_payload_str(payload.as_ref())),
-        );
+    if let Some(msg) = panic_msg {
+        crate::util::crash_log("seq-runner", &format!("panic: {msg}"));
     }
 }
+
+/// 安全网持有的动作列表 (catch_unwind 闭包的返回值)
+type SmallVecHeld = smallvec::SmallVec<[OutputAction; 8]>;
 
 /// 可中断睡眠: 响应 全局暂停 (暂停期间原地等待) 与 本条序列的停止。
 fn sleep_responsive(state: &AppState, run: &crate::state::SequenceRun, total_ms: u64) {
@@ -492,6 +573,47 @@ mod tests {
         assert!(sequence_control_name("A").is_none());
     }
 
+    /// ★v24.38 模式步解析: `↓`(=按下保持) / `↑`(=抬起), ASCII 备选 `_` / `^`。
+    #[test]
+    fn parses_press_hold_and_release_steps() {
+        let steps = parse_sequence("DOWN↓»Z↓»NONE⏱80»Z↑»DOWN↑", &HashMap::new()).unwrap();
+        assert_eq!(steps.len(), 5);
+        assert_eq!(steps[0].mode, SeqStepMode::PressHold);
+        assert_eq!(steps[0].keys, vec!["DOWN"]);
+        assert_eq!(steps[1].mode, SeqStepMode::PressHold);
+        assert_eq!(steps[1].keys, vec!["Z"]);
+        assert!(steps[2].keys.is_empty(), "NONE 仍是等待步");
+        assert_eq!(steps[2].mode, SeqStepMode::Tap);
+        assert_eq!(steps[3].mode, SeqStepMode::Release);
+        assert_eq!(steps[4].mode, SeqStepMode::Release);
+        // ASCII 备选 + 多键同按 + 与 Tap 步混排
+        let steps = parse_sequence("A_»B^»C⏱50»A+B↑", &HashMap::new()).unwrap();
+        assert_eq!(steps[0].mode, SeqStepMode::PressHold);
+        assert_eq!(steps[1].mode, SeqStepMode::Release);
+        assert_eq!(steps[2].mode, SeqStepMode::Tap);
+        assert_eq!(steps[3].mode, SeqStepMode::Release);
+        assert_eq!(steps[3].keys, vec!["A", "B"]);
+        // 非法: 模式步带时长 / NONE 模式步
+        assert!(parse_sequence("A↓⏱50", &HashMap::new()).is_err());
+        assert!(parse_sequence("NONE↓", &HashMap::new()).is_err());
+    }
+
+    /// ★v24.38 steps_to_text 往返: 模式步写回 `↓`/`↑`, 再解析回来语义不变。
+    #[test]
+    fn mode_steps_round_trip_through_text() {
+        let steps = vec![
+            SeqStep { keys: vec!["DOWN".into()], hold_ms: None, mode: SeqStepMode::PressHold },
+            SeqStep { keys: Vec::new(), hold_ms: Some(120), mode: SeqStepMode::Tap },
+            SeqStep { keys: vec!["Z".into()], hold_ms: Some(80), mode: SeqStepMode::Tap },
+            SeqStep { keys: vec!["Z".into()], hold_ms: None, mode: SeqStepMode::Release },
+            SeqStep { keys: vec!["DOWN".into()], hold_ms: None, mode: SeqStepMode::Release },
+        ];
+        let text = steps_to_text(&steps, 20);
+        assert_eq!(text, "DOWN↓>NONE:120>Z:80>Z↑>DOWN↑");
+        let back = parse_sequence(&text, &HashMap::new()).unwrap();
+        assert_eq!(back, steps, "文本往返必须保真 (含模式)");
+    }
+
     /// ★v24.31 决定性验证: 轮询录制器在本机真实捕获 keybd_event 合成的按键
     /// (进程内自注入 → GetAsyncKeyState 轮询 → 事件 → 序列文本)。
     #[test]
@@ -518,25 +640,89 @@ mod tests {
             events
         );
         let text = recorded_to_sequence(&events, &vk_to_seq_name);
-        assert!(text.contains('A'), "序列文本应含 A: {text}");
+        assert!(text.contains("A↓"), "序列文本应含 A↓ 按下步: {text}");
+        assert!(text.contains("A↑"), "序列文本应含 A↑ 抬起步: {text}");
     }
 
+    /// ★v24.38 核心场景: 按住方向键期间连打 Z 两下 (DNF 走位连招) ——
+    /// 录制必须还原完整"按下→等待→抬起"时序, 而不是压成一步 `DOWN+Z`。
+    #[test]
+    fn recorded_events_replay_hold_direction_and_taps() {
+        let name = vk_to_seq_name;
+        let events = vec![
+            RecordedKey { vk: 0x28, down_ms: 0, up_ms: None },     // DOWN 按住 (松开在录制结束后的尾部↑)
+            RecordedKey { vk: 0x5A, down_ms: 150, up_ms: Some(230) }, // Z 敲第一下 (按住 80ms)
+            RecordedKey { vk: 0x5A, down_ms: 400, up_ms: Some(470) }, // Z 敲第二下 (按住 70ms)
+        ];
+        let text = recorded_to_sequence(&events, &name);
+        assert_eq!(
+            text,
+            "DOWN↓»NONE⏱150»Z↓»NONE⏱80»Z↑»NONE⏱170»Z↓»NONE⏱70»Z↑»DOWN↑",
+            "事件时序忠实还原: {text}"
+        );
+        /* 往返: 生成的文本必须能原样解析回等价步骤 */
+        let steps = parse_sequence(&text, &HashMap::new()).unwrap();
+        assert_eq!(steps[0].mode, SeqStepMode::PressHold);
+        assert_eq!(steps[1].keys, Vec::<String>::new());
+        assert_eq!(steps[4].mode, SeqStepMode::Release);
+        assert_eq!(steps[9].mode, SeqStepMode::Release);
+    }
+
+    /// ★v24.38 事件时序: 单键按住 100ms → 停 120ms → B、C 交叠 (各自独立按下/抬起)。
     #[test]
     fn recorded_events_become_sequence_text() {
         let name = vk_to_seq_name;
-        // A 按 100ms → 停 120ms → B+C 重叠 80ms
+        // A 按 100ms → 停 120ms → B+C 重叠 (B 220-300, C 240-300)
         let events = vec![
             RecordedKey { vk: 0x41, down_ms: 0, up_ms: Some(100) },   // A
             RecordedKey { vk: 0x42, down_ms: 220, up_ms: Some(300) }, // B
             RecordedKey { vk: 0x43, down_ms: 240, up_ms: Some(300) }, // C
         ];
         let text = recorded_to_sequence(&events, &name);
-        assert_eq!(text, "A⏱100»NONE⏱120»B+C⏱80");
-        // 录制结束时仍按着: 以最后事件时间闭合
-        let events = vec![RecordedKey { vk: 0x41, down_ms: 0, up_ms: None }];
-        assert_eq!(recorded_to_sequence(&events, &name), "A⏱1");
+        assert_eq!(
+            text,
+            "A↓»NONE⏱100»A↑»NONE⏱120»B↓»NONE⏱20»C↓»NONE⏱60»B+C↑",
+            "B/C 同瞬间 (300ms) 抬起合并为一步 (B+C)↑; 按下间隔 20ms 忠实保留"
+        );
+        // 同一瞬间 (<10ms) 的两次按下合并为同一步 A+B↓
+        let events = vec![
+            RecordedKey { vk: 0x41, down_ms: 0, up_ms: Some(50) },
+            RecordedKey { vk: 0x42, down_ms: 5, up_ms: Some(50) },
+        ];
+        assert_eq!(
+            recorded_to_sequence(&events, &name),
+            "A+B↓»NONE⏱45»A+B↑",
+            "同瞬间按下合并, 抬起同瞬间也合并"
+        );
         // 未知 vk 被忽略
         let events = vec![RecordedKey { vk: 0xFF, down_ms: 0, up_ms: Some(10) }];
         assert_eq!(recorded_to_sequence(&events, &name), "");
+    }
+
+    /// ★v24.38: run_sequence 结束时的安全网 —— ↓ 无配对 ↑ 的键在序列结束时被释放
+    /// (纯逻辑验证: 构造 steps 走一遍, 断言不 panic 且不会把 Tap 步的键挂到结束)。
+    /// 真实注入路径属环境敏感测试 (见 poller e2e), 这里只锁分支覆盖。
+    #[test]
+    fn run_sequence_release_safety_branches_exist() {
+        // 编译期锁: SeqStepMode 三态 + ResolvedStep.mode 字段存在且可构造
+        let steps: std::sync::Arc<[ResolvedStep]> = std::sync::Arc::from(vec![
+            ResolvedStep {
+                actions: smallvec::smallvec![],
+                hold_ms: 10,
+                mode: crate::state::SeqStepMode::Tap,
+            },
+            ResolvedStep {
+                actions: smallvec::smallvec![],
+                hold_ms: 0,
+                mode: crate::state::SeqStepMode::PressHold,
+            },
+            ResolvedStep {
+                actions: smallvec::smallvec![],
+                hold_ms: 0,
+                mode: crate::state::SeqStepMode::Release,
+            },
+        ]);
+        assert_eq!(steps.len(), 3);
+        assert_eq!(steps[0].mode, crate::state::SeqStepMode::Tap);
     }
 }

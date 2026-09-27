@@ -395,6 +395,22 @@ pub enum SequenceCtl {
 pub struct ResolvedStep {
     pub actions: SmallVec<[OutputAction; 2]>,
     pub hold_ms: u64,
+    /// ★v24.38 步模式 (按下→等待→抬起 完整还原录制):
+    /// Tap = 经典"全按→保持→全松"; PressHold = 仅按下 (保持到配对的 Release 步);
+    /// Release = 仅抬起。录制器产出的序列以 PressHold/Release 忠实重放按键时序。
+    pub mode: SeqStepMode,
+}
+
+/// ★v24.38 序列步模式 (见 [`ResolvedStep::mode`])。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SeqStepMode {
+    /// 按下 → 保持 hold_ms → 抬起 (经典步, 手动编辑默认)
+    #[default]
+    Tap,
+    /// 仅按下 (文本后缀 `↓`, 保持到配对的 `↑` 步或序列结束安全网)
+    PressHold,
+    /// 仅抬起 (文本后缀 `↑`)
+    Release,
 }
 
 /// ★v24.31 一条正在执行的序列 (按设备去重; 停止由控制/UI 置位)

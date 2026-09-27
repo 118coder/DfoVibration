@@ -143,6 +143,7 @@ impl AppState {
                                         .hold_ms
                                         .unwrap_or(event_duration)
                                         .clamp(2, 60_000),
+                                    mode: step.mode,
                                 });
                             }
                             if ok && !resolved.is_empty() {

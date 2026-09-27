@@ -117,6 +117,21 @@ pub enum GpFlow {
     /// ★v22.4: 自动校准向导 —— 按固定顺序逐个提示用户按下一个键, 自动记录。
     /// `step` = 当前第几个, `total` = 总数 (状态机不依赖具体槽位表)。
     Calibrate { step: usize, total: usize },
+    /// ★v24.37 手柄组合键: 等待**同时按住 ≥2 个**手柄键 (独立于槽位体系, 不绑定槽位)。
+    AwaitChordPad,
+    /// ★v24.37 手柄组合键: 组合已捕获 (`vid`+`ids`), 等待键盘目标;
+    /// `keys` = 已捕获的目标键部件 (可「再加一个键」继续追加)。
+    AwaitChordKb {
+        vid: u16,
+        ids: Vec<u32>,
+        keys: Vec<String>,
+    },
+    /// ★v24.37 手柄组合键: 组合+目标均已捕获, 等确认写入。
+    ConfirmChord {
+        vid: u16,
+        ids: Vec<u32>,
+        value: String,
+    },
 }
 
 /// 捕获类型: 触发键 (校键) / 目标键 (键盘映射)。
@@ -158,13 +173,21 @@ pub enum GpEvent {
     StartCalibration { total: usize },
     /// ★v22.4: 当前校准步完成 (已记录/已跳过) → 进入下一步或结束。
     CalibrationStepDone,
+    /// ★v24.37 开始添加手柄组合键 (进入组合捕获, 独立于槽位)。
+    BeginChord,
+    /// ★v24.37 已捕获手柄组合 (≥2 键, 已通过冲突校验) → 进入键盘目标捕获。
+    ChordPadCaptured { vid: u16, ids: Vec<u32> },
 }
 
 impl GpFlow {
-    /// 当前槽位 (如有)。校准向导不绑定单一槽位 → None。
+    /// 当前槽位 (如有)。校准向导与组合键流程不绑定单一槽位 → None。
     pub fn slot(&self) -> Option<usize> {
         match self {
-            GpFlow::Idle | GpFlow::Calibrate { .. } => None,
+            GpFlow::Idle
+            | GpFlow::Calibrate { .. }
+            | GpFlow::AwaitChordPad
+            | GpFlow::AwaitChordKb { .. }
+            | GpFlow::ConfirmChord { .. } => None,
             GpFlow::Selected { slot }
             | GpFlow::AwaitKb { slot, .. }
             | GpFlow::AwaitPad { slot }
@@ -178,7 +201,11 @@ impl GpFlow {
     pub fn is_capturing(&self) -> bool {
         matches!(
             self,
-            GpFlow::AwaitKb { .. } | GpFlow::AwaitPad { .. } | GpFlow::Calibrate { .. }
+            GpFlow::AwaitKb { .. }
+                | GpFlow::AwaitPad { .. }
+                | GpFlow::Calibrate { .. }
+                | GpFlow::AwaitChordPad
+                | GpFlow::AwaitChordKb { .. }
         )
     }
 
@@ -192,6 +219,7 @@ impl GpFlow {
     }
 
     /// 取消: 只回退一层。捕获/确认态回到 `Selected`; 其余保持不变。
+    /// 组合键流程不绑定槽位 → 回 `Idle`。
     pub fn cancel(&self) -> GpFlow {
         match self {
             GpFlow::AwaitKb { slot, .. }
@@ -199,6 +227,9 @@ impl GpFlow {
             | GpFlow::ConfirmCapture { slot, .. }
             | GpFlow::ConfirmDelete { slot }
             | GpFlow::MapDone { slot } => GpFlow::Selected { slot: *slot },
+            GpFlow::AwaitChordPad | GpFlow::AwaitChordKb { .. } | GpFlow::ConfirmChord { .. } => {
+                GpFlow::Idle
+            }
             GpFlow::Calibrate { .. } => GpFlow::Idle,
             other => other.clone(),
         }
@@ -224,6 +255,11 @@ impl GpFlow {
                 _ => self.clone(),
             },
             E::SelectSlot(slot) => GpFlow::Selected { slot },
+            /* ★v24.37: 开始组合键录入 (忙时不响应, 与槽位交互互斥) */
+            E::BeginChord => match self.is_busy() {
+                false => GpFlow::AwaitChordPad,
+                true => self.clone(),
+            },
             E::BeginSetKb => match self.slot() {
                 Some(slot) => GpFlow::AwaitKb {
                     slot,
@@ -245,6 +281,24 @@ impl GpFlow {
                         value: crate::util::normalize_key_combo(&parts.join("+")),
                     }
                 }
+                GpFlow::AwaitChordKb { vid, ids, keys } => {
+                    let mut parts = keys.clone();
+                    parts.push(k);
+                    GpFlow::ConfirmChord {
+                        vid: *vid,
+                        ids: ids.clone(),
+                        value: crate::util::normalize_key_combo(&parts.join("+")),
+                    }
+                }
+                _ => self.clone(),
+            },
+            /* ★v24.37 组合键: 捕获 ≥2 键 → 键盘目标捕获 */
+            E::ChordPadCaptured { vid, ids } => match self {
+                GpFlow::AwaitChordPad => GpFlow::AwaitChordKb {
+                    vid,
+                    ids: ids.clone(),
+                    keys: Vec::new(),
+                },
                 _ => self.clone(),
             },
             E::PadCaptured(v) => match self {
@@ -262,6 +316,11 @@ impl GpFlow {
                     value,
                 } => GpFlow::AwaitKb {
                     slot: *slot,
+                    keys: vec![value.clone()],
+                },
+                GpFlow::ConfirmChord { vid, ids, value } => GpFlow::AwaitChordKb {
+                    vid: *vid,
+                    ids: ids.clone(),
                     keys: vec![value.clone()],
                 },
                 _ => self.clone(),
@@ -518,5 +577,87 @@ mod tests {
             GpFlow::Calibrate { step: 0, total: 0 }.transition(GpEvent::CalibrationStepDone),
             GpFlow::Idle
         );
+    }
+
+    /// ★v24.37 组合键流程: BeginChord → 捕获组合 → 捕获目标 → 确认; 取消回 Idle。
+    #[test]
+    fn gp_flow_chord_happy_path() {
+        let s = GpFlow::Idle.transition(GpEvent::BeginChord);
+        assert_eq!(s, GpFlow::AwaitChordPad);
+        assert!(s.is_busy());
+        assert!(s.is_capturing(), "组合捕获态离开页面应中止捕获");
+        assert_eq!(s.slot(), None, "组合键流程不绑定槽位");
+
+        let s2 = s.transition(GpEvent::ChordPadCaptured {
+            vid: 0x045E,
+            ids: vec![0x0A, 0x0D],
+        });
+        assert_eq!(
+            s2,
+            GpFlow::AwaitChordKb {
+                vid: 0x045E,
+                ids: vec![0x0A, 0x0D],
+                keys: Vec::new()
+            }
+        );
+        assert!(s2.is_capturing(), "目标键捕获态仍是捕获态");
+
+        let s3 = s2.transition(GpEvent::KbCaptured("SPACE".to_string()));
+        assert_eq!(
+            s3,
+            GpFlow::ConfirmChord {
+                vid: 0x045E,
+                ids: vec![0x0A, 0x0D],
+                value: "SPACE".to_string()
+            }
+        );
+        /* 再加一个键: 保留已捕获值回第 2 步 */
+        let s4 = s3.transition(GpEvent::AddAnotherKey);
+        assert_eq!(
+            s4,
+            GpFlow::AwaitChordKb {
+                vid: 0x045E,
+                ids: vec![0x0A, 0x0D],
+                keys: vec!["SPACE".to_string()]
+            }
+        );
+        let s5 = s4.transition(GpEvent::KbCaptured("LCTRL".to_string()));
+        assert_eq!(
+            s5,
+            GpFlow::ConfirmChord {
+                vid: 0x045E,
+                ids: vec![0x0A, 0x0D],
+                value: "LCTRL+SPACE".to_string()
+            },
+            "normalize_key_combo 应按字母序规范化组合"
+        );
+        /* 确认由 UI 层落盘, 状态机 FinishEdit 回 Idle; 取消也回 Idle */
+        assert_eq!(s5.transition(GpEvent::FinishEdit), GpFlow::Idle);
+        assert_eq!(s3.transition(GpEvent::Cancel), GpFlow::Idle);
+    }
+
+    /// 组合键流程的护栏: 忙时不响应 BeginChord; 非法事件状态不变。
+    #[test]
+    fn gp_flow_chord_guards() {
+        /* 忙态 (捕获中) 不响应 BeginChord */
+        assert_eq!(
+            GpFlow::AwaitChordPad.transition(GpEvent::BeginChord),
+            GpFlow::AwaitChordPad
+        );
+        assert_eq!(
+            GpFlow::Selected { slot: 2 }.transition(GpEvent::BeginChord),
+            GpFlow::AwaitChordPad
+        );
+        /* PadCaptured 事件只在 AwaitChordPad 态生效 */
+        assert_eq!(
+            GpFlow::Idle.transition(GpEvent::ChordPadCaptured {
+                vid: 1,
+                ids: vec![1, 2]
+            }),
+            GpFlow::Idle
+        );
+        /* KbCaptured 在非键盘捕获态不生效 */
+        assert_eq!(GpFlow::AwaitChordPad.transition(GpEvent::KbCaptured("A".into())),
+            GpFlow::AwaitChordPad);
     }
 }

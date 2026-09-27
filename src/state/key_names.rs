@@ -434,10 +434,15 @@ impl AppState {
             let mut scancodes = Vec::new();
             for part in parts {
                 if let Some(vk) = Self::key_name_to_vk(part) {
-                    let scancode = Self::vk_to_scancode(vk);
+                    let mut scancode = Self::vk_to_scancode(vk);
                     if scancode == 0 {
                         // Invalid scancode
                         return None;
+                    }
+                    if (0x60..=0x6F).contains(&vk) {
+                        /* ★v24.37: 小键盘部件 —— 注入时禁止 E0 (否则被当方向/编辑键);
+                         * DIVIDE 例外由注入层反向强制 E0 (0x35 非扩展=主键盘 /) */
+                        scancode |= Self::SCANCODE_NUMPAD_FLAG;
                     }
                     scancodes.push(scancode);
                 } else {
@@ -457,8 +462,13 @@ impl AppState {
 
         // Try single keyboard key
         if let Some(vk) = Self::key_name_to_vk(name) {
-            let scancode = Self::vk_to_scancode(vk);
+            let mut scancode = Self::vk_to_scancode(vk);
             if scancode != 0 {
+                if (0x60..=0x6F).contains(&vk) {
+                    /* ★v24.37: 小键盘键 —— 注入时禁止 E0 (否则被当方向/编辑键)。
+                     * DIVIDE (0x6F) 例外由注入层反向强制 E0 (0x35 非扩展=主键盘 /)。 */
+                    scancode |= Self::SCANCODE_NUMPAD_FLAG;
+                }
                 return Some(OutputAction::KeyboardKey(scancode));
             }
         }

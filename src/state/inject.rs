@@ -22,10 +22,7 @@ impl AppState {
         unsafe {
             match action {
                 OutputAction::KeyboardKey(scancode) => {
-                    let mut press_flags = KEYEVENTF_SCANCODE;
-                    if Self::is_extended_scancode(scancode) {
-                        press_flags |= KEYEVENTF_EXTENDEDKEY;
-                    }
+                    let press_flags = Self::keyboard_press_flags(scancode);
 
                     // Press the key
                     let mut input = INPUT {
@@ -33,7 +30,7 @@ impl AppState {
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: VIRTUAL_KEY(0),
-                                wScan: scancode,
+                                wScan: Self::raw_scancode(scancode),
                                 dwFlags: press_flags,
                                 time: 0,
                                 dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -145,17 +142,14 @@ impl AppState {
                 OutputAction::KeyCombo(scancodes) => {
                     // Press all keys in sequence (modifiers first, then main key)
                     for &scancode in scancodes.iter() {
-                        let mut flags = KEYEVENTF_SCANCODE;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode);
 
                         let input = INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -172,17 +166,14 @@ impl AppState {
 
                     // Release all keys in reverse order (main key first, then modifiers)
                     for &scancode in scancodes.iter().rev() {
-                        let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode) | KEYEVENTF_KEYUP;
 
                         let input = INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -260,6 +251,43 @@ impl AppState {
         scancode < 128 && (EXTENDED_KEYS_BITMAP & (1u128 << scancode)) != 0
     }
 
+    /// ★v24.37 OutputAction scancode 的附加标记位 (bit 8): 该目标解析自小键盘键
+    /// (NUMPAD0-9 / 小键盘运算键, VK 0x60..=0x6F, 由 key_names 解析时打标)。
+    /// 这批 scancode 与方向键/编辑键**共用** (0x50 = NUMPAD2 也 = DOWN): 注入时
+    /// 加了 KEYEVENTF_EXTENDEDKEY 会被系统翻译成方向键 —— 用户实测
+    /// 「映射到小键盘 2/4/6/8 无效」的根因。唯一例外 DIVIDE: 小键盘 ÷ 物理上
+    /// 就是 E0-0x35 (非扩展 0x35 是主键盘 /), 注入层对 0x35 反向强制 E0。
+    pub(crate) const SCANCODE_NUMPAD_FLAG: u16 = 0x0100;
+
+    /// 剥掉标记位后的真实 scancode (写 wScan 用)
+    #[inline(always)]
+    pub(crate) fn raw_scancode(sc: u16) -> u16 {
+        sc & 0xFF
+    }
+
+    #[inline(always)]
+    pub(crate) fn is_numpad_scancode(sc: u16) -> bool {
+        sc & Self::SCANCODE_NUMPAD_FLAG != 0
+    }
+
+    /// 键盘注入 flags (按下; 弹起由调用方再 `| KEYEVENTF_KEYUP`)。
+    /// 所有 KeyboardKey/KeyCombo 注入点统一走这里, 禁止各自拼 flags。
+    /// 小键盘标记 → 不加 E0 (防止被当方向/编辑键); 唯一例外 raw=0x35 (DIVIDE) 反向强制 E0。
+    #[inline(always)]
+    pub(crate) fn keyboard_press_flags(sc: u16) -> KEYBD_EVENT_FLAGS {
+        let mut flags = KEYEVENTF_SCANCODE;
+        let raw = Self::raw_scancode(sc);
+        if Self::is_numpad_scancode(sc) {
+            if raw == 0x35 {
+                /* 小键盘 ÷: 物理按键就是 E0-0x35; 不加 E0 会注入成主键盘 '/' */
+                flags |= KEYEVENTF_EXTENDEDKEY;
+            }
+        } else if Self::is_extended_scancode(raw) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        flags
+    }
+
     /// Simulates only the press event for an action
     #[inline(always)]
     pub fn simulate_press(&self, action: &OutputAction) {
@@ -269,17 +297,14 @@ impl AppState {
         unsafe {
             match action {
                 OutputAction::KeyboardKey(scancode) => {
-                    let mut flags = KEYEVENTF_SCANCODE;
-                    if Self::is_extended_scancode(*scancode) {
-                        flags |= KEYEVENTF_EXTENDEDKEY;
-                    }
+                    let flags = Self::keyboard_press_flags(*scancode);
 
                     let input = INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: VIRTUAL_KEY(0),
-                                wScan: *scancode,
+                                wScan: Self::raw_scancode(*scancode),
                                 dwFlags: flags,
                                 time: 0,
                                 dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -327,17 +352,14 @@ impl AppState {
                 }
                 OutputAction::KeyCombo(scancodes) => {
                     for &scancode in scancodes.iter() {
-                        let mut flags = KEYEVENTF_SCANCODE;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode);
 
                         let input = INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -372,17 +394,14 @@ impl AppState {
         unsafe {
             match action {
                 OutputAction::KeyboardKey(scancode) => {
-                    let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                    if Self::is_extended_scancode(*scancode) {
-                        flags |= KEYEVENTF_EXTENDEDKEY;
-                    }
+                    let flags = Self::keyboard_press_flags(*scancode) | KEYEVENTF_KEYUP;
 
                     let input = INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: VIRTUAL_KEY(0),
-                                wScan: *scancode,
+                                wScan: Self::raw_scancode(*scancode),
                                 dwFlags: flags,
                                 time: 0,
                                 dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -430,17 +449,14 @@ impl AppState {
                 }
                 OutputAction::KeyCombo(scancodes) => {
                     for &scancode in scancodes.iter().rev() {
-                        let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode) | KEYEVENTF_KEYUP;
 
                         let input = INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -476,17 +492,14 @@ impl AppState {
         for action in actions.iter() {
             match action {
                 OutputAction::KeyboardKey(scancode) => {
-                    let mut flags = KEYEVENTF_SCANCODE;
-                    if Self::is_extended_scancode(*scancode) {
-                        flags |= KEYEVENTF_EXTENDEDKEY;
-                    }
+                    let flags = Self::keyboard_press_flags(*scancode);
 
                     inputs.push(INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: VIRTUAL_KEY(0),
-                                wScan: *scancode,
+                                wScan: Self::raw_scancode(*scancode),
                                 dwFlags: flags,
                                 time: 0,
                                 dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -526,17 +539,14 @@ impl AppState {
                 }
                 OutputAction::KeyCombo(scancodes) => {
                     for &scancode in scancodes.iter() {
-                        let mut flags = KEYEVENTF_SCANCODE;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode);
 
                         inputs.push(INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -569,17 +579,14 @@ impl AppState {
         for action in actions.iter() {
             match action {
                 OutputAction::KeyboardKey(scancode) => {
-                    let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                    if Self::is_extended_scancode(*scancode) {
-                        flags |= KEYEVENTF_EXTENDEDKEY;
-                    }
+                    let flags = Self::keyboard_press_flags(*scancode) | KEYEVENTF_KEYUP;
 
                     inputs.push(INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
                             ki: KEYBDINPUT {
                                 wVk: VIRTUAL_KEY(0),
-                                wScan: *scancode,
+                                wScan: Self::raw_scancode(*scancode),
                                 dwFlags: flags,
                                 time: 0,
                                 dwExtraInfo: SIMULATED_EVENT_MARKER,
@@ -619,17 +626,14 @@ impl AppState {
                 }
                 OutputAction::KeyCombo(scancodes) => {
                     for &scancode in scancodes.iter().rev() {
-                        let mut flags = KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP;
-                        if Self::is_extended_scancode(scancode) {
-                            flags |= KEYEVENTF_EXTENDEDKEY;
-                        }
+                        let flags = Self::keyboard_press_flags(scancode) | KEYEVENTF_KEYUP;
 
                         inputs.push(INPUT {
                             r#type: INPUT_KEYBOARD,
                             Anonymous: INPUT_0 {
                                 ki: KEYBDINPUT {
                                     wVk: VIRTUAL_KEY(0),
-                                    wScan: scancode,
+                                    wScan: Self::raw_scancode(scancode),
                                     dwFlags: flags,
                                     time: 0,
                                     dwExtraInfo: SIMULATED_EVENT_MARKER,

@@ -164,3 +164,77 @@ mod preset_switch_conflict_tests {
         assert!(!crate::state::AppState::is_valid_input_name("测试"));
     }
 }
+
+/// ★v24.38 序列宏即时生效契约 (用户实测 bug: 录制序列后触发仍是旧目标键 A):
+/// 序列编辑器的**一切**文本变更 (录制填入/加步/清空/改文本) 必须立即落盘+热重载,
+/// 引擎侧 sequence 立刻接管 —— v24.32 只有「＋按键步」路径做了即时生效,
+/// 录制等路径只改 GUI 内存, 手柄页 (无保存按钮) 永远不生效。
+#[cfg(test)]
+mod sequence_apply_tests {
+    use super::SorahkGui;
+    use crate::config::{AppConfig, KeyMapping};
+    use crate::state::{AppState, InputDevice};
+    use std::sync::Arc;
+
+    fn gui_with_target_a() -> (SorahkGui, Arc<AppState>, InputDevice, usize) {
+        let mut config = AppConfig::default();
+        config.mappings.push(KeyMapping {
+            sequence_text: String::new(),
+            release_targets: Default::default(),
+            trigger_key: "F8".to_string(),
+            target_keys: smallvec::SmallVec::from_vec(vec!["A".to_string()]),
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            note: String::new(),
+        });
+        /* ⚠ AppConfig::default() 自带 1 条 Q→Q 映射 —— 按触发键定位, 不写死下标 */
+        let idx = config
+            .mappings
+            .iter()
+            .position(|m| m.trigger_key == "F8")
+            .unwrap();
+        let state = Arc::new(AppState::new(config.clone()).unwrap());
+        let gui = SorahkGui::new(state.clone(), config);
+        let dev = AppState::input_name_to_device("F8").unwrap();
+        (gui, state, dev, idx)
+    }
+
+    #[test]
+    fn sequence_edit_takes_over_engine_immediately() {
+        let (mut gui, state, dev, idx) = gui_with_target_a();
+        /* 初始: 无序列 → 目标键 A 生效 */
+        let m = state.get_input_mapping(&dev).expect("映射应存在");
+        assert!(m.sequence.is_none(), "前置: 初始无序列");
+
+        /* 用户录了 J 按住 100ms (完整按下→等待→抬起) 并点「停止并填入」 */
+        gui.apply_sequence_text(idx, "J↓»NONE⏱100»J↑".to_string());
+
+        let m = state.get_input_mapping(&dev).expect("映射应存在");
+        assert!(
+            m.sequence.is_some(),
+            "★序列必须立即接管引擎 (旧 bug: 只改内存不落盘, 触发仍直接按 A)"
+        );
+        /* 注: mapping 层 target_action 保留原目标键数据, 但 worker 的序列分支
+         * 优先且登记占位 DevRuntime (KeyboardKey(0) 永不注入) —— 见 keyboard.rs */
+    }
+
+    #[test]
+    fn sequence_edit_bad_syntax_disables_mapping_not_falls_back() {
+        let (mut gui, state, dev, idx) = gui_with_target_a();
+        /* 解析失败: 整条跳过 (不回退目标键) —— 与引擎 v24.35 契约一致 */
+        gui.apply_sequence_text(idx, "NONE".to_string());
+        let m = state.get_input_mapping(&dev);
+        assert!(
+            m.is_none(),
+            "序列解析失败 → 映射整体不生效 (防行为突变), 而不是悄悄按 A"
+        );
+    }
+}

@@ -102,21 +102,19 @@ ClickAt ([int]($W * 0.5)) 518
 ClickAt ([int]($W * 0.4983)) 535
 ClickAt ([int]($W * 0.5)) 673
 
-# 连发映射修改页
-ClickAt 110 190
-Start-Sleep -Milliseconds 600
-# 滚到映射列表 (页面区域点击后 End)
-ClickAt 700 700
-Start-Sleep -Milliseconds 300
-# 滚轮下滚 6 格 (停在映射列表)
-[SeqCap]::Wheel(700, 500, -360 * 6)
-Start-Sleep -Milliseconds 800
-# 点编辑 → 编辑卡自动滚到顶部 → 下滚找序列宏区
-ClickAt 1364 651
+# 手柄页 → 点右摇杆·上槽位 → 截面板
+ClickAt 110 135
 Start-Sleep -Milliseconds 900
-[SeqCap]::Wheel(700, 500, -360 * 3)
-Start-Sleep -Milliseconds 700
-Capture "edit-seq"
+ClickAt 506 475
+Start-Sleep -Milliseconds 900
+Capture "slot-panel"
+# 点「鼠标映射…」→ 弹窗截图
+ClickAt 998 663
+Start-Sleep -Milliseconds 900
+Capture "mouse-dialog"
+Write-Output "PID $($proc.Id)"
+Stop-Process -Id $proc.Id -Force
+Write-Output "DONE"
 Write-Output "PID $($proc.Id)"
 Stop-Process -Id $proc.Id -Force
 Write-Output "DONE"

@@ -234,7 +234,10 @@ impl SorahkGui {
                     th.badge(ui, "未校对", th.warn, th.faint)
                         .on_hover_text("请先点右上「快速校对手柄按键」把手柄键位校一遍");
                 } else {
-                    th.trigger_badge(ui, &trigger);
+                    /* ★v24.40: 友好名显示 (原始 HID 哈希名 → RT/LT 等), 悬停看原名 */
+                    let trigger_disp = crate::gui::utils::friendly_input_name(&trigger);
+                    th.trigger_badge(ui, &trigger_disp)
+                        .on_hover_text(trigger.clone());
                 }
             });
             ui.add_space(6.0);

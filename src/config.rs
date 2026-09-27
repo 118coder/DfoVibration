@@ -1441,6 +1441,11 @@ pub struct AppConfig {    /// Display tray icon
     /// 是否启用进程白名单过滤 (false = 全部放行, 列表保留不删)
     #[serde(default = "default_whitelist_enabled")]
     pub whitelist_enabled: bool,
+    /// ★v24.40 白名单匹配模式: true = 简易模式 (所有条目只按文件名比对, 旧版行为,
+    /// 换目录/换盘不失效); false = 精细模式 (含路径分隔符的条目按完整路径精确匹配,
+    /// 两个同名不同版本 exe 各归各)。
+    #[serde(default)]
+    pub whitelist_simple_mode: bool,
     /// HID device baselines for button detection
     #[serde(default)]
     pub hid_baselines: Vec<HidDeviceBaseline>,
@@ -1772,6 +1777,7 @@ impl Default for AppConfig {
             worker_count: default_worker_count(),
             process_whitelist: vec![], // Empty means all processes enabled
             whitelist_enabled: default_whitelist_enabled(),
+            whitelist_simple_mode: false,
             hid_baselines: Vec::new(),
             hid_slot_usages: Vec::new(),
             rawinput_capture_mode: default_capture_mode(),

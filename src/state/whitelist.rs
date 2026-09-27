@@ -60,7 +60,14 @@ impl AppState {
     /// - 纯进程名 (如 `dnf.exe`): 匹配任意路径的同名进程 (老语义, 兼容旧配置);
     /// - 完整路径 (含 `\` 或 `/`, 如 `E:\games\A\DFO.exe`): 只匹配该路径的进程 ——
     ///   用于区分**同名不同版本**的 exe (A 版/B 版 DFO.exe 各登记一条, 互不干扰)。
-    pub(super) fn whitelist_entry_matches(entry: &str, full_path: Option<&str>) -> bool {
+    /// ★v24.40 白名单匹配 (带模式): simple=true = 简易模式 —— **所有**条目
+    /// (含完整路径条目) 都只按文件名尾段比对, 旧版行为, 换目录/换盘不失效;
+    /// simple=false = 精细模式 —— 路径条目按完整路径精确匹配 (同名不同版本各归各)。
+    pub(super) fn whitelist_entry_matches_in(
+        simple: bool,
+        entry: &str,
+        full_path: Option<&str>,
+    ) -> bool {
         let entry = entry.trim();
         if entry.is_empty() {
             return false;
@@ -68,15 +75,28 @@ impl AppState {
         let Some(path) = full_path else {
             return false;
         };
+        if simple {
+            // 简易模式: 条目与进程路径都只取文件名尾段比对
+            let entry_name = entry.rsplit(['\\', '/']).next().unwrap_or(entry);
+            return path
+                .rsplit(['\\', '/'])
+                .next()
+                .is_some_and(|name| name.eq_ignore_ascii_case(entry_name));
+        }
         if entry.contains('\\') || entry.contains('/') {
-            // 路径条目: 完整路径精确匹配
+            // 精细模式 · 路径条目: 完整路径精确匹配
             path.eq_ignore_ascii_case(entry)
         } else {
-            // 进程名条目: 与路径尾段文件名比对
+            // 精细模式 · 进程名条目: 与路径尾段文件名比对
             path.rsplit(['\\', '/'])
                 .next()
                 .is_some_and(|name| name.eq_ignore_ascii_case(entry))
         }
+    }
+
+    /// 旧签名委托 (精细模式) —— 既有调用/测试兼容。
+    pub(super) fn whitelist_entry_matches(entry: &str, full_path: Option<&str>) -> bool {
+        Self::whitelist_entry_matches_in(false, entry, full_path)
     }
 
     /// Check if current foreground process is in whitelist (empty whitelist = all allowed)
@@ -113,10 +133,11 @@ impl AppState {
         };
 
         // Check if process is in whitelist (任一条目命中即放行)
+        let simple = self.whitelist_simple_mode.load(Ordering::Relaxed);
         if let Some(path) = process_path {
             whitelist
                 .iter()
-                .any(|p| Self::whitelist_entry_matches(p, Some(&path)))
+                .any(|p| Self::whitelist_entry_matches_in(simple, p, Some(&path)))
         } else {
             // If we can't get process path, allow by default
             true

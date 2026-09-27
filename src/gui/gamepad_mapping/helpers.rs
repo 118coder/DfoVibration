@@ -3,19 +3,12 @@
 use crate::config::{AppConfig, KeyMapping};
 use super::*;
 
-/// 触发键的短名 (校准向导里逐条展示用): 去掉设备前缀, 一眼看出串键。
-/// 原始命名 `GAMEPAD_20BC_5159_DEV5A27EA46_H680322833` → `H680322833`;
-/// XInput 命名 `GAMEPAD_045E_RS_Click` → `045E_RS_Click`。
+/// 触发键的短名 (校准向导/槽位面板展示用): ★v24.40 改为**友好语义名**。
+/// 原始命名 `GAMEPAD_20BC_5159_DEV5A27EA46_H8` → `RT` (标准布局 usage);
+/// XInput 命名 `GAMEPAD_045E_RS_Click` → `RS_Click` (剥设备前缀);
+/// 无法解读的位置退化为紧凑短名 (`键位2.0`), 不再展示长哈希串。
 pub fn short_trigger_name(name: &str) -> String {
-    let Some(rest) = name.strip_prefix("GAMEPAD_") else {
-        return name.to_string();
-    };
-    let parts: Vec<&str> = rest.split('_').collect();
-    if parts.len() >= 4 && parts[2].starts_with("DEV") {
-        parts[3..].join("_")
-    } else {
-        rest.to_string()
-    }
+    crate::gui::utils::friendly_input_name(name)
 }
 
 /// ★v24.0: 槽位的**系统备注** —— 校准/映射的唯一关联键 (写入 `mapping.note`)。

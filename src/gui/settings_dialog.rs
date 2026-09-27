@@ -209,7 +209,7 @@ impl SorahkGui {
                                 mapping.add_release_key(input_name.clone());
                             }
                         }
-                        KeyCaptureMode::SequenceStepKey(_, _) => {
+                        KeyCaptureMode::SequenceStepKey(_, _, _) => {
                             /* ★v24.32 序列步骤捕获只在连发页编辑面板处理 */
                         }
                         KeyCaptureMode::NewMappingTrigger => {

@@ -145,6 +145,102 @@ pub fn create_icon() -> egui::IconData {
     }
 }
 
+
+/* ==================== ★v24.40 输入名友好显示 (仅显示层) ==================== */
+
+/// 输入名的友好显示 —— **只用于 UI 展示**, Config/运行时仍用完整原名。
+///
+/// 原始 HID 命名 `GAMEPAD_20BC_5159_DEV5A27EA46_H8` 这类长哈希串在界面上
+/// 没有人能读懂; 本函数把它翻译成标准布局语义名 (RT/LT/A/B…), 无法解读的
+/// 位置退化为紧凑短名 (`键位2.0`)。XInput 命名剥掉 `GAMEPAD_<vid>_` 前缀
+/// (RS_Click / LB+LT)。组合名 (`+`) 按段分别翻译后再拼接。
+pub fn friendly_input_name(name: &str) -> String {
+    /* 组合名按 key_combo_parts 的 carry 语义拆段
+     * (GAMEPAD_045E_LB+LT → [GAMEPAD_045E_LB, GAMEPAD_045E_LT]) 再逐段翻译 */
+    crate::util::key_combo_parts(name)
+        .iter()
+        .map(|p| friendly_single(p))
+        .collect::<Vec<String>>()
+        .join("+")
+}
+
+/// 单段输入名 (不含 `+`) 的友好显示。
+fn friendly_single(name: &str) -> String {
+    let upper = name.to_uppercase();
+    let is_pad = upper.starts_with("GAMEPAD_")
+        || upper.starts_with("JOYSTICK_")
+        || upper.starts_with("HID_");
+    if !is_pad {
+        return name.to_string(); // 键盘/鼠标名本就可读
+    }
+    let parts: Vec<&str> = name.split('_').collect();
+    /* 原始命名段数 ≥5: GAMEPAD/JOYSTICK = [type,vid,pid,serial,pos…],
+     * HID = [HID,usage_page,vid,pid,serial,pos…] → 位置段取第 5 段 */
+    let pos_idx = if upper.starts_with("HID_") { 5 } else { 4 };
+    if parts.len() >= pos_idx + 1 {
+        return friendly_position(parts[pos_idx]);
+    }
+    /* 其余 = XInput 语义命名 (`GAMEPAD_<vid>_<按钮名>`, 按钮名可含下划线,
+     * 如 RS_Click / DPad_Up / LS_RightUp): 剥掉 type + vid 两段 */
+    if parts.len() >= 3 {
+        return parts[2..].join("_");
+    }
+    name.to_string()
+}
+
+/// 位置段 (`H<usage>` / `A<usage><L|R|U|D>` / `B<byte>.<bit>` / `B<byte>`) → 友好名。
+fn friendly_position(pos: &str) -> String {
+    let dir_name = |c: char| match c {
+        'L' => "左",
+        'R' => "右",
+        'U' => "上",
+        'D' => "下",
+        _ => "",
+    };
+    if let Some(hex) = pos.strip_prefix('H') {
+        /* 语义按钮: 标准 usage → A/B/X/Y/LB/RB/LT/RT… */
+        if let Ok(usage) = u32::from_str_radix(hex, 16) {
+            if let Some(n) = crate::hid_layout::standard_button_name(usage) {
+                return n.to_string();
+            }
+            return format!("按钮{usage}");
+        }
+        return format!("键位{pos}");
+    }
+    if let Some(rest) = pos.strip_prefix('A')
+        && rest.len() >= 2
+    {
+        let (usage_hex, dir_ch) = rest.split_at(rest.len() - 1);
+        let dir = dir_ch.chars().next().unwrap_or('U');
+        if let Ok(usage) = u16::from_str_radix(usage_hex, 16) {
+            let kind = crate::hid_layout::HidAxisKind::from_usage(usage);
+            let base = match kind {
+                Some(crate::hid_layout::HidAxisKind::X)
+                | Some(crate::hid_layout::HidAxisKind::Y) => "左摇杆",
+                Some(crate::hid_layout::HidAxisKind::Rx)
+                | Some(crate::hid_layout::HidAxisKind::Ry) => "右摇杆",
+                Some(crate::hid_layout::HidAxisKind::Z)
+                | Some(crate::hid_layout::HidAxisKind::Rz)
+                | Some(crate::hid_layout::HidAxisKind::Slider)
+                | Some(crate::hid_layout::HidAxisKind::Dial)
+                | Some(crate::hid_layout::HidAxisKind::Wheel) => "扳机",
+                Some(crate::hid_layout::HidAxisKind::HatSwitch) => "十字键",
+                _ => "轴",
+            };
+            return match base {
+                "扳机" => base.to_string(), // 扳机不分方向 (按到底是唯一意图)
+                "轴" => format!("轴{usage:X}·{}", dir_name(dir)),
+                _ => format!("{base}·{}", dir_name(dir)),
+            };
+        }
+        return format!("键位{pos}");
+    }
+    if let Some(rest) = pos.strip_prefix('B') {
+        return format!("键位{rest}");
+    }
+    format!("键位{pos}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

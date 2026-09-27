@@ -543,7 +543,9 @@ fn render_mapping_row(
                         ui.label(th.hint_text("尚未捕获触发键"));
                     } else {
                         for part in trigger.split('+') {
-                            let short = truncate_chars(part, 20);
+                            /* ★v24.40: 友好名 (原始 HID 哈希名 → RT/LT 等), 悬停看原名 */
+                            let disp = utils::friendly_input_name(part);
+                            let short = truncate_chars(&disp, 20);
                             widgets::keycap_typed(ui, th, &short, utils::key_kind(part))
                                 .on_hover_text(part.to_string());
                         }

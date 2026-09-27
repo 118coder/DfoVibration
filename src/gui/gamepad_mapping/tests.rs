@@ -424,13 +424,37 @@ mod pad_capture_reconcile_tests {
         assert!(!trigger_matches_xinput("GAMEPAD_045E_A+B", 0x045E, 1u32 << 0x0B));
     }
 
-    /// 触发键短名: 原始命名去掉设备前缀, XInput 命名去掉 GAMEPAD_。
+    /// 触发键短名: ★v24.40 友好语义名 —— 原始 HID usage → RT/LT 等;
+    /// XInput 命名剥前缀; 组合名逐段翻译; 无法解读的位置给紧凑短名。
     #[test]
     fn short_trigger_strips_device_prefix() {
+        /* H8 = 标准 usage 8 = RT (不再显示长哈希) */
         assert_eq!(
-            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_H680322833"),
-            "H680322833"
+            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_H8"),
+            "RT"
         );
-        assert_eq!(short_trigger_name("GAMEPAD_045E_RS_Click"), "045E_RS_Click");
+        assert_eq!(
+            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_H5"),
+            "LB"
+        );
+        /* 扳机轴 (usage 0x32 = Z) 不分方向 */
+        assert_eq!(
+            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_A32U"),
+            "扳机"
+        );
+        /* 摇杆轴带方向 */
+        assert_eq!(
+            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_A30U"),
+            "左摇杆·上"
+        );
+        /* 位级位置无法解读 → 紧凑短名 */
+        assert_eq!(
+            short_trigger_name("GAMEPAD_20BC_5159_DEV5A27EA46_B2.0"),
+            "键位2.0"
+        );
+        /* XInput 语义命名剥前缀 */
+        assert_eq!(short_trigger_name("GAMEPAD_045E_RS_Click"), "RS_Click");
+        /* 组合名逐段翻译 */
+        assert_eq!(short_trigger_name("GAMEPAD_045E_LB+LT"), "LB+LT");
     }
 }

@@ -21,3 +21,4 @@ Thumbs.db
 
 # 离屏调试工具与临时产物
 work/_patch_*.py
+work/*.log

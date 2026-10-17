@@ -951,6 +951,9 @@ impl DeviceManagerDialog {
             self.vibration_left,
             self.vibration_right,
         );
+        /* ★v24.41: 直写马达绕过引擎 —— 作废引擎写入去重缓存, 否则引擎缓存与
+         * 实际马达状态不一致 (见 invalidate_xinput_write_cache 注释)。 */
+        crate::vibration::invalidate_xinput_write_cache();
         self.vibration_test_until =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
     }
@@ -958,6 +961,7 @@ impl DeviceManagerDialog {
     /// Stops vibration for a specific device.
     fn stop_vibration(&mut self, user_index: u32) {
         crate::xinput::XInputHandler::set_vibration(user_index, 0, 0);
+        crate::vibration::invalidate_xinput_write_cache();
         self.vibration_test_until = None;
     }
 
@@ -966,6 +970,21 @@ impl DeviceManagerDialog {
         for device in &self.xinput_devices {
             crate::xinput::XInputHandler::set_vibration(device.user_index, 0, 0);
         }
+        crate::vibration::invalidate_xinput_write_cache();
         self.vibration_test_until = None;
+    }
+}
+
+/* ★v24.41 关闭即停: 震动测试进行中直接点 ✕ 关掉本弹窗时, 自动停表不会再跑
+ * (render 不再被调用) —— 且引擎端 v24.41 起空闲期不再覆写 (0,0), 没有兜底会
+ * 把马达留在测试档位。Drop 里补一次全停 (正常路径已停过, 重复写 0 无害)。 */
+impl Drop for DeviceManagerDialog {
+    fn drop(&mut self) {
+        if self.vibration_test_until.is_some() {
+            for device in &self.xinput_devices {
+                crate::xinput::XInputHandler::set_vibration(device.user_index, 0, 0);
+            }
+            crate::vibration::invalidate_xinput_write_cache();
+        }
     }
 }

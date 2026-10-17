@@ -315,6 +315,13 @@ impl SorahkGui {
                 temp_config.current_preset = self.config.current_preset.clone();
                 temp_config.vibration = self.config.vibration.clone();
                 temp_config.vibration_presets = self.config.vibration_presets.clone();
+                /* ★v24.42 (缺陷 2): 白名单三件套也从运行时最新值回灌 —— 本区现在直接
+                 * 编辑 self.config 并即时落盘, 若不在 Save 时回灌, temp_config 里的旧
+                 * 名单会把刚增删的那些条目写回 (回滚)。此处与 mappings/presets 同一
+                 * 口径: Save 只提交弹窗自己拥有的字段。 */
+                temp_config.process_whitelist = self.config.process_whitelist.clone();
+                temp_config.whitelist_enabled = self.config.whitelist_enabled;
+                temp_config.whitelist_simple_mode = self.config.whitelist_simple_mode;
                 temp_config.hid_baselines = self.config.hid_baselines.clone();
                 temp_config.device_api_preferences = self.config.device_api_preferences.clone();
                 temp_config.guide_seen = self.config.guide_seen;
@@ -2409,8 +2416,25 @@ impl SorahkGui {
     }
 
     /// settings_section_whitelist — 进程白名单区 (原 1930-2107)
+    ///
+    /// ★v24.42 (缺陷 2 修复): 本区改为**直接读写 self.config 的同一份名单**, 增删
+    /// 即时落盘 + reload_config —— 与「白名单修改」页完全同一个出口。
+    ///
+    /// 缺陷症状: 白名单页显示 10 条, 本区只显示 2 条 (用户以为"两处不是同一份数据")。
+    /// 两层真实原因:
+    ///  ① 显示: 列表原包在 `ScrollArea::max_height(80.0)` 里, 行高 = 28 (28x28 删除
+    ///     按钮) + item_spacing 8 = 36px → 80px 只露出 2 行多, 后 8 条看不见;
+    ///  ② 数据: 本区原改的是"打开弹窗那一刻的快照" temp_config.process_whitelist, 而
+    ///     保存路径只把部分字段从 self.config 回灌 (不含 process_whitelist) →
+    ///     弹窗开着时在白名单页做的增删, 会被本弹窗「保存配置」静默回滚 (真丢数据)。
+    /// 修复后语义: 同一字段 (config.process_whitelist) / 同一文件 (Config.toml) /
+    /// 即时一致 (增删立刻生效, 弹窗未关也一致); 启用状态与匹配模式不受影响
+    /// (whitelist_enabled / whitelist_simple_mode 本区不碰; 保存路径一并兜底回灌)。
     fn settings_section_whitelist(&mut self, ui: &mut egui::Ui) {
-        let Some(temp_config) = self.temp_config.as_mut() else { return; };
+        /* 与渲染前置一致 (无快照不渲染, 原 unwrap 崩溃点的防护) */
+        if self.temp_config.is_none() {
+            return;
+        }
         let t = &self.translations;
         let accent_color = Theme::new(self.dark_mode).accent_text;
                             // Process Whitelist Section
@@ -2430,65 +2454,81 @@ impl SorahkGui {
                                     );
                                     ui.add_space(6.0);
 
+                                    /* ★v24.42: 明示与白名单页同源 + 即时生效 (缺陷 2 的
+                                     * 用户可见面: 两处曾是"看不出是一份名单") */
+                                    ui.label(Theme::new(self.dark_mode).hint_text(
+                                        "与左侧「白名单修改」页是同一份名单 —— 增删即时保存生效, 无需点保存配置",
+                                    ));
+                                    ui.add_space(6.0);
+
                                     // Process list
-                                    egui::ScrollArea::vertical().max_height(80.0).show(
-                                        ui,
-                                        |ui| {
-                                            let mut to_remove: Option<usize> = None;
-                                            for (idx, process) in temp_config
-                                                .process_whitelist
-                                                .iter()
-                                                .enumerate()
-                                            {
-                                                ui.horizontal(|ui| {
+                                    /* ★v24.43c: **不再内嵌滚动区**。
+                                     * 旧版是 `ScrollArea::max_height(80.0)` —— 80px 只露出
+                                     * 2 行 (10 条里后 8 条不可见); v24.42 去掉了限高但仍留
+                                     * 内层 ScrollArea, 弹窗自身的滚动区与内层争抢滚轮, 列表
+                                     * 一长仍然"翻不动"。这里改为**直接渲染全量列表**, 滚动
+                                     * 完全交给弹窗自身的 ScrollArea —— 与「白名单修改」页
+                                     * 显示同一份名单、同样的行结构 (文件名粗体 + 路径小字)。 */
+                                    let th = Theme::new(self.dark_mode);
+                                    let mut to_remove: Option<usize> = None;
+                                    for (idx, process) in
+                                        self.config.process_whitelist.iter().enumerate()
+                                    {
+                                        ui.horizontal(|ui| {
+                                            ui.vertical(|ui| {
+                                                /* 路径条目: 文件名粗体 + 小字路径;
+                                                 * 纯进程名: 只显示名字 (与白名单页同构) */
+                                                let filename =
+                                                    process.rsplit(['\\', '/']).next().unwrap_or(process);
+                                                ui.label(
+                                                    egui::RichText::new(filename)
+                                                        .size(13.0)
+                                                        .color(th.text)
+                                                        .family(Theme::font_bold()),
+                                                );
+                                                if filename.len() < process.len() {
                                                     ui.label(
                                                         egui::RichText::new(process)
-                                                            .size(13.0)
-                                                            .color(if self.dark_mode {
-                                                                egui::Color32::from_rgb(
-                                                                    200, 200, 255,
-                                                                )
-                                                            } else {
-                                                                egui::Color32::from_rgb(
-                                                                    60, 60, 120,
-                                                                )
-                                                            }),
+                                                            .size(11.0)
+                                                            .color(th.text_weak),
                                                     );
+                                                }
+                                            });
 
-                                                    ui.with_layout(
-                                                        egui::Layout::right_to_left(
-                                                            egui::Align::Center,
-                                                        ),
-                                                        |ui| {
-                                                            let del_btn = egui::Button::new(
-                                                            egui::RichText::new("🗑")
-                                                                .color(egui::Color32::WHITE)
-                                                                .size(11.0),
-                                                        )
-                                                        .fill(egui::Color32::from_rgb(
-                                                            255, 182, 193,
-                                                        )) // Soft pink
-                                                        .corner_radius(8.0);
+                                            ui.with_layout(
+                                                egui::Layout::right_to_left(
+                                                    egui::Align::Center,
+                                                ),
+                                                |ui| {
+                                                    let del_btn = egui::Button::new(
+                                                        egui::RichText::new("✕")
+                                                            .color(th.text_weak)
+                                                            .size(12.0),
+                                                    )
+                                                    .fill(th.faint)
+                                                    .corner_radius(8.0);
 
-                                                            if ui
-                                                                .add_sized(
-                                                                    [28.0, 28.0],
-                                                                    del_btn,
-                                                                )
-                                                                .clicked()
-                                                            {
-                                                                to_remove = Some(idx);
-                                                            }
-                                                        },
-                                                    );
-                                                });
-                                            }
+                                                    if ui
+                                                        .add_sized([26.0, 22.0], del_btn)
+                                                        .on_hover_text("从白名单移除")
+                                                        .clicked()
+                                                    {
+                                                        to_remove = Some(idx);
+                                                    }
+                                                },
+                                            );
+                                        });
+                                        ui.add_space(4.0);
+                                    }
 
-                                            if let Some(idx) = to_remove {
-                                                temp_config.process_whitelist.remove(idx);
-                                            }
-                                        },
-                                    );
+                                    if let Some(idx) = to_remove {
+                                        self.config.process_whitelist.remove(idx);
+                                        /* ★v24.42: 即时落盘 + 热重载 (与白名单页同一出口) */
+                                        let _ = self.config.save_to_file("Config.toml");
+                                        let _ = self
+                                            .app_state
+                                            .reload_config(self.config.clone());
+                                    }
 
                                     ui.add_space(6.0);
 
@@ -2512,13 +2552,14 @@ impl SorahkGui {
                                         .corner_radius(8.0);
 
                                         if ui.add_sized([84.0, 32.0], add_btn).clicked() {
-                                            let process_name = self.new_process_name.trim();
+                                            let process_name = self.new_process_name.trim().to_owned();
                                             if !process_name.is_empty() {
                                                 // Check for duplicate process (整串忽略大小写)
-                                                if temp_config
+                                                if self
+                                                    .config
                                                     .process_whitelist
                                                     .iter()
-                                                    .any(|x| x.eq_ignore_ascii_case(process_name))
+                                                    .any(|x| x.eq_ignore_ascii_case(&process_name))
                                                 {
                                                     self.duplicate_process_error = Some(
                                                         t.duplicate_process_error()
@@ -2527,10 +2568,13 @@ impl SorahkGui {
                                                 } else {
                                                     // Clear any previous error
                                                     self.duplicate_process_error = None;
-                                                    temp_config
-                                                        .process_whitelist
-                                                        .push(process_name.to_string());
+                                                    self.config.process_whitelist.push(process_name);
                                                     self.new_process_name.clear();
+                                                    /* ★v24.42: 即时落盘 + 热重载 (同一份名单) */
+                                                    let _ = self.config.save_to_file("Config.toml");
+                                                    let _ = self
+                                                        .app_state
+                                                        .reload_config(self.config.clone());
                                                 }
                                             }
                                         }
@@ -2559,7 +2603,8 @@ impl SorahkGui {
                                                  * 同名不同版本的 exe 可各登记一条, 按路径精确匹配。 */
                                                 let entry = path.to_string_lossy().to_string();
                                                 // Check for duplicate process (整串忽略大小写)
-                                                if temp_config
+                                                if self
+                                                    .config
                                                     .process_whitelist
                                                     .iter()
                                                     .any(|x| x.eq_ignore_ascii_case(&entry))
@@ -2571,9 +2616,12 @@ impl SorahkGui {
                                                 } else {
                                                     // Clear any previous error
                                                     self.duplicate_process_error = None;
-                                                    temp_config
-                                                        .process_whitelist
-                                                        .push(entry);
+                                                    self.config.process_whitelist.push(entry);
+                                                    /* ★v24.42: 即时落盘 + 热重载 (同一份名单) */
+                                                    let _ = self.config.save_to_file("Config.toml");
+                                                    let _ = self
+                                                        .app_state
+                                                        .reload_config(self.config.clone());
                                                 }
                                             }
                                         }

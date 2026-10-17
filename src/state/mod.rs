@@ -499,8 +499,13 @@ impl AppState {
                         config.vibration.throttle_window_ms = cls.throttle_window;
                         config.vibration.throttle_max_hits = cls.throttle_max;
                         config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                        /* ★保险A: 启动兜底同样强制关绝对频率 (堵重启复活路径) */
-                        config.vibration.abs_freq_enabled = false;
+                        /* ★v24.46 (S4 无条件对齐 1.61): 绝对频率按路线归属 ——
+                         * S4+ honor 职业预设值 (1.61 原样); S1 仍强制关 (保险A)。 */
+                        config.vibration.abs_freq_enabled = if config.vib_legacy_client {
+                            false
+                        } else {
+                            cls.abs_freq_enabled
+                        };
                         job_algo_id = cls.algo_id as u32;
                         job_algo_ap = cls.algo_params;
                     }

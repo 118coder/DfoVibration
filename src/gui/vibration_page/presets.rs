@@ -201,10 +201,20 @@ impl SorahkGui {
         app_state.vibration_throttle_window.store(cls.throttle_window, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_throttle_max.store(cls.throttle_max, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, std::sync::atomic::Ordering::Relaxed);
-        /* ★保险A (2026-09-09, 用户定稿): 切换职业预设一律强制关闭绝对震动频率 ——
-         * 该模式 3s/6 次的节流曾因遗留开启导致"完全不震" (用户实测确认根因)。
-         * 转职视为意图变更, 召唤师也不自动恢复; 需要时改 Vibration.toml 手动开。 */
-        app_state.vibration_abs_freq_enabled.store(false, std::sync::atomic::Ordering::Relaxed);
+        /* ★v24.46 (S4 无条件对齐 1.61): 绝对震动频率按**路线**归属 ——
+         * · S4+：honor 职业预设的 `abs_freq_enabled`（1.61 原样: 召唤师 = 开,
+         *   3s/6 次固定节拍; 其余职业 = 关）。此前 V3 一律强制关, 召唤师手感
+         *   与 1.61 明显不同。
+         * · S1 (ACT)：仍强制关 ——「保险A」(2026-09-09 用户定稿): 该模式的遗留
+         *   开启曾导致"完全不震"; ACT 路线保持既有语义 (红线)。 */
+        let abs_on = if config.vib_legacy_client {
+            false
+        } else {
+            cls.abs_freq_enabled
+        };
+        app_state
+            .vibration_abs_freq_enabled
+            .store(abs_on, std::sync::atomic::Ordering::Relaxed);
         app_state.vibration_algo_id.store(cls.algo_id as u32, std::sync::atomic::Ordering::Relaxed);
         for (i, v) in cls.algo_params.iter().enumerate() {
             app_state.vibration_algo_ap[i].store(*v, std::sync::atomic::Ordering::Relaxed);
@@ -212,13 +222,31 @@ impl SorahkGui {
         config.vibration.throttle_window_ms = cls.throttle_window;
         config.vibration.throttle_max_hits = cls.throttle_max;
         config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-        config.vibration.abs_freq_enabled = false;
+        config.vibration.abs_freq_enabled = abs_on;
         /* 保险A立即落盘 (震动页三个调用点没有后续 save_to_file) */
         let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
         *job_snapshot = cls.params.to_vec();
         Self::save_job_vibration_state(app_state, base_job, cls.name);
         *job_enabled = true;
         *job_active = Some((base_job.to_string(), cls.name.to_string()));
+        /* ★v24.46 诊断: 职业预设应用落盘一行关键槽位 —— 排查"S4 全职业预设
+         * 手感与 1.61 不一致"时, 先核对这行与 1.61 同职业的数值是否一致。 */
+        crate::vibration::vib_log(&format!(
+            "[JOB] apply {} / {} | leg={} atk={} max={} sp={} hit={} smooth={} \
+             throttle={}/{} abs={} algo={}",
+            base_job,
+            cls.name,
+            config.vib_legacy_client as u8,
+            cls.params[0],
+            cls.params[4],
+            cls.params[13],
+            cls.params[16],
+            cls.out_smooth,
+            cls.throttle_window,
+            cls.throttle_max,
+            abs_on as u8,
+            cls.algo_id
+        ));
     }
 
 

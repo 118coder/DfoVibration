@@ -33,7 +33,20 @@ impl SorahkGui {
         egui::Frame::NONE
             .inner_margin(egui::Margin::same(6))
             .show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
+                /* ★v24.46 排版: 宽屏居中 + 内容限宽 1180px。
+                 * 旧行为 `set_min_width(available_width())` 在大屏/最大化时把滑块
+                 * 与卡片拉满整屏, 右侧大片空白且两列间距过大。窄窗口 (<1180) 保持
+                 * 原样铺满, 不引入横向滚动。 */
+                let avail_w = ui.available_width();
+                let content_w = 1180.0_f32.min(avail_w);
+                let side = ((avail_w - content_w) * 0.5).max(0.0);
+                ui.horizontal_top(|ui| {
+                    if side > 0.0 {
+                        ui.add_space(side);
+                    }
+                    ui.vertical(|ui| {
+                        ui.set_min_width(content_w);
+                        ui.set_max_width(content_w);
 
                 /* 标题行 */
                 Self::vib_section(ui, self.dark_mode, "震动控制中心", |ui| {
@@ -133,6 +146,8 @@ impl SorahkGui {
                         .size(11.0)
                         .weak(),
                 );
+                    }); /* End of centered content vertical */
+                }); /* End of centering horizontal */
             });
             /* 全职业预设页: 滑块修改后自动落盘 (快照检测) */
             if job_mode {
@@ -233,8 +248,16 @@ impl SorahkGui {
                         self.app_state.vibration_throttle_window.store(cls.throttle_window, Ordering::Relaxed);
                         self.app_state.vibration_throttle_max.store(cls.throttle_max, Ordering::Relaxed);
                         self.app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, Ordering::Relaxed);
-                        /* ★保险A: 职业预设恢复也强制关绝对频率 (堵重启复活路径) */
-                        self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
+                        /* ★v24.46 (S4 无条件对齐 1.61): 绝对频率按路线归属 ——
+                         * S4+ honor 职业预设值 (1.61 原样); S1 仍强制关 (保险A)。 */
+                        let abs_on = if self.config.vib_legacy_client {
+                            false
+                        } else {
+                            cls.abs_freq_enabled
+                        };
+                        self.app_state
+                            .vibration_abs_freq_enabled
+                            .store(abs_on, Ordering::Relaxed);
                         self.app_state.vibration_algo_id.store(cls.algo_id as u32, Ordering::Relaxed);
                         for (i, v) in cls.algo_params.iter().enumerate() {
                             self.app_state.vibration_algo_ap[i].store(*v, Ordering::Relaxed);
@@ -242,7 +265,7 @@ impl SorahkGui {
                         self.config.vibration.throttle_window_ms = cls.throttle_window;
                         self.config.vibration.throttle_max_hits = cls.throttle_max;
                         self.config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                        self.config.vibration.abs_freq_enabled = false;
+                        self.config.vibration.abs_freq_enabled = abs_on;
                         self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
                         self.vib_job_loaded = Some((bi, ci));
                     }
@@ -2449,17 +2472,31 @@ impl SorahkGui {
                         .weak(),
                 );
             }
-            /* 马达分工 (v30, Xbox360 风格: 轻反馈单马达, 重反馈双马达) */
+            /* 马达分工 (v30, Xbox360 风格: 轻反馈单马达, 重反馈双马达)
+             * ★v24.41: 经典 ACT1 管线不参与分工 (引擎已按路线关闭) ——
+             * 该路线的左右手感靠各项 L/R 权重调, 分工会把"左右差异"抹平成单马达。 */
             {
+                let split_active = !self.config.vib_legacy_client
+                    || self
+                        .app_state
+                        .vibration_legacy_output_mode
+                        .load(Ordering::Relaxed)
+                        .min(2)
+                        != 0;
                 let mut sp = self
                     .app_state
                     .vibration_split_enabled
                     .load(Ordering::Relaxed);
                 if ui
-                    .checkbox(&mut sp, "马达分工 (Xbox360 风格)")
+                    .add_enabled(
+                        split_active,
+                        egui::Checkbox::new(&mut sp, "马达分工 (Xbox360 风格)"),
+                    )
                     .on_hover_text(
                         "轻反馈 (峰值低于分界) 仅驱动主导马达 (转子声/功耗更低);\n\
-                         重反馈双马达满幅 (大马达低频重击 + 小马达高频细节)。",
+                         重反馈双马达满幅 (大马达低频重击 + 小马达高频细节)。\n\
+                         (经典 ACT1 管线不参与分工: 会抹平左右马达差异;\n\
+                         切到 S4 模式后此开关生效)",
                     )
                     .changed()
                 {
@@ -2476,7 +2513,7 @@ impl SorahkGui {
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
-                            sp,
+                            sp && split_active,
                             egui::Slider::new(&mut spt, 20.0..=90.0)
                                 .text("分工分界 % (低于为轻反馈)"),
                         ),

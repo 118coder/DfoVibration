@@ -15,6 +15,9 @@
   python work/_gh_pr.py pr-info <pr_number>
   python work/_gh_pr.py delete-branch <branch_name>
   python work/_gh_pr.py status <commit_sha>        # CI 状态 (combined status + check runs)
+  python work/_gh_pr.py delete-release <tag>       # 删发行包 (release+资产+git tag)
+  python work/_gh_pr.py create-release <tag> "<name>" "<body>"   # 建发行 (tag 在默认分支头)
+  python work/_gh_pr.py upload-asset <tag> <asset_name> <file>   # 上传发行资产 (ASCII 名)
 """
 import ctypes
 import ctypes.wintypes as wt
@@ -136,6 +139,66 @@ def main():
         code, _ = curl_json("DELETE", "git/refs/heads/%s" % args[1])
         print(code)
         sys.exit(0 if code == 204 else 1)
+    elif cmd == "delete-release":
+        # ★R2.0: 删旧发行包 (release+资产) 并连同 git tag 一起删
+        tag = args[1]
+        code, rel = curl_json("GET", "releases/tags/%s" % tag)
+        if code != 200:
+            print(code, "release 不存在:", tag)
+            sys.exit(1)
+        rel_id = rel.get("id")
+        code, _ = curl_json("DELETE", "releases/%s" % rel_id)
+        print("delete release:", code)
+        code2, _ = curl_json("DELETE", "git/refs/tags/%s" % tag)
+        print("delete tag:", code2)
+        sys.exit(0 if code in (204, 404) and code2 in (204, 422, 404) else 1)
+    elif cmd == "create-release":
+        tag, name, body = args[1], args[2], args[3]
+        code, data = curl_json("POST", "releases", {
+            "tag_name": tag, "target_commitish": "main",
+            "name": name, "body": body, "draft": False, "prerelease": False,
+        })
+        print(code)
+        if code == 201:
+            print("release #%s  %s" % (data.get("id"), data.get("html_url", "")))
+        else:
+            print(json.dumps(data, ensure_ascii=False)[:1500])
+        sys.exit(0 if code == 201 else 1)
+    elif cmd == "upload-asset":
+        # 上传发行资产: uploads.github.com, 文件走 --data-binary @file (不进命令行)
+        tag, asset_name, path = args[1], args[2], args[3]
+        code, rel = curl_json("GET", "releases/tags/%s" % tag)
+        if code != 200:
+            print(code, "release 不存在:", tag)
+            sys.exit(1)
+        rel_id = rel["id"]
+        from urllib.parse import quote
+        token = read_token()
+        url = "https://uploads.github.com/repos/%s/releases/%s/assets?name=%s" % (
+            REPO, rel_id, quote(asset_name))
+        cfg = "\n".join([
+            'header = "Authorization: token %s"' % token,
+            'header = "Content-Type: application/zip"',
+            'proxy = "%s"' % PROXY,
+            'request = "POST"',
+            'data-binary = "@%s"' % path.replace("\\", "/"),
+            'url = "%s"' % url,
+        ]) + "\n"
+        cmd2 = ["curl", "-s", "-S", "--show-error", "--config", "-", "-w", "\n%{http_code}"]
+        p2 = subprocess.run(cmd2, input=cfg.encode("utf-8"), capture_output=True)
+        out = p2.stdout.decode("utf-8", errors="replace")
+        body_text, _, code_s = out.rpartition("\n")
+        code = int(code_s.strip()) if code_s.strip().isdigit() else 0
+        try:
+            data = json.loads(body_text) if body_text.strip() else {}
+        except json.JSONDecodeError:
+            data = {"raw": body_text[:400]}
+        print(code)
+        if code == 201:
+            print("asset:", data.get("name"), data.get("browser_download_url", ""))
+        else:
+            print(json.dumps(data, ensure_ascii=False)[:1200])
+        sys.exit(0 if code == 201 else 1)
     elif cmd == "status":
         sha = args[1]
         code, data = curl_json("GET", "commits/%s/status" % sha)

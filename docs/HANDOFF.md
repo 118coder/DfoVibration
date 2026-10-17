@@ -7,7 +7,83 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **v24.40 本地开发** (2026-09-27: PR #8 已由用户手动合并 (30e65f1, v24.37~39 上库); ✨鼠标映射弹窗补【方向】8向+移除无效左滚/右滚+排版重做 · ✨触发键友好名显示(friendly_input_name: 原始HID哈希名→RT/LB/左摇杆·上/扳机, 仅显示层) · ✨序列宏编辑器 +按下步↓/+抬起步↑图形化 + ⏱全部20ms按钮 · ✨白名单【简易/精细】匹配模式(whitelist_simple_mode, 简易=只认文件名旧版行为) · **847 测试全绿(+2)**) · 此前 = **v24.37~v24.39 经 PR #8 上库** (2026-09-27: 分支 `release/v24.39-seq-chord-macro` → commit `4b2fe39`, **PR https://github.com/118coder/DfoVibration/pull/8 — 用户要求只建 PR 不合并, 分支保留**; 含 v24.37 小键盘/右摇杆/组合键 + v24.38 序列宏修复/录制保真 + v24.39 LB+LT捕获/组合键挂宏; 845 测试全绿; E 盘 HEAD = a2b0e2f, D 盘同步 199 文件) (2026-09-27: 🐛LB+LT 组合捕获只捕到单键修复(DiagonalPriority 对纯按键组合优先级恒同取先 → 组合捕获期间强制 max-inputs 帧选择, capture_prefers_max_inputs 标志) · ✨组合键面板直接挂序列宏(行内折叠区嵌入共享步骤编辑器 + ⚡宏徽章; 槽位多键捕获引导到组合键面板) · 📌优先级语义入界面(组合>单键, 无需设置) · **845 测试全绿(+4)**) · 此前 = **v24.38 未上交** (2026-09-27: 🐛序列宏"录制不生效"修复(录制/加步/清空/改文本只改内存不落盘 → apply_sequence_text 唯一出口即时落盘+热重载; 手柄页无保存按钮=用户实测重灾区; 连发页取消连引擎一起回滚) · ✨录制保真"按下→等待→抬起"(SeqStepMode ↓/↑ + 逐事件重放录制器 + run_sequence 安全网释放; 老序列零迁移) · **841 测试全绿(+12)**) · 此前 = **v24.37 未上交** (2026-09-27: 🐛小键盘2/4/6/8映射修复(scancode bit8 小键盘标记, 注入 E0 统一收口 keyboard_press_flags; DIVIDE 顺手修复) · 🐛右摇杆模拟鼠标修复(无OS重复设备持续移动) · ✨手柄组合键(RB+X=Space: 运行时成员键150ms延迟抑制 + GUI组合键面板/冲突校验; 数据层零新概念) · **829 测试全绿(+35)**; E 盘 HEAD 领先远端; 上传等用户口令) · 此前基线 = **R1.2 已上交** (2026-09-27: 用户向 README+截图、交付部署文档、发行包 R1.1; **PR #7** → 合并 `ac120bf`; GitHub Release **R1.1** 含发行包资产; 此前 PR #6 → `bf5c819`; 794 测试全绿; CI 常绿) · 此前基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
+**当前状态**: 基线 = **R2.0 已发布 · 全部落库 · 无待办** (2026-09-28 收官)。
+  * ⚠ **2026-10-17 本地待测 (未上库, 等用户口令) = v24.41 + v24.42 + v24.43b + v24.44** (同一批, 见 CHANGELOG 顶部)。分支 `release/v24.44-whitelist-log-s4align`。
+  * **v24.44 (最新, 已部署 md5 `2eed78bd`) = 用户实机反馈三项**:
+    1. **白名单设置面板**: 用户实机跑的是 v24.41 (md5 `8b8edc5a`), v24.42 修复从未生效;
+       且 v24.42 仍内嵌一层 ScrollArea 与外层抢滚轮 (后 8 条翻不到)。本轮**彻底移除内层
+       滚动区** + 行结构改为「文件名粗体 + 路径小字」(与白名单页同构, 同名 DFO.exe 可区分)。
+    2. **S4 日志**: `[INJ]`/`[DROP]`/`[MV]` 原被 `if self.legacy` 全挡, 节流丢弃无日志。
+       新增 `log_budget()` 秒级采样通道, 覆盖 `[EVT] FONT`/`[INJ] leg=0`/`[DROP] throttle`/
+       `[DROP] font_hits=off leg=0`/`[DROP] s=0 leg=0`/`[MV] leg=0`; **S1 日志原样不动 (红线)**。
+    3. **S4 对齐 1.61 (无条件)**: 1.61 与「大改前」的 `vibration.rs` **diff = 0 行** (同一基线)。
+       残余差异 = V3 独有的高级算法开关层在 1.61 **零命中**; 用户 `pulse_enabled=false` +
+       `algo_windows_enabled=false` ⇒ 每帧回写 55/56/57/58 (`150/90/90/30 → 100/0/0/0`) 与
+       40-46 窗口组。改为 `route_applies_algo_toggles(legacy)`: **S4 恒 false (参数按保存值
+       生效 = 1.61) / S1 恒 true (红线)**。
+       ⚠ **`vib_s4_align_v16` 开关已整体删除** —— 用户明确"v24.42 改坏了, 不要参考 v24.42,
+       要在现有基础上改"; 该键是为"1.61 ↔ v24.42" A/B 对照而加, 回退侧废弃后即多余。
+       现 S4 **无条件**对齐 1.61 (`channel_composites()` = `self.legacy`、总闸中性化、
+       衰减下限 10/30ms、开关层不适用), 无任何回退分支。老 `Config.toml` 里残留的
+       `vib_s4_align_v16` 行会被 serde 忽略, 零迁移。
+    - 测试 873 passed / 0 failed (lib 393 + bin 421 + 集成 59)。
+    - 交付 exe 9651200 字节, md5 `2eed78bd804ca1687ca65bca479f77ac`,
+      sha256 `301d30badb57399bc138282a8f11450b38074f9caeabfca7da300a8f6bd88be5`;
+      项目根 4 别名已全部刷新; v24.41 回滚点
+      `release_backup/SorahkDFO_v24.41_部署回滚点_20261017.exe`。
+    - **v24.44 待实机验证**: ①设置→白名单 10 条可见可删、滚动顺滑 ②进图 10s 后 vib.log
+      出现 `[EVT] FONT` 与 `[INJ] … leg=0`、城镇走路出现 `[MV] … leg=0` ③S4 与 1.61
+      逐场景 A/B (注意 `pulse_enabled`/`algo_windows_enabled` 在 S4 下**不影响引擎**)
+      ④ACT/S1 手感必须与上一版完全一致。
+  * **v24.43b (历史, 已被 v24.44 覆盖) = 基线纠正 + 以「大改前」v1.6 重做 S4+ 对齐**
+    (该版引入的 `vib_s4_align_v16` 开关已在 v24.44 删除, 下述描述仅供追溯):
+    - **基线纠正**: 上一轮的 v24.43「S4+ 对齐 1.5」整体撤销 —— 用户纠正正确参照物为
+      `E:\网页小工具\大改前的最后一个版本` (自称 v1.6, `src/vibration.rs` 1632 行),
+      不是 1.5 版 (1771 行)。指纹: v1.6 无 `last_font_ch` / 无 `s_out /= 100.0` /
+      无死区迟滞改造 ⇒ v24.43 的 #1(量纲) #4(四路窗) 方向错误, 已回滚
+      (含 `vib_s4_align_1_5` 配置键)。v24.41/42 一字未动保留。
+    - **对齐实现 (只动 !legacy)**: 新开关 `Config.toml vib_s4_align_v16` (默认 true =
+      对齐 v1.6; false = 回 v24.42 行为) + `VibEngine::channel_composites()`
+      (S1 恒合成 = 红线; S4+ 对齐态**独占** = v1.6 `vibration.rs:1516-1530`/`1583-1588`
+      在分支内不调 `finalize()`) + 总闸 `item_lr[0]/[1]` 对齐态中性化
+      (v1.6 `1143-1144` 无此乘子) + FONT 衰减下限回 v1.6 (命中 10ms / 其余 30ms,
+      v1.6 `888-898`)。
+    - **参数对齐**: `Vibration.toml` 的 `[vibration]` 块与 v1.6 生效值**逐项一致**
+      (v1.6 启动无条件回灌内置「默认」预设 —— 见大改前 `src/gui/main_window.rs:896-924`;
+      **用户原述的 `master_gain != 0` 分支不存在**)。改动: `font_special 0→80`、
+      `font_attack 100→25`、`out_smooth 30→55`、`independent_test true→false`、
+      `rank_lr`/`rank_type_gain` 回 v1.6 值。备份 `Vibration.toml.bak_v2443b_pre_align`。
+    - **测试**: 871 passed / 0 failed (lib 392 + bin 420 + 集成 59);
+      `composite_output_tests` 改锁回退侧, 新增 `s4_align_v16_tests` 6 条。
+    - **交付物 (未部署为别名, 刻意不覆盖用户正在用的 4 个别名)**:
+      项目根 `DfoVibration-Sorahk_v24.43b_S4对齐大改前v1.6_20261017.exe`
+      + `release_backup\SorahkDFO_v24.43b_S4对齐大改前v1.6_20261017.exe`
+      (9648128 字节, **sha256 `7b5ac5b88ba219e8b1991b606768f58d1b80ec30d992d2fe2e6af79805314923`**,
+      md5 `7bc40813b5c495b3d8459079ac996a9c`; 与 `E:\Sorahk-build\target\release\sorahk.exe`
+      三份 sha256 逐字节一致; 二进制内含新序列化键 `vib_s4_align_v16`, 旧 v24.42 exe 不含)。
+    - **仍待实机验证**: 见下方"v24.43b 待实机验证项"。
+  * ⚠ **2026-10-17 本地待测 (未上库, 等用户口令) = v24.41 + v24.42** (同一批, 见 CHANGELOG 顶部): v24.41 (马达 L/R 分工修复 + XInput 写入去重; 已部署 md5 `8b8edc5a`, 无 CHANGELOG 条目) + v24.42 (**S4+ 合成式输出修复** —— S4+ 的评分/移动出口曾 `if legacy { max } else { 通道独占 }`, 评分窗口内/走路期间根本不调 `finalize()`, 命中·受击·暴击 FONT 被整段吞掉 → 与 1.5 宿主(90US)手感不一致; 现两路线共用 `VibEngine::composite_with_font` = finalize→smooth_out→max。**白名单两处合一** —— 设置→配置面板原 `ScrollArea::max_height(80.0)` 只露 2 行 (10 条里后 8 条不可见), 且改的是 `temp_config` 快照而保存不含该字段 → 回滚白名单页的增删; 现直写同一份 `config.process_whitelist` 即时落盘 + reload)。交付新文件名 `DfoVibration-Sorahk_v24.42_S4合成式与白名单统一_20261017.exe` (md5 `3a06b9b065ed8ed5331abd536dfea5b6`); **项目根 4 个别名仍 = v24.41 (未获用户确认, 刻意不覆盖)**; release_backup 已有 v24.41 对应备份 `SorahkDFO_v24.41_马达LR分工修复_写入去重_20261009.exe` (md5 同 `8b8edc5a`)。857 测试通过 (1 条环境敏感测试 `poller_captures_synthesized_keys_end_to_end` 假失败, 已 `git stash` 对照 HEAD 复现确认无关)。
+
+### v24.43b 待实机验证项 (实机才能定, 不要凭猜改)
+1. **独占式 vs 合成式哪个才是用户要的"大改前手感"** —— 对齐态现在严格按 v1.6
+   (评分窗口内不跑 `finalize()`), 若实机觉得"命中在评分期被吃掉", 可用
+   `vib_s4_align_v16=false` 一键回到 v24.42 合成式对照 A/B。
+2. **`font_special 0→80`**: v1.6 生效值 80, 但 V3 90JP 端 DLL 是否发 0x10 特殊攻击
+   标记需探针确认 (不发则该项无感)。
+3. **`independent_test true→false`**: 评分/移动通道现在会吃 `master×强度上限`
+   (≈55%), 若实机觉得评分/走路震动变弱, 这是主因 (与 v1.6 一致, 但和 v24.42 相比是减弱的)。
+4. **XInput 写入去重 (v24.41)**: 空闲期一个字节都不写 —— 与"别的震动软件不冲突"
+   相关, 但会让"手柄驱动依赖周期重写保震"的机型差异放大 (非 v1.6 行为, 刻意保留)。
+5. **`apply_algo_toggle_params`**: 本机各开关全开 ⇒ 不触发; 若用户关掉
+   `pulse_enabled`, 参数槽 54-58 会被回写成(0/100/0/0/0), 与 v1.6 生效值
+   (0/150/90/90/30) 不同 —— 需要在实机确认是否接受该分歧。
+  * 远端 main = `b3ed653` (PR #9); **E 盘 HEAD 领先远端数条 (纯 HANDOFF 记录提交, 无代码差异)** —— 下轮 `python work/_sync_to_d.py` 自动带上。
+  * **交付物**: 发行包 **Release R2.0** https://github.com/118coder/DfoVibration/releases/tag/R2.0 (资产 `DfoVibration-Sorahk_R2.0.zip` 7.6MB, exe md5 `3d1a28ef204bc197be6ea9fc1e3761d5`; 旧 R1.1 release+tag 已删全 204; 本地两份 R1.1 旧 zip 已删)。
+  * **本地部署**: 项目根 4 别名 (DfoVibration-Sorahk / SorahkDFO / SorahkDFO-新UI版 / sorahk) 全部 = `3d1a28ef`; 版本别名 v24.37/38/39/40/40b/c/d + release_backup 齐全。
+  * **测试基线**: 847 全绿。**无未上库代码**, 无进行中任务。
+  * ⚠ 环境: E 盘 96% 满; E:\Sorahk-build\target\release 曾出现文件系统损坏口袋 (再遇 os error 433 → chkdsk E: /f)。
+  * **构建缓存已彻底清空 (2026-09-28, 用户指示)**: target(含 iter/debug/release) + target2 + .tmp 全删 (~4.3GB → 59MB); 下次构建**冷启动** (--release 约 4-5 分钟, 日常 iter 约 2-3 分钟), sync_and_build.sh 自动重建无需准备。
+  * 工具沉淀: `_gh_pr.py` 全套 (api/create-pr/merge-pr/pr-info/delete-branch/status/delete-release/create-release/upload-asset), `_package_r2.py` (发行包配方), `_shot_chord/_shot_seq_nav/_e2e_seq_record` (视觉/契约辅助)。 (2026-09-28: **PR #9** release/v24.40-ui-polish → 合并 `b3ed653`, 分支已删; 用户授权合并; 鼠标映射弹窗方向8向+视觉重制(罗盘居中) · 触发键友好名 · 序列宏按下/抬起图形化+全部20ms · 白名单简易/精细模式; 847 测试全绿; 交付 exe md5 3d1a28ef) · 此前 = **v24.40 本地开发** (2026-09-27: PR #8 已由用户手动合并 (30e65f1, v24.37~39 上库); ✨鼠标映射弹窗补【方向】8向+移除无效左滚/右滚+排版重做 · ✨触发键友好名显示(friendly_input_name: 原始HID哈希名→RT/LB/左摇杆·上/扳机, 仅显示层) · ✨序列宏编辑器 +按下步↓/+抬起步↑图形化 + ⏱全部20ms按钮 · ✨白名单【简易/精细】匹配模式(whitelist_simple_mode, 简易=只认文件名旧版行为) · **847 测试全绿(+2)**) · 此前 = **v24.37~v24.39 经 PR #8 上库** (2026-09-27: 分支 `release/v24.39-seq-chord-macro` → commit `4b2fe39`, **PR https://github.com/118coder/DfoVibration/pull/8 — 用户要求只建 PR 不合并, 分支保留**; 含 v24.37 小键盘/右摇杆/组合键 + v24.38 序列宏修复/录制保真 + v24.39 LB+LT捕获/组合键挂宏; 845 测试全绿; E 盘 HEAD = a2b0e2f, D 盘同步 199 文件) (2026-09-27: 🐛LB+LT 组合捕获只捕到单键修复(DiagonalPriority 对纯按键组合优先级恒同取先 → 组合捕获期间强制 max-inputs 帧选择, capture_prefers_max_inputs 标志) · ✨组合键面板直接挂序列宏(行内折叠区嵌入共享步骤编辑器 + ⚡宏徽章; 槽位多键捕获引导到组合键面板) · 📌优先级语义入界面(组合>单键, 无需设置) · **845 测试全绿(+4)**) · 此前 = **v24.38 未上交** (2026-09-27: 🐛序列宏"录制不生效"修复(录制/加步/清空/改文本只改内存不落盘 → apply_sequence_text 唯一出口即时落盘+热重载; 手柄页无保存按钮=用户实测重灾区; 连发页取消连引擎一起回滚) · ✨录制保真"按下→等待→抬起"(SeqStepMode ↓/↑ + 逐事件重放录制器 + run_sequence 安全网释放; 老序列零迁移) · **841 测试全绿(+12)**) · 此前 = **v24.37 未上交** (2026-09-27: 🐛小键盘2/4/6/8映射修复(scancode bit8 小键盘标记, 注入 E0 统一收口 keyboard_press_flags; DIVIDE 顺手修复) · 🐛右摇杆模拟鼠标修复(无OS重复设备持续移动) · ✨手柄组合键(RB+X=Space: 运行时成员键150ms延迟抑制 + GUI组合键面板/冲突校验; 数据层零新概念) · **829 测试全绿(+35)**; E 盘 HEAD 领先远端; 上传等用户口令) · 此前基线 = **R1.2 已上交** (2026-09-27: 用户向 README+截图、交付部署文档、发行包 R1.1; **PR #7** → 合并 `ac120bf`; GitHub Release **R1.1** 含发行包资产; 此前 PR #6 → `bf5c819`; 794 测试全绿; CI 常绿) · 此前基线 = **架构重构 R1 (2026-09-27, 功能零变化)** · src 从 5.4 万行巨文件时代 → 目录模块化: state.rs(5678行)→state/十文件 · vibration.rs(4131行)→vibration/{mod,params} · 四大 GUI 页目录化(vibration_page/gamepad_mapping/turbo_page 目录 + settings_dialog 六方法) · 震动参数单一事实源 `vibration/params.rs`(P_* 常量 + for_each_named_param! 宏表双向映射, ADR-0002) · hidhide.rs 冻结移至 docs/frozen/ · 构建管线: sync_and_build 默认 iter 档(交付 --release) + run_tests 一遍制 + ASCII CARGO_HOME/TMP 铁律(ADR-0004) · **789 测试全绿(lib 354 + bin 381 + 集成 54; 含 act_variants 校验和与 config 往返), 引擎算法/TOML 字段/参数值零改动** · 详细规范见 `docs/开发维护规范.md` · 此前 = **v24.36 (⚡进页卡顿根治: SVG 纹理后台预热 + 进程级缓存 · 🔧序列宏×目标键冲突审计与修复)** · **v24.35+v24.36 已上交** (2026-09-26: **PR #5** release/v24.36-seq-conflict-and-firstpage-perf → 合并提交 `3dac8ae` 为远端 main 顶端, 分支已删; v24.35 = 序列解析失败不回退/边沿触发/抬起键生效/run 互斥/reload 强制作废/GUI 明示; v24.36 = 实测单帧冻结 870ms → 后台预热 + 缓存命中 16ms, 见日志 87/88; exe md5 49305a5f9576d80c6ce1546c74b1ee78; lib 352 + bin 379 全绿)  · **v24.34 已上交** (2026-09-25: **PR #4** release/v24.34-60us-inject → 合并提交 `276ac29`, 分支已删; exe md5 93d39a8b; auto_inject 进程表+标签+身份判定+3 单测) · **v24.33 已上交** (2026-09-25: **PR #3** release/v24.33-keyboard-quick-card → 合并提交 `acfc4aa`; 键盘.svg 解析重制双主题 102 键; ★点击↔键位错位已修, 见日志 84/85) · **v24.31 已上交** (2026-09-25: **PR #2** release/v24.31-sequence-macro → 合并提交 `2780fe9`; exe md5 b76b0604aa4bb557fc3afd3a7a96f78f; 769 测试全绿; 旧版备份 release_backup\SorahkDFO_v24.31_序列宏锁定抬起日志轮转_20260925.exe) · **v24.29 已上交** (2026-09-21: 远端 main = 1ea68e4; exe md5 0c3b6c39; 用户实测通过 —— DFO60US 场景: 启动器实际拉起 DFO_fixed_v3.exe, 与登记的 DFO.exe 同名不同版本被拦, 加上正确路径后正常) · **v24.28 已上交** (2026-09-15: 远端 main = b6cd37b; exe md5 b81d5c2b) · **v24.26~v24.27 已上交** (远端 main = f453078; exe md5 f1f3885c) · **v24.19a~v24.25 已全部上交** (远端 main = 772c0a0; exe md5 82946cd3) · **v24.11~v24.18 已全部上交** (2026-09-13: 远端 main = `bb94fdd`)。
 
 > **🎨 v24.30 深色配色重制 v5 (2026-09-23, 743 全绿 + 逐页截图验收)**: 用户"深色页面不好看"
 > → v4 三阶灰全带紫调整屏发糊、强调紫大面积饱和块、语义色互相打架。本版**只重做深色**
@@ -222,24 +298,21 @@ cp /e/Sorahk-build/target/release/sorahk.exe "E:\网页小工具\DfoVibration V3
 小改动直接做、别问"要不要我做"。他奋战多日已疲惫, 回复要短、结论先行。
 
 **⛔ 已知待办 / 待修 (按优先级)**:
-1. **[功能缺口] 摇杆三区奔跑未实现** —— 摇杆方向现在可映射/可设目标键, 但没有"轻推走 / 重推双击跑"
-   语义。编码 (`hid_layout::semantic_axis_position`) / 命名 (`format_semantic_axis_name`) / 解析 / 单测
-   **都已就位**, 差: ①RawInput 侧按轴量程把摇杆值归一为 i16; ②复用/复制 `xinput.rs::detect_run_taps`
-   的 zone+急推状态机 (建议抽成纯函数共享并单测); ③派发 Pressed/Released/RunTap。
-   ⚠ 摇杆 **Y 轴正负方向** (HID 惯例正值=下) 需真机确认, 现有 live 高亮用的是"与空闲基线的偏移",
-   不受符号影响; 奔跑要用绝对方向时须先确认。详见第 48 条 F / 第 51 条 D。
+1. ~~**[功能缺口] 摇杆三区奔跑未实现**~~ **已实现 (v21.0, 第 43 条)**: RawInput 语义轴 +
+   `xinput.rs::detect_run_taps` zone+急推状态机 + RunTap 派发全部落地并实测。
 2. ~~**[死代码, 安全删] `quick_gamepad_pending` 待确认条**~~ **已删 (v22.0, 第 55 条)**:
    渲染块 + `QuickGamepadPending` 结构体 + 字段全部移除; 手柄页改用 `GpFlow` 状态机。
 3. ~~**[死状态, 安全删] `raw_hid_status` 只写不读**~~ **已修 (v22.0)**: 改为顶部识别状态条读取,
    显示"识别中: <设备名>"。`start_identify_first_pad` 同时写它。**手感/震动相关待办不变**:
-4. **[体验] 连发默认仍为开**: 手柄槽位新建映射默认 `turbo_enabled = true` (历史行为)。
-   若用户抱怨"技能键被连发刷", 可加"技能键建议关连发"提示或在设键盘映射时给快速选择。
+4. **[体验] 连发页「＋新增映射」默认仍开连发** (`turbo_page::add_new_mapping` turbo_enabled=true,
+   历史行为)。★v24.1 后手柄槽位新建映射已默认**不**连发 —— 两条路径默认不一致, 若用户反馈
+   "新加映射被连发刷", 把连发页新建也改默认 false 或加快速选择。
 5. **[体验] 多手柄支持粗糙**: 删除识别卡后, 识别目标固定取 `raw_hid_pads[raw_hid_selected]`
    (默认 0=第一台); 没有设备切换 UI。用户只有一台手柄时不痛, 需要时再加轻量下拉。
 6. **[一致性] 预设切换键捕获仍用 Esc 取消**, 而手柄页已改为"Esc 可记录"。两处语义不同, 用户未提,
    暂不动; 若被反馈再统一。
-7. **[体验] 「鼠标映射…」弹窗加了目标后直接生效** (未走【确认】); 用户要求的是显式菜单, 可接受。
-   弹窗只在手柄页渲染, 若开着弹窗切页再回来会重新出现 (标志位未清) —— 小瑕疵。
+7. **[体验] 「鼠标映射…」弹窗加了目标后直接生效** (未走【确认】); 用户要求的是显式菜单, 可接受
+   (★v24.40b 视觉重制未改此语义)。弹窗只在手柄页渲染, 若开着弹窗切页再回来会重新出现 (标志位未清) —— 小瑕疵。
 
 **⚠ 环境坑 (全部实测, 别再踩)**:
 - **锁屏时无法截图验证**: 会话锁定后窗口不参与桌面合成, `PrintWindow` 恒返回空白 PNG。
@@ -3670,3 +3743,23 @@ elease` 目录树出现
     - **教训**: ① heredoc 里写含 `\` 的 Rust 片段 = 转义地狱 (铁律三本就该用脚本文件);
       ② 大块括号手术必炸 —— 回滚到已编译提交后用 Edit 小步重做是正解;
       ③ cp tests 目录 ≠ cp src/state/tests.rs (B3 目录化后 state 测试在 src/ 下)。
+97. **★R2.0 发行包发布 + 交接整理 (2026-09-28, 用户指示"删旧包发新版")**:
+    - **删旧**: GitHub Release **R1.1** 整体删除 (release+资产+git tag, `delete-release R1.1` → 204×2);
+      本地两份 R1.1 时代 zip (R1.1正式版 + 更早的无下划线命名版) 同删。
+    - **发新**: tag `R2.0` (target=main@b3ed653) + 资产 `DfoVibration-Sorahk_R2.0.zip`
+      (13 项 = 新 exe `3d1a28ef` + 使用说明 + Vibration 双模板 + 键位参考图 + 7 客户端 DLL;
+      7.6MB)。URL: https://github.com/118coder/DfoVibration/releases/tag/R2.0
+    - **打包配方 (沉淀为 `work/_package_r2.py`)**: 解压上一版 zip 到工作目录 → 覆盖
+      `DfoVibration-Sorahk.exe` (新 release 构建) + `使用说明.txt` (源稿
+      `work/_package_使用说明.txt`, 本轮加「R2.0 新增功能速览」5 条) → 重新 zip
+      (arc 分隔符统一 `/`, 跳过 .zip)。DLL 未变动直接沿用 —— DLL 变更时才需更新 DLL/ 目录。
+    - **资产名纪律**: GitHub 资产名用 ASCII (`DfoVibration-Sorahk_R2.0.zip`), 中文名会被
+      替换成 `.+` (R1.1 踩过)。
+    - **_gh_pr.py 扩容**: `delete-release <tag>` (release+tag 双删) /
+      `create-release <tag> <name> <body>` (tag 建在 main 头) /
+      `upload-asset <tag> <name> <file>` (uploads.github.com, 文件走 data-binary @file)。
+      ⚠ 写脚本时 `
+` 在 heredoc 里会被吃成真换行 —— 用脚本文件 + Edit 修 (再次验证铁律三)。
+    - **验证**: 包内 exe md5 == 交付 md5 (3d1a28ef) ✓; 使用说明含 R2.0 段 ✓; 资产 URL 可访问 ✓。
+    - **下一轮起点**: 无待办。有新需求按 vib-mod 标准循环走; 发新版 = 改
+      `_package_使用说明.txt` → `_package_r2.py` 改输出名 → build → 三个新子命令发出去。

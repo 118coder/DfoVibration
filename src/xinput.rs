@@ -341,6 +341,9 @@ pending_solos: SmallVec::new(),
 
     /// 处理重置请求: 清应用层缓存 + (经 xinput1_3) 真实切断/恢复手柄电源。
     fn handle_xinput_reset(&mut self) {
+        /* ★v24.41: 重置会真实断电/重连, 马达回到 0 —— 作废震动引擎的写入
+         * 去重缓存 (否则引擎缓存值 ≠ 实际马达状态, 恢复后的第一发可能被跳过) */
+        crate::vibration::invalidate_xinput_write_cache();
         // 切断电源: 优先 xinput1_3 的 Enable; 1_4/9_1_0 的同名函数是空操作,
         // 只调它们会让「重置」退化成清缓存 (实测: 重置无效)。
         let en13 = xinput13_enable();

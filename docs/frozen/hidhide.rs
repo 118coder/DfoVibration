@@ -1,46 +1,74 @@
-/* ★★★ v24.19b 手柄隐藏暂时下线 (2026-09-14) ★★★
+/* ★★★ v24.48d 手柄隐藏二次下线 —— 方案失败归档 (2026-10-25) ★★★
  *
- * ★2026-09-27 架构重构 G (导航卫生): 本文件已从 src/hidhide.rs 移至 docs/frozen/hidhide.rs,
- *   彻底离开编译目录 —— AI/grep 不再把它误当活代码。恢复时执行下方"步骤 0"。
+ * 用户决策 (原话): "本次更新放弃掉, 选择隐藏相关的更新... 等之后有人更新的时候
+ * 再考虑换驱动, 记得注释, 隐藏手柄方案失败。"
  *
- * 用户决策 (原话): "感觉不太行, 本次更新的相关功能先暂时注释掉吧, 也就是HidHide相关的。
- * 等未来有空的时候再启用。" 随后澄清: "相关功能和代码全部注释掉, 避免影响主功能。"
+ * ── 失败结论 ─────────────────────────────────────────────────────────
+ * 本文件是 v24.48 全系列 (会话模式重设计 → 双路线改造) 的最终实现,
+ * 真机事故后整体冻结, 不参与编译。失败不是 HidHide 代码的问题
+ * (同一份上游源码官方跑得好好的), 而是**签名分发层**的死结:
  *
- * 本文件**全部内容已整体注释**, 不参与编译 —— 下方保留的是 v24.19a 真机验证 9/9 全 PASS
- * 的完整实现 (IOCTL 契约 / 反向白名单 / 持久黑名单降级 / 崩溃自愈 / 12 条单测)。
+ *  1. 会话黑名单 (IOCTL 2056/2057, 进程退出自动清) 只存在于上游 master
+ *     (v1.7.333+), 官方**从未发布签名版** —— 维护者 nefarius 在 issue #217
+ *     亲答: 不给未测试代码做生产签名; 预发布也只能测试签名 (需测试模式)。
+ *  2. 用户机器 Secure Boot 开启 → 测试签名被 BCD 策略保护无法开启
+ *     (真机原始报错: "该值受安全引导策略保护") → **任何**自建/第三方构建
+ *     的驱动包都无法通过入库校验, 这是物理性死路, 代码层无法绕过。
+ *  3. 官方发行版 v1.5.230 (attestation 签名, SB 机器可装) 没有会话黑名单,
+ *     走持久黑名单 2051 降级路线 —— 功能上可用, 但用户实测后判定"还是不太行"。
+ *  4. 附带事故 (v24.48b 复盘): 自建包安装失败被漏检 + 类过滤器挂到不存在的
+ *     服务 → HIDClass 全类设备 (键盘/鼠标/手柄) 无法启动。教训与硬防线
+ *     (服务存在性验证通过才允许挂过滤器 / 包签名顺序 签sys→Inf2Cat→签cat /
+ *     GUI 程序退出码不可靠 / 官方安装器带 Watchdog 会实时恢复过滤器,
+ *     卸载必须先杀 HidHideWatchdog.exe 服务) 都写在 CHANGELOG v24.48 系列。
  *
- * 未来重新启用步骤 (约 5 处接线):
- *   0. 把本文件移回 src/hidhide.rs (git mv docs/frozen/hidhide.rs src/hidhide.rs);
- *   1. 本文件: 删掉最外层这对 /* */ (其余原样);
- *   2. src/lib.rs 与 src/main.rs: 取消 `pub mod hidhide;` / `mod hidhide;` 的注释;
- *   3. src/config.rs: 取消 hidhide_enabled / hidhide_snapshot / hidhide_learned_paths
- *      三字段与 Default 里三条赋值的注释;
- *   4. src/gui/mod.rs: 取消控制器字段、启动块、`Self` 初始化三处注释;
- *   5. src/gui/whitelist_page.rs: 取消 render_hidhide_card 调用与函数体注释;
- *      src/gui/main_window.rs: 取消 on_exit 恢复块注释。
- *   (Cargo.toml 的三个 windows feature 若已注释也一并恢复。)
- * 建议恢复后重跑 work/_e2e_hidhide.py (真驱动 1.4.181 + 真手柄 9/9 基线)。
-
-/*
-//! ★v24.19 手柄隐藏 (HidHide 驱动整合)。
+ * ── 重启条件 ─────────────────────────────────────────────────────────
+ * 等官方发布**带会话黑名单的签名版** (关注 github.com/nefarius/HidHide
+ * 的 Releases + issue #217 动向) 时重评; 或用户机器关闭 Secure Boot 后
+ * 自建路线可复活的场合。届时本文件回到 src/hidhide.rs, 参考下方接线记录。
+ *
+ * ── 复活接线点 (v24.48 形态, 共 7 处) ────────────────────────────────
+ *   0. git mv docs/frozen/hidhide.rs src/hidhide.rs (本文件保留在 git 历史,
+ *      mv 回去即可, 内容无需改动 —— 它就是最后一次可编译的完整实现);
+ *   1. src/lib.rs 与 src/main.rs: `pub mod hidhide;` / `mod hidhide;`;
+ *   2. src/config.rs: HidHideSnapshot 结构体 + hidhide_enabled/hidhide_snapshot
+ *      两字段 (+ tests/architecture_tests.rs 契约键 hidhide_enabled);
+ *   3. src/gui/mod.rs: 控制器字段 + 启动块 (自愈 + restore_intent) + Self 初始化;
+ *   4. src/gui/whitelist_page.rs: render_hidhide_card + 调用点;
+ *   5. src/gui/main_window.rs: on_exit 的 disable 恢复块;
+ *   6. tests/architecture_tests.rs: GUI 依赖允许清单 + "hidhide";
+ *   7. Cargo.toml: 四个 windows feature (Win32_Devices_DeviceAndDriverInstallation /
+ *      Win32_Storage / Win32_Storage_FileSystem / Win32_System_IO);
+ *   8. driver\ 内置包: 走官方发行版安装器 (HidHide_1.5.230_x64.exe 起步,
+ *      install_bundled_driver 用 /passive /norestart 静默安装)。
+ *
+ * ★v24.37 手柄隐藏 (HidHide) 复活 —— 纯会话模式重设计。
+//! ★v24.37 手柄隐藏 (HidHide) 复活 —— 纯会话模式重设计。
 //!
-//! 用户规格 (2026-09-14): 部分游戏检测到物理手柄后强制进入原生手柄模式,
-//! 导致映射失效 (提高进程优先级无效 —— 优先级只影响 CPU 调度, 不影响设备检测)。
-//! 方案: 用 HidHide 过滤驱动做**设备层隐藏**:
+//! 用户规格 (2026-10-25): 「打开我的软件, 我的软件则是主导者; 关闭我的软件,
+//! 则一切恢复正常」—— 手柄对**所有**其他程序隐身 (任何游戏, 无需维护游戏名单)。
 //!
-//! - 设备可见性: HidHide 挂在 HIDClass / XnaComposite / XboxComposite 三个设备类的
-//!   上层过滤驱动位置, 在 IRP_MJ_CREATE 时按"设备黑名单 + 进程反向白名单"裁决。
-//! - 作用域: 采用 **inverse 模式** (IOCTL 2055 置反向 + IOCTL 2049 白名单=游戏进程
-//!   完整路径) —— 只有列表内的游戏进程被拒绝访问手柄, 其他程序 (含本软件自身、
-//!   震动的 XInput 通道) 完全不受影响。
-//! - 生命周期: 设备条目走**会话黑名单 IOCTL 2056** (MULTI_SZ 设备实例路径, 属主=
-//!   本进程 PID, 仅存内核内存): 本软件退出时驱动按进程回调自动清除; 进程崩溃同理。
-//!   inverse / 白名单 / active 是驱动自身的注册表全局状态, 开启前做**快照**存进
-//!   Config.toml, 关闭或退出时原样恢复; 崩溃遗留的快照由下次启动自愈恢复。
+//! 与 v24.19 冻结版的关键差异:
+//! - **白名单 = 仅本软件自身** (NT 映像路径): 反向白名单下只有列表内进程被拒,
+//!   旧版需要"学习表"逐个定位游戏进程路径 —— 新规格下列表只有一条已知路径,
+//!   学习表 / 已定位-未定位 / 落盘学习表整套机制全部删除。
+//! - **只走会话黑名单 (2056/2057)**, 不再降级持久黑名单 2051: 官方 v1.7.333+ 起
+//!   会话黑名单已进主干 (本仓库随附的内置驱动即源码构建), 条目存内核内存、
+//!   按属主 PID 生命周期自动清理 —— 进程退出/崩溃驱动侧零残留。
+//!   v24.19 那套"快照 + 崩溃自愈 + 学习表"复杂机器的根源 (发布版 1.4.181 无 2056)
+//!   已不存在; 快照仅剩 active/inverse/whitelist 三项驱动全局状态需要退出还原
+//!   (blacklist 字段仅为消费旧版配置遗留快照而保留)。
+//! - **软启用**: 手柄未连接时也允许开启 (热插拔由扫描循环自动补写条目),
+//!   前置校验只剩驱动在场 + 会话能力两个硬条件。
+//! - **内置驱动安装器**: 软件目录 `driver\HidHide.inf` 存在时, 一键提权
+//!   `pnputil /add-driver /install` (见 `install_bundled_driver`)。
 //!
-//! 驱动契约 (与 HidHide 源码 Shared/HidHideIoctlContract.h 逐字一致):
+//! 驱动契约 (与上游 Shared/HidHideIoctlContract.h 逐字一致, 黄金值有单测锁定):
 //! 设备类型 32769, 功能号 2048-2057, METHOD_BUFFERED, FILE_READ_DATA。
-//! 控制设备 `\\.\HidHide` 以 GENERIC_READ 打开 (SDDL 对所有用户开放 RWX, 无需管理员)。
+//! 控制设备 `\\.\HidHide` 以 GENERIC_READ 打开 (SDDL 对所有用户开放, 无需管理员)。
+//! 过滤语义 (上游 Logic.c): System 进程 (PID 4) 永远放行 —— RawInput 内核投递
+//! 不受影响 (固有边界: 仅 RawInput 采集的游戏仍可见手柄); XInput/DInput/WGI
+//! 走用户态设备打开、归属调用进程, 正是本功能要拦的通道。
 use std::time::Instant;
 
 use windows::core::{PCWSTR, PWSTR};
@@ -55,14 +83,15 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::DeviceIoControl;
 use windows::Win32::System::Threading::{
-    OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_NATIVE,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcess, GetExitCodeProcess, QueryFullProcessImageNameW, PROCESS_NAME_NATIVE,
+    WaitForSingleObject,
 };
-use windows::Win32::System::Diagnostics::ToolHelp::{
-    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+use windows::Win32::UI::Shell::{
+    SEE_MASK_FLAG_DDEWAIT, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW,
 };
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, HidHideSnapshot};
 
 // ---------------------------------------------------------------------------
 // IOCTL 契约 (黄金值有单测锁定)
@@ -91,9 +120,8 @@ pub const IOCTL_SET_WHITELIST: u32 = ctl_code(2049);
 /// (本方案不使用 —— 设备条目走会话黑名单 2056, 不碰持久黑名单; 留档黄金值对账)
 #[allow(dead_code)]
 pub const IOCTL_GET_BLACKLIST: u32 = ctl_code(2050);
-/// 2051: 整体替换设备黑名单 (输入 MULTI_SZ, 条目可带 `!<会话ID>` 限定)。
-/// (本方案不使用 —— 设备条目走会话黑名单 2056, 不碰持久黑名单; 留档黄金值对账)
-#[allow(dead_code)]
+/// 2051: 整体替换设备黑名单 (输入 MULTI_SZ)。
+/// (★v24.37 只读不用: 仅启动自愈消费旧版遗留快照时写回。)
 pub const IOCTL_SET_BLACKLIST: u32 = ctl_code(2051);
 /// 2052: 读取驱动激活状态 (输出 1 字节 BOOLEAN)。
 pub const IOCTL_GET_ACTIVE: u32 = ctl_code(2052);
@@ -264,6 +292,33 @@ fn collect_pad_instances() -> Vec<String> {
     sweep_instances_by_vid_pid(&collect_pad_vid_pids())
 }
 
+/// 持久黑名单路线 (2051) 的合并: 原有条目保持在前, 追加新实例, 忽略大小写去重。
+/// (驱动按忽略大小写比较条目; 重复写入虽无害, 但会让 GET 读回越来越长。)
+pub fn merge_blacklist(orig: &[String], instances: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = orig.to_vec();
+    for inst in instances {
+        if !out.iter().any(|x| x.eq_ignore_ascii_case(inst)) {
+            out.push(inst.clone());
+        }
+    }
+    out
+}
+
+/// 本软件自身的**NT 映像路径** (`\Device\HarddiskVolumeX\...`)。
+/// HidHide 驱动拿内核映像加载通知里的 NT 路径与白名单条目比对
+/// (WIN32 盘符风格 `C:\...` 永不匹配); 新规格白名单只放自己这一条。
+/// 拿不到 (几乎不可能) 返回 None —— 此时不得开启 (否则反向白名单会把自己也挡掉)。
+pub fn self_nt_image_path() -> Option<String> {
+    unsafe {
+        let h = GetCurrentProcess();
+        let mut buf = vec![0u16; 1024];
+        let mut size = buf.len() as u32;
+        QueryFullProcessImageNameW(h, PROCESS_NAME_NATIVE, PWSTR(buf.as_mut_ptr()), &mut size)
+            .ok()?;
+        Some(String::from_utf16_lossy(&buf[..size as usize]))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 驱动句柄 (薄封装; 不跨线程, GUI 线程专用)
 // ---------------------------------------------------------------------------
@@ -414,8 +469,8 @@ impl HidHide {
     }
 
     /// 追加会话黑名单 (IOCTL 2056)。条目属主=本进程 PID, 退出自动清除。
-    /// ⚠ 仅驱动源码 master 支持; **官方发布版 1.4.181 没有此功能** (返回 87),
-    /// 调用方须先 `session_supported()` 分流, 失败走 `set_blacklist` 持久黑名单路线。
+    /// ★v24.48c: 仅在 `use_session_list` (驱动 v1.7.333+) 时使用;
+    /// 官方发行版 v1.5.230 无此码 (返回 87), 走 `set_blacklist` 持久路线。
     pub fn add_session_blacklist(&self, instances: &[String]) -> Result<(), HidHideError> {
         self.ioctl_in(IOCTL_ADD_SESSION_BLACKLIST, &wide_to_bytes(&encode_multi_sz(instances)))
     }
@@ -427,53 +482,98 @@ impl HidHide {
 
     /// 驱动是否支持会话黑名单 (2056/2057): 用零缓冲 2057 探测。
     /// 支持则返回 Ok (顺带清掉本进程残留条目 —— 此刻本来就没有, 无副作用);
-    /// 发布版 1.4.181 不认识该码, 返回 Err (INVALID_PARAMETER)。
+    /// 老驱动不认识该码, 返回 Err (INVALID_PARAMETER)。
     pub fn session_supported(&self) -> bool {
         self.ioctl_void(IOCTL_CLR_SESSION_BLACKLIST).is_ok()
     }
 
-    /// 读取持久设备黑名单 (IOCTL 2050)。
+    /// 读取持久设备黑名单 (IOCTL 2050) —— 仅启动自愈读旧快照时配对使用。
     pub fn get_blacklist(&self) -> Result<Vec<String>, HidHideError> {
         self.ioctl_multi_sz_out(IOCTL_GET_BLACKLIST)
     }
 
-    /// **整体替换**持久设备黑名单 (IOCTL 2051)。发布版驱动的降级路线:
-    /// 语义与会话黑名单等价 (配合 inverse 白名单, 只有列表内进程看不到),
-    /// 区别是条目在驱动注册表里 —— 退出/崩溃靠我们的快照恢复兜底。
+    /// **整体替换**持久设备黑名单 (IOCTL 2051) —— 仅启动自愈消费旧版遗留快照时写回。
     pub fn set_blacklist(&self, instances: &[String]) -> Result<(), HidHideError> {
         self.ioctl_in(IOCTL_SET_BLACKLIST, &wide_to_bytes(&encode_multi_sz(instances)))
     }
 }
 
-/// 持久黑名单路线的合并: 原有条目保持在前, 追加新实例, 忽略大小写去重。
-/// (驱动按忽略大小写比较条目; 重复写入虽无害, 但会让 GET 读回越来越长。)
-pub fn merge_blacklist(orig: &[String], instances: &[String]) -> Vec<String> {
-    let mut out: Vec<String> = orig.to_vec();
-    for inst in instances {
-        if !out.iter().any(|x| x.eq_ignore_ascii_case(inst)) {
-            out.push(inst.clone());
-        }
-    }
-    out
+// ---------------------------------------------------------------------------
+// 控制器: GUI 线程持有的生命周期管理
+// ---------------------------------------------------------------------------
+
+/// 软件目录下内置**官方发行版**驱动安装器的定位 (微软认证签名, Secure Boot
+/// 开启的机器可直接安装 —— v1.7 会话黑名单官方从未发布, 见 CHANGELOG v24.48c)。
+pub fn bundled_driver_installer() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let p = exe.parent()?.join("driver").join("HidHide_1.5.230_x64.exe");
+    p.exists().then_some(p)
 }
 
-// ---------------------------------------------------------------------------
-// 驱动状态快照 (崩溃自愈的依据; 序列化进 Config.toml)
-// ---------------------------------------------------------------------------
+/// 内置驱动安装结果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InstallOutcome {
+    /// 驱动已装好 (设备节点 + 服务 + 类过滤器全部完成)。
+    Done,
+    /// 安装器要求重启电脑 (部分设备需重启后才挂上新过滤器);
+    /// 重启后重新打开开关即可继续。
+    NeedReboot,
+}
 
-/// 开启隐藏前的驱动全局状态快照 —— 关闭/退出时原样写回。
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct HidHideSnapshot {
-    /// 驱动激活位 (Active)。
-    pub active: bool,
-    /// 白名单取反位 (WhitelistedInverse)。
-    pub inverse: bool,
-    /// 原白名单 (完整映像路径 MULTI_SZ 解出的列表)。
-    pub whitelist: Vec<String>,
-    /// ★v24.19a 原持久设备黑名单 (发布版驱动降级路线要在 2051 上做合并/恢复,
-    /// 快照必须连它一起存)。serde 默认空: 兼容 v24.19 初版写出的快照。
-    #[serde(default)]
-    pub blacklist: Vec<String>,
+/// 安装内置驱动: 运行**官方发行版安装器** (触发一次 UAC)。
+///
+/// 为什么是官方包而不是自建: 微软 attestation 签名只有驱动版权方能拿,
+/// Secure Boot 开启的机器上自建/测试签名驱动永远无法通过入库校验
+/// (2026-10-25 真机事故根因, 详见 CHANGELOG v24.48b/c)。
+/// 官方安装器自带正确的设备节点/服务/类过滤器安装序列, 且经过百万级装机验证。
+/// 阻塞至安装器退出 (上限 10 分钟); 结果由调用方 `HidHide::driver_present()` 复核。
+pub fn install_bundled_driver() -> Result<InstallOutcome, String> {
+    if HidHide::driver_present() {
+        return Ok(InstallOutcome::Done); // 已装: 无需重复安装
+    }
+    let Some(exe) = bundled_driver_installer() else {
+        return Err("软件目录下未找到内置驱动安装器 (driver\\HidHide_1.5.230_x64.exe)".to_string());
+    };
+    let file = wide_str(&exe.to_string_lossy());
+    // WiX 捆绑包标准静默参数: /passive 只显示进度条, /norestart 不自动重启
+    let params = wide_str("/passive /norestart");
+    let verb = wide_str("runas");
+    unsafe {
+        let mut sei = SHELLEXECUTEINFOW {
+            cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_DDEWAIT,
+            lpVerb: PCWSTR::from_raw(verb.as_ptr()),
+            lpFile: PCWSTR::from_raw(file.as_ptr()),
+            lpParameters: PCWSTR::from_raw(params.as_ptr()),
+            nShow: SW_SHOWNORMAL.0 as i32,
+            ..Default::default()
+        };
+        ShellExecuteExW(&mut sei).map_err(|e| format!("提权启动失败: {e}"))?;
+        if sei.hProcess.is_invalid() {
+            return Err("用户取消了 UAC 授权 —— 可稍后在「手柄隐藏」卡片点按钮重试".to_string());
+        }
+        // 官方安装器通常秒级; 上限 10 分钟防挂
+        let _ = WaitForSingleObject(sei.hProcess, 600_000);
+        let mut exit_code: u32 = 0;
+        let _ = GetExitCodeProcess(sei.hProcess, &mut exit_code);
+        let _ = CloseHandle(sei.hProcess);
+        if exit_code != 0 && exit_code != 3010 {
+            return Err(format!("官方安装器异常退出 (代码 {exit_code}) —— 可能被杀软拦截或系统策略阻止"));
+        }
+    }
+    // 服务/控制设备就绪可能有零点几秒延迟, 短重试兜底
+    for _ in 0..15 {
+        if HidHide::driver_present() {
+            return Ok(InstallOutcome::Done);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+    // 安装器成功但控制设备未就绪: 已挂过滤器的设备要重启/重插后才走新驱动栈
+    Ok(InstallOutcome::NeedReboot)
+}
+
+fn wide_str(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain([0]).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -486,30 +586,26 @@ const SCAN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
 /// 手柄隐藏控制器 —— 由 `SorahkGui` 持有, 仅 GUI 线程使用。
 ///
 /// `runtime_on` 表示**当前会话**驱动是否已被我们改动 (与 config.hidhide_enabled
-/// 的"用户意图"分离: 驱动未装/路径未定位时, 意图可以是开, 运行态是关)。
+/// 的"用户意图"分离: 驱动未装/不支持会话时, 意图可以是开, 运行态是关)。
 #[derive(Default)]
 pub struct HidHideController {
     runtime_on: bool,
     last_error: Option<String>,
-    /// 已定位的游戏完整路径 (当前生效于驱动反向白名单)。
-    resolved: Vec<String>,
-    /// 尚未定位完整路径的白名单进程名。
-    unresolved: Vec<String>,
-    /// 当前加入会话黑名单的设备实例数。
-    hidden_count: usize,
+    /// 当前已加入会话黑名单的设备实例 (热插拔按全表比对决定重建)。
+    current_instances: Vec<String>,
     /// 最近一次扫描时间 (节流)。
     last_scan: Option<Instant>,
-    /// 最近一次扫描学到的路径是否有新增 (供 GUI 落盘, 取走即清)。
-    learned_changed: bool,
     /// 驱动是否已安装 (随扫描节流刷新, 不每帧探测)。
     driver_installed: bool,
-    /// ★v24.19a 防递归标志: scan_now 里"驱动到位后自动补开"会调 enable,
+    /// ★v24.48c 设备条目路线: true=会话黑名单 2056 (v1.7.333+), false=持久黑名单
+    /// 2051 降级 (官方发行版 v1.5.230)。enable 时探测一次。
+    use_session_list: bool,
+    /// ★v24.48c 持久路线的"原始 2051 黑名单" (enable 时的快照值) ——
+    /// 热插拔重建 = 原始 ∪ 当前实例, 不丢用户/其他软件的原有条目。
+    orig_blacklist: Vec<String>,
+    /// 防递归标志: scan_now 里"驱动到位后自动补开"会调 enable,
     /// enable 内部又会 scan_now —— 此标志阻止无限递归。
     auto_retrying: bool,
-    /// ★v24.19a 本驱动走哪条设备条目路线: true=会话黑名单 2056 (驱动 master 分支),
-    /// false=持久黑名单 2051 (官方发布版 1.4.181 —— 无 2056, 已实测)。
-    /// enable 时探测一次。
-    use_session_list: bool,
 }
 
 impl HidHideController {
@@ -521,20 +617,8 @@ impl HidHideController {
         self.last_error.as_deref()
     }
 
-    pub fn resolved_count(&self) -> usize {
-        self.resolved.len()
-    }
-
-    pub fn unresolved_names(&self) -> &[String] {
-        &self.unresolved
-    }
-
     pub fn hidden_count(&self) -> usize {
-        self.hidden_count
-    }
-
-    pub fn take_learned_dirty(&mut self) -> bool {
-        std::mem::take(&mut self.learned_changed)
+        self.current_instances.len()
     }
 
     /// 驱动是否已安装 (上次扫描缓存的值; 扫描随白名单页渲染节流执行)。
@@ -544,75 +628,41 @@ impl HidHideController {
 
     // -- 扫描 --
 
-    /// 立即扫描: 驱动在场探测 + 运行中的白名单进程学完整路径 + 手柄实例刷新。
+    /// 立即扫描: 驱动在场探测 + 手柄实例刷新。
     /// 若运行态为开且实例集合变化, 自动重写驱动的会话黑名单 (清空+重加)。
     fn scan_now(&mut self, config: &mut AppConfig) {
         self.last_scan = Some(Instant::now());
         let was_installed = self.driver_installed;
         self.driver_installed = HidHide::driver_present();
-        /* ★v24.19a: 驱动刚装好 → 清掉"未检测到驱动"的陈旧报错。
-         * 否则用户装完驱动回到本页, 那行红字永远挂着, 看起来像"还是检测不到"。 */
+        // 驱动刚装好 → 清掉"未检测到驱动"的陈旧报错, 用户回到本页红点能自动消失。
         if self.driver_installed && !was_installed {
             if matches!(&self.last_error, Some(e) if e.contains("未检测到 HidHide")) {
                 self.last_error = None;
             }
         }
-        // 1) 学习运行中白名单进程的 NT 映像路径。
-        //    ★v24.19a: 旧版本学到的 C:\ 盘符风格条目驱动匹配不上 —— 清掉重学。
-        for name in config.process_whitelist.clone() {
-            let learned_ok = config
-                .hidhide_learned_paths
-                .get(&name)
-                .is_some_and(|p| is_native_image_path(p));
-            if learned_ok {
-                continue;
-            }
-            if let Some(full) = full_path_of_running_process(&name) {
-                config.hidhide_learned_paths.insert(name.clone(), full);
-                self.learned_changed = true;
-            } else if config.hidhide_learned_paths.remove(&name).is_some() {
-                // 不在运行且条目是旧格式: 删掉, 等下次运行时重学
-                self.learned_changed = true;
-            }
-        }
-        // 2) 重新计算已定位/未定位
-        let mut resolved = Vec::new();
-        let mut unresolved = Vec::new();
-        for name in &config.process_whitelist {
-            match config.hidhide_learned_paths.get(name) {
-                Some(p) => resolved.push(p.clone()),
-                None => unresolved.push(name.clone()),
-            }
-        }
-        self.resolved = resolved;
-        self.unresolved = unresolved;
-        // 3) 手柄实例 (运行态为开才需要动驱动)
+        // 手柄实例热插拔 (运行态为开才需要动驱动; 双路线各自重建)
         if self.runtime_on {
             let instances = collect_pad_instances();
-            let changed = instances.len() != self.hidden_count;
-            if changed {
+            if instances != self.current_instances {
                 if let Ok(hh) = HidHide::open() {
                     if self.use_session_list {
                         // 会话路线: 清掉重加 (2056 条目无法枚举, 只能整体重建)
-                        if hh.clear_session_blacklist().is_ok() && !instances.is_empty() {
-                            let _ = hh.add_session_blacklist(&instances);
+                        if hh.clear_session_blacklist().is_ok() {
+                            if !instances.is_empty() {
+                                let _ = hh.add_session_blacklist(&instances);
+                            }
+                            self.current_instances = instances;
                         }
                     } else {
-                        // 持久路线: 原黑名单 (快照里) ∪ 当前实例
-                        let orig = config
-                            .hidhide_snapshot
-                            .as_ref()
-                            .map(|s| s.blacklist.clone())
-                            .unwrap_or_default();
-                        let _ = hh.set_blacklist(&merge_blacklist(&orig, &instances));
+                        // 持久路线: 原始 2051 ∪ 当前实例 (丢掉已拔出的旧实例)
+                        let _ = hh.set_blacklist(&merge_blacklist(&self.orig_blacklist, &instances));
+                        self.current_instances = instances;
                     }
                 }
-                self.hidden_count = instances.len();
             }
         }
-        /* ★v24.19a: 意图开着但运行态没起来 (启动时驱动还没装 / 游戏还没跑过),
-         * 而现在驱动已到位 → 自动补开一次, 用户装完驱动回到本页即生效,
-         * 不用再点一遍。auto_retrying 防住 enable→scan_now→enable 的递归。 */
+        // 意图开着但运行态没起来 (启动时驱动还没装 / 版本过旧),
+        // 而现在驱动已到位 → 自动补开一次, 不用再点一遍。
         if config.hidhide_enabled
             && !self.runtime_on
             && self.driver_installed
@@ -634,67 +684,120 @@ impl HidHideController {
         self.scan_now(config);
     }
 
+    /// 内置驱动安装完成后调用: 绕过节流立即重扫 (刷新在场标志 + 意图自动补开)。
+    pub fn rescan_now_for_driver_install(&mut self, config: &mut AppConfig) {
+        self.last_scan = None;
+        self.scan_now(config);
+    }
+
+    /// 内置驱动安装失败时记录错误 (供状态行展示)。
+    pub fn record_install_error(&mut self, msg: &str) {
+        self.last_error = Some(msg.to_string());
+    }
+
     // -- 开关 --
 
-    /// 开启手柄隐藏。前置: 驱动已装、白名单非空、至少定位到一个游戏完整路径。
+    /// 开启手柄隐藏。前置: 驱动已装。
+    /// 软启用: 手柄未连接也允许开 (热插拔由扫描循环补写条目)。
+    ///
+    /// ★v24.48b **按需安装**: 用户显式打开开关且驱动缺席 → 此刻才触发内置驱动
+    /// 安装 (一次 UAC)。绝不随启动自动安装 —— 隐藏是少数玩家的需求,
+    /// 多数用户不该看到任何 UAC 弹窗。装好一次后, 后续打开软件即静默接管。
+    ///
+    /// ★v24.48c **双路线**: 驱动支持会话黑名单 (v1.7.333+, 内核内存按 PID 自动清)
+    /// 则走会话路线; 否则 (官方发行版 v1.5.230, Secure Boot 机器的唯一定档)
+    /// 降级持久黑名单 2051 —— 白名单=仅自己后, 崩溃残留状态恰好等于"开启状态"
+    /// (手柄对本软件可见、对其他程序隐藏), 危害极小, 退出/下次启动仍照常还原。
     pub fn enable(&mut self, config: &mut AppConfig) -> Result<(), String> {
         self.last_error = None;
-        if config.process_whitelist.is_empty() {
-            let msg = String::from("进程列表为空 —— 请先在上方添加游戏进程 (如 dnf.exe)");
-            self.last_error = Some(msg.clone());
-            return Err(msg);
+        if !HidHide::driver_present() {
+            if bundled_driver_installer().is_none() {
+                let msg = "未检测到 HidHide 驱动, 且软件目录下没有内置驱动安装器 (driver\\)"
+                    .to_string();
+                self.last_error = Some(msg.clone());
+                return Err(msg);
+            }
+            match install_bundled_driver() {
+                Ok(InstallOutcome::Done) => {
+                    // 服务/控制设备就绪可能有零点几秒延迟, 短重试兜底
+                    let mut ready = HidHide::driver_present();
+                    for _ in 0..10 {
+                        if ready {
+                            break;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        ready = HidHide::driver_present();
+                    }
+                    if !ready {
+                        let msg = "驱动安装完成但控制设备未就绪 —— 请重开一次开关".to_string();
+                        self.last_error = Some(msg.clone());
+                        return Err(msg);
+                    }
+                }
+                Ok(InstallOutcome::NeedReboot) => {
+                    let msg = "内置驱动需要重启电脑完成安装 —— 重启后重新打开此开关即可继续"
+                        .to_string();
+                    self.last_error = Some(msg.clone());
+                    return Err(msg);
+                }
+                Err(e) => {
+                    let msg = format!("内置驱动安装未完成: {e}");
+                    self.last_error = Some(msg.clone());
+                    return Err(msg);
+                }
+            }
         }
         let hh = HidHide::open().map_err(|e| {
             let msg = match e {
                 HidHideError::NotInstalled => {
-                    "未检测到 HidHide 驱动 —— 请先安装 HidHide (github.com/nefarius/HidHide)".to_string()
+                    "未检测到 HidHide 驱动 —— 点击下方「安装内置驱动」(需要管理员授权)".to_string()
                 }
                 other => other.to_string(),
             };
             self.last_error = Some(msg.clone());
             msg
         })?;
-        // 快照现役驱动状态 (随后修改, 退出恢复)
-        let snap = {
-            let active = hh.get_active().map_err(fail(self))?;
-            let inverse = hh.get_inverse().map_err(fail(self))?;
-            let whitelist = hh.get_whitelist().map_err(fail(self))?;
-            let blacklist = hh.get_blacklist().map_err(fail(self))?;
-            HidHideSnapshot { active, inverse, whitelist, blacklist }
-        };
-        // ★v24.19a 探测会话黑名单支持: master 分支驱动有 2056/2057,
-        // 官方发布版 1.4.181 没有 (实测 87) → 降级到持久黑名单 2051。
+        // ★v24.48c 探测会话黑名单能力并选定路线 (v1.5.230 无 2056/2057 → 持久路线)
         self.use_session_list = hh.session_supported();
-        // 解析游戏完整路径 (顺带学习运行中的进程)
-        self.scan_now(config);
-        if self.resolved.is_empty() {
-            let msg = "尚未定位到列表中游戏的完整路径 —— 请先启动一次游戏再开启 (位置会自动记住)"
-                .to_string();
-            self.last_error = Some(msg.clone());
-            return Err(msg);
-        }
+        let self_path = match self_nt_image_path() {
+            Some(p) => p,
+            None => {
+                let msg = "无法获取本软件 NT 映像路径 —— 反向白名单无法安全开启".to_string();
+                self.last_error = Some(msg.clone());
+                return Err(msg);
+            }
+        };
+        // 快照现役驱动全局状态 (随后修改, 退出恢复)。
+        // ★复用已有快照: 崩溃残留场景下驱动里的现值 ≈ 我们上次写入的开启状态,
+        // 若此时重新快照会把"已改"当"原始", 关闭时还原成开启状态 → 手柄永久隐身。
+        // config 里的快照在首次 enable 时抓的才是真原始值, 退出/自愈时清掉。
+        let snap = match config.hidhide_snapshot.clone() {
+            Some(s) => s,
+            None => {
+                let active = hh.get_active().map_err(fail(self))?;
+                let inverse = hh.get_inverse().map_err(fail(self))?;
+                let whitelist = hh.get_whitelist().map_err(fail(self))?;
+                let blacklist = hh.get_blacklist().map_err(fail(self))?;
+                HidHideSnapshot { active, inverse, whitelist, blacklist }
+            }
+        };
+        self.orig_blacklist = snap.blacklist.clone();
         let instances = collect_pad_instances();
-        if instances.is_empty() {
-            let msg = "未检测到已连接的手柄 —— 请接好手柄再开启".to_string();
-            self.last_error = Some(msg.clone());
-            return Err(msg);
-        }
-        // 应用: 反向白名单 → 条目 → 激活位 (顺序保证任何中途失败都不会
-        // 出现"条目已生效而作用域未就位"的窗口)。
-        // 条目路线: 支持则走会话黑名单 (内核内存, 退出自动清);
-        // 否则持久黑名单合并写入 (发布版驱动, 退出/崩溃靠快照恢复)。
+        // 应用: 反向白名单 → 白名单(仅自己) → 设备条目(双路线) → 激活位
+        // (顺序保证任何中途失败都不会出现"条目已生效而作用域未就位"的窗口)。
         let entries = if self.use_session_list {
-            hh.add_session_blacklist(&instances)
+            if instances.is_empty() { Ok(()) } else { hh.add_session_blacklist(&instances) }
         } else {
             hh.set_blacklist(&merge_blacklist(&snap.blacklist, &instances))
         };
         let apply = hh
             .set_inverse(true)
-            .and_then(|()| hh.set_whitelist(&self.resolved))
+            .and_then(|()| hh.set_whitelist(&[self_path]))
             .and_then(|()| entries)
             .and_then(|()| if snap.active { Ok(()) } else { hh.set_active(true) });
         if let Err(e) = apply {
             // 尽力回滚 (失败不阻塞报错)
+            let _ = hh.clear_session_blacklist();
             let _ = hh.set_whitelist(&snap.whitelist);
             let _ = hh.set_inverse(snap.inverse);
             let _ = hh.set_blacklist(&snap.blacklist);
@@ -703,17 +806,20 @@ impl HidHideController {
             self.last_error = Some(msg.clone());
             return Err(msg);
         }
-        config.hidhide_snapshot = Some(snap);
-        self.hidden_count = instances.len();
+        if config.hidhide_snapshot.is_none() {
+            config.hidhide_snapshot = Some(snap);
+        }
+        self.current_instances = instances;
         self.runtime_on = true;
         Ok(())
     }
 
-    /// 关闭手柄隐藏: 清会话条目 + 恢复快照 (含持久黑名单)。驱动未装时仅清运行态与快照。
+    /// 关闭手柄隐藏: 清会话条目 + 恢复快照。驱动未装时仅清运行态与快照。
     pub fn disable(&mut self, config: &mut AppConfig) {
         self.last_error = None;
         if let Ok(hh) = HidHide::open() {
-            // 先停隐藏 (条目清掉 —— 会话码不存在时返回 87, 忽略), 再恢复驱动全局状态
+            // 先停隐藏 (清条目 + 会话条目由驱动随本进程存活, 双保险),
+            // 再恢复驱动全局状态。
             let _ = hh.clear_session_blacklist();
             if let Some(snap) = config.hidhide_snapshot.take() {
                 let _ = hh.set_whitelist(&snap.whitelist);
@@ -725,7 +831,7 @@ impl HidHideController {
             config.hidhide_snapshot = None;
         }
         self.runtime_on = false;
-        self.hidden_count = 0;
+        self.current_instances.clear();
     }
 
     /// 玩家开关 (白名单页状态药丸点击): 开↔关。
@@ -741,7 +847,7 @@ impl HidHideController {
         }
     }
 
-    /// 开机自愈: 上次退出未恢复正常 (崩溃/断电) → 恢复快照并落盘。
+    /// 开机自愈: v24.19 时代遗留快照 (崩溃/断电) → 恢复驱动原状并落盘。
     /// 返回给 UI 的提示消息 (无需处理时为 None)。
     pub fn startup_recovery(config: &mut AppConfig) -> Option<String> {
         let snap = config.hidhide_snapshot.take()?;
@@ -760,7 +866,7 @@ impl HidHideController {
         Some("检测到上次未正常退出 —— 已自动恢复 HidHide 驱动的原有设置".into())
     }
 
-    /// 启动时按用户意图恢复运行态 (若驱动可用且能定位游戏)。
+    /// 启动时按用户意图恢复运行态 (★v24.37 默认意图=开: 打开软件即主导)。
     /// 失败不打扰用户, 错误留状态行展示 + 写崩溃日志 (排查"为什么没自动开启")。
     pub fn restore_intent(&mut self, config: &mut AppConfig) {
         if !config.hidhide_enabled {
@@ -779,60 +885,6 @@ fn fail(ctrl: &mut HidHideController) -> impl FnOnce(HidHideError) -> String + '
         ctrl.last_error = Some(msg.clone());
         msg
     }
-}
-
-/// 按进程名找 PID (wchar 全名匹配, 不区分大小写) —— 与 auto_inject 同套路。
-fn find_pids_by_name(name: &str) -> Vec<u32> {
-    let target: Vec<u16> = name.to_lowercase().encode_utf16().collect();
-    let mut pids = Vec::new();
-    unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
-            return pids;
-        };
-        let mut pe = PROCESSENTRY32W::default();
-        pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        if Process32FirstW(snap, &mut pe).is_ok() {
-            loop {
-                let exe: Vec<u16> = pe.szExeFile.iter().copied().take_while(|&c| c != 0).collect();
-                if exe.len() == target.len() && exe == target {
-                    pids.push(pe.th32ProcessID);
-                }
-                if Process32NextW(snap, &mut pe).is_err() {
-                    break;
-                }
-            }
-        }
-        let _ = CloseHandle(snap);
-    }
-    pids
-}
-
-/// 进程名 → 该进程可执行文件的**NT 映像路径** (\Device\HarddiskVolumeX\..., 未运行返回 None)。
-/// ★v24.19a: 必须用 PROCESS_NAME_NATIVE —— HidHide 驱动拿内核映像加载通知里的 NT 路径
-/// 与白名单条目做比对 (官方客户端自己存的也是 NT 格式); WIN32 风格的 C:\ 路径永不匹配。
-fn full_path_of_running_process(name: &str) -> Option<String> {
-    let pid = *find_pids_by_name(name).first()?;
-    unsafe {
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
-        let mut buf = vec![0u16; 1024];
-        let mut size = buf.len() as u32;
-        let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_NATIVE, PWSTR(buf.as_mut_ptr()), &mut size);
-        let _ = CloseHandle(h);
-        ok.ok()?;
-        Some(String::from_utf16_lossy(&buf[..size as usize]))
-    }
-}
-
-/// 学习表条目是否为驱动可比对的 NT 格式 (\Device\ 开头)。
-/// v24.19 初版学的是 C:\ 盘符风格 —— 对驱动无效, 判假以触发清除重学。
-pub fn is_native_image_path(p: &str) -> bool {
-    p.starts_with(r"\Device\")
-}
-
-/// 学习表导出 (测试用)。
-#[cfg(test)]
-pub(crate) fn test_learned_paths_len(config: &AppConfig) -> usize {
-    config.hidhide_learned_paths.len()
 }
 
 // ---------------------------------------------------------------------------
@@ -898,7 +950,7 @@ mod tests {
         assert_eq!(vid_pid_needle(0x20BC, 0x5159), "VID_20BC&PID_5159");
     }
 
-    /// 快照可进 TOML (Config.toml 持久化 + 崩溃自愈的载体)。
+    /// 快照可进 TOML (Config.toml 持久化 + 退出还原的载体)。
     #[test]
     fn snapshot_serde_roundtrip() {
         let snap = HidHideSnapshot {
@@ -912,15 +964,56 @@ mod tests {
         assert_eq!(back, snap);
     }
 
-    /// v24.19 初版快照 (没有 blacklist 字段) 必须还能解析 —— 降级路线的字段带 serde 默认。
+    /// v24.19 初版快照 (没有 blacklist 字段) 必须还能解析 —— 兼容字段带 serde 默认。
     #[test]
     fn snapshot_without_blacklist_field_parses() {
-        // TOML 单引号字面串: 反斜杠不转义, 一个就是一一个
+        // TOML 单引号字面串: 反斜杠不转义, 一个就是一个
         let s = "active = true\ninverse = false\nwhitelist = ['C:\\a\\b.exe']\n";
         let snap: HidHideSnapshot = toml::from_str(s).unwrap();
         assert!(snap.active);
         assert_eq!(snap.whitelist, vec!["C:\\a\\b.exe".to_string()]);
         assert!(snap.blacklist.is_empty());
+    }
+
+    /// 控制器默认值: 关、无错误、列表空。
+    #[test]
+    fn controller_defaults_off() {
+        let c = HidHideController::default();
+        assert!(!c.is_on());
+        assert!(c.error().is_none());
+        assert_eq!(c.hidden_count(), 0);
+        assert!(!c.driver_installed());
+    }
+
+    /// toggle 在驱动未装时: 运行态保持关, 意图落回关, 错误可读。
+    #[test]
+    fn toggle_without_driver_stays_off() {
+        // 前提: 测试机未安装 HidHide (构建机常态); 若装了驱动则跳过本用例
+        if HidHide::driver_present() {
+            return; // 驱动在场时此路径不该走, 交由真机手工验收
+        }
+        let mut config = crate::config::AppConfig::default();
+        let mut c = HidHideController::default();
+        c.toggle(&mut config);
+        assert!(!c.is_on());
+        assert!(!config.hidhide_enabled);
+        assert!(c.error().is_some(), "应留下『未检测到驱动』提示");
+    }
+
+    /// 自身 NT 映像路径: 必须是驱动可比对的 \Device\ 格式 (白名单唯一的条目来源)。
+    #[test]
+    fn self_image_path_is_native_format() {
+        let Some(p) = self_nt_image_path() else {
+            return; // 查询失败的环境 (极少) 不硬性失败
+        };
+        assert!(p.starts_with(r"\Device\"), "NT 映像路径应为 \\Device\\ 开头: {p}");
+    }
+
+    /// 内置驱动安装器定位: 无 driver 目录时返回 None (不 panic)。
+    #[test]
+    fn bundled_driver_installer_absent_is_none() {
+        // 仅断言函数可安全调用 (存在与否取决于运行目录, 不做环境断言)
+        let _ = bundled_driver_installer();
     }
 
     /// 持久黑名单合并: 原条目保持在前 + 新实例追加 + 忽略大小写去重。
@@ -940,52 +1033,6 @@ mod tests {
         assert_eq!(merge_blacklist(&[], &inst), inst);
     }
 
-    /// 控制器默认值: 关、无错误、列表空。
-    #[test]
-    fn controller_defaults_off() {
-        let c = HidHideController::default();
-        assert!(!c.is_on());
-        assert!(c.error().is_none());
-        assert_eq!(c.resolved_count(), 0);
-        assert_eq!(c.hidden_count(), 0);
-        assert!(c.unresolved_names().is_empty());
-    }
-
-    /// toggle 在驱动未装时: 运行态保持关, 意图落回关, 错误可读。
-    #[test]
-    fn toggle_without_driver_stays_off() {
-        // 前提: 测试机未安装 HidHide (构建机常态); 若装了驱动则跳过本用例
-        if HidHide::driver_present() {
-            return; // 驱动在场时此路径不该走, 交由真机手工验收
-        }
-        let mut config = crate::config::AppConfig::default();
-        config.process_whitelist.push("dnf.exe".into());
-        let mut c = HidHideController::default();
-        c.toggle(&mut config);
-        assert!(!c.is_on());
-        assert!(!config.hidhide_enabled);
-        assert!(c.error().is_some(), "应留下『未检测到驱动』提示");
-    }
-
-    /// 学习表是 BTreeMap: 进程名 → 完整路径 (serde 默认空, 兼容旧配置)。
-    #[test]
-    fn learned_paths_map_default_empty() {
-        let config = crate::config::AppConfig::default();
-        assert_eq!(test_learned_paths_len(&config), 0);
-        assert!(!config.hidhide_enabled);
-        assert!(config.hidhide_snapshot.is_none());
-    }
-
-    /// ★v24.19a: 驱动按 NT 映像路径匹配 —— 只有 \Device\ 开头才算学到家;
-    /// C:\ 盘符风格 (v24.19 初版学习产物) 判非原生, 会触发清除重学。
-    #[test]
-    fn native_image_path_detection() {
-        assert!(is_native_image_path(r"\Device\HarddiskVolume4\Users\x\python.exe"));
-        assert!(!is_native_image_path(r"C:\Users\x\python.exe"));
-        assert!(!is_native_image_path("python.exe"));
-        assert!(!is_native_image_path(""));
-    }
-
     /// 真机诊断 (不进常规套件): `cargo test --release --lib diag_real -- --ignored --nocapture`
     /// 打印应用视角的手柄 VID/PID 与待隐藏实例, 用于排查"enable 被前置校验拒绝"。
     #[test]
@@ -1001,9 +1048,6 @@ mod tests {
         for i in &instances {
             println!("instance: {i}");
         }
-        assert!(!instances.is_empty(), "未找到手柄实例 —— enable 的'未检测到手柄'即由此触发");
+        assert!(!instances.is_empty(), "未找到手柄实例 —— 接好手柄后重试");
     }
 }
-
-
-*/

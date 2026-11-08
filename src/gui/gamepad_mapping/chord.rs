@@ -82,10 +82,15 @@ pub fn chord_mapping_indexes(config: &AppConfig) -> Vec<usize> {
 /// 组合键冲突校验 (建键时护栏, "无冲突"的静态一半; 动态抑制在运行时):
 /// ① 与既有组合键**完全相同** → 拒绝 (重复);
 /// ② 与既有组合键**部分重叠** (共享 ≥1 键且互不包含) → 拒绝 —— 同按两组件的按键时
-///    两条组合同时命中且互不遮蔽, 行为不可预测 (完整包含/被包含是安全的: 大组合独占);
-/// ③ 与「连发切换键」/预设切换键**共享任一键** → 拒绝 (按组合会误触切换)。
-/// 成员键与槽位单键映射的关系**无需**在此校验 —— 运行时延迟抑制已保证组合完成时
-/// 成员的单独功能不先触发。
+///    两条组合同时命中且互不遮蔽, 行为不可预测 (完整包含/被包含是安全的: 大组合独占)。
+///
+/// ★v24.49 放宽: 与切换键共用按键**不再拒绝** —— 运行时已能仲裁
+/// (切换键命中若同时补全某组合, 则组合优先、本次不切; 只有单独按切换键才切)。
+/// 因此「LB 既当切换键、又作 LB+X 成员」成为合法配置。
+///
+/// 成员键与槽位单键映射的关系同样**无需**在此校验 —— 运行时延迟抑制保证组合完成时
+/// 成员的单独功能不先触发; 若用户显式勾选「独占」(chord_exclusive_keys), 则成员单键
+/// 整份让位给组合 (永不补发), 这是"牺牲一个键换多个组合键"的用法。
 pub fn validate_chord_trigger(config: &AppConfig, vid: u16, ids: &[u32]) -> Result<(), String> {
     let norm = chord_trigger_name(vid, ids);
     for i in chord_mapping_indexes(config) {
@@ -109,26 +114,35 @@ pub fn validate_chord_trigger(config: &AppConfig, vid: u16, ids: &[u32]) -> Resu
             }
         }
     }
-    /* 连发切换键: 手柄命名 (任意键数) 时按共享键拦截 */
+    Ok(())
+}
+
+/// ★v24.49 组合键与切换键共用按键时的**提示** (不再拒绝, 只告知运行时的仲裁语义)。
+/// 返回空 `Vec` = 无交集; 否则每项一句话, 供保存后 toast 使用。
+pub fn chord_switch_overlap_notes(config: &AppConfig, vid: u16, ids: &[u32]) -> Vec<String> {
+    let mut notes = Vec::new();
     if let Some((vid2, ids2)) = xinput_ids_of_any(&config.switch_key)
         && vid2 == vid
-        && ids2.iter().any(|id| ids.contains(id))
+        && let Some(shared) = ids2.iter().find(|id| ids.contains(id))
     {
-        return Err("与「连发切换键」共用按键 — 按组合键会误触暂停/恢复, 请换一组".to_string());
+        notes.push(format!(
+            "与「连发切换键」共用 {} — 单独按它才切换, 按组合只触发组合",
+            XInputHandler::input_id_to_name(*shared)
+        ));
     }
-    /* 预设切换键 */
     for p in &config.presets {
         if let Some((vid2, ids2)) = xinput_ids_of_any(&p.switch_key)
             && vid2 == vid
-            && ids2.iter().any(|id| ids.contains(id))
+            && let Some(shared) = ids2.iter().find(|id| ids.contains(id))
         {
-            return Err(format!(
-                "与预设「{}」的切换键共用按键 — 按组合键会误触切换, 请换一组",
-                p.name
+            notes.push(format!(
+                "与预设「{}」的切换键共用 {} — 单独按它才切换, 按组合只触发组合",
+                p.name,
+                XInputHandler::input_id_to_name(*shared)
             ));
         }
     }
-    Ok(())
+    notes
 }
 
 /// 组合成员中已具单独映射的按键显示名 (保存后提示"延迟触发"语义用)。
@@ -151,6 +165,42 @@ pub fn chord_solo_member_names(config: &AppConfig, vid: u16, ids: &[u32]) -> Vec
         }
     }
     solo_names
+}
+
+/// ★v24.49 可勾「独占」的按钮名 (短名, 不带设备前缀, 已排序去重)。
+///
+/// 判据 = 既出现在某**多键组合**里、又**有自己的单键映射**的按钮。
+/// 只有这种按键才谈得上"牺牲单键换组合"; 纯组合成员 (本来就没单键功能) 勾了无意义,
+/// 纯单键 (不参与任何组合) 勾了会白丢功能 —— 两者都不列出。
+pub fn chord_solo_member_names_by_vid(config: &AppConfig) -> Vec<String> {
+    let mut combo_members: Vec<u32> = Vec::new();
+    let mut solo_keys: Vec<u32> = Vec::new();
+    for m in &config.mappings {
+        let Some(InputDevice::XInputCombo { button_ids, .. }) =
+            AppState::input_name_to_device(&m.trigger_key)
+        else {
+            continue;
+        };
+        if button_ids.len() >= 2 {
+            for &id in &button_ids {
+                if !combo_members.contains(&id) {
+                    combo_members.push(id);
+                }
+            }
+        } else if let Some(&id) = button_ids.first()
+            && !solo_keys.contains(&id)
+        {
+            solo_keys.push(id);
+        }
+    }
+    let mut out: Vec<String> = combo_members
+        .iter()
+        .filter(|id| solo_keys.contains(id))
+        .map(|&id| XInputHandler::input_id_to_name(id).to_string())
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /* ================================ 面板渲染 ================================ */
@@ -221,11 +271,17 @@ impl SorahkGui {
         }
         self.gp_save_and_reload();
         self.gp_flow = self.gp_flow.transition(GpEvent::FinishEdit);
+        /* ★v24.49: 与切换键共用按键不再是错误, 但要让用户知道运行时怎么仲裁 */
+        let switch_notes = chord_switch_overlap_notes(&self.config, vid, &ids);
+        let mut extra = String::new();
+        if !switch_notes.is_empty() {
+            extra.push_str(&format!("。{}", switch_notes.join("; ")));
+        }
         if solo_names.is_empty() {
-            self.set_gamepad_toast(format!("组合键 {display} → {value} 已保存"));
+            self.set_gamepad_toast(format!("组合键 {display} → {value} 已保存{extra}"));
         } else {
             self.set_gamepad_toast(format!(
-                "组合键 {display} → {value} 已保存。{} 已有单独映射: 单独按住约 0.15 秒后触发其单独功能, 快速点按与组合不受影响",
+                "组合键 {display} → {value} 已保存。{} 已有单独映射: 单独按住约 0.15 秒后会触发其单独功能、点按也照常; 想让位给组合请勾选「独占」{extra}",
                 solo_names.join("、")
             ));
         }
@@ -364,7 +420,8 @@ impl SorahkGui {
                     if indexes.is_empty() {
                         ui.label(th.hint_text(
                             "还没有组合键。添加后按住组合 (如 RB+X) 即触发目标键;\n\
-                             组合成员的单独映射不受影响 (引擎自动抑制, 组合不会带出成员功能)。",
+                             按组合时不会带出成员的单独功能; 想让某个键彻底让位给组合, \
+                             可在下方勾选「独占」。",
                         ));
                     } else {
                         for &i in &indexes {
@@ -424,10 +481,10 @@ impl SorahkGui {
                             });
                             ui.add_space(4.0);
                         }
-                        ui.add_space(2.0);
-                        ui.label(th.hint_text(
-                            "规则: 组合键之间不能部分共用按键; 不能与切换键共用按键 (保存时校验)。",
-                        ));
+                        ui.add_space(4.0);
+                        /* ★v24.49 独占成员键: 把"组合成员的单独功能"整份让位给组合。
+                         * 只列出**确实同时有单键映射与组合映射**的按钮 —— 其它键勾了也没意义。 */
+                        self.render_chord_exclusive_section(ui, th);
                     }
                 });
                 if add_clicked {
@@ -442,13 +499,84 @@ impl SorahkGui {
             }
         }
     }
+    /// ★v24.49 独占成员键勾选区。
+    ///
+    /// 只列出「既出现在某多键组合里、又有自己的单键映射」的按钮 —— 勾上 = 该键的单键功能
+    /// 整份让位给组合 (单独按住也不触发自己的映射), 用于"牺牲一个键换多个组合键"。
+    /// 例: 牺牲 LB 单键 → LB+X / LB+Y / LB+A / LB+B 各映射一个键盘键。
+    fn render_chord_exclusive_section(&mut self, ui: &mut egui::Ui, th: &Theme) {
+        let mut candidates = chord_solo_member_names_by_vid(&self.config);
+        /* ★v24.49: 把"已勾选但已不再是候选"的残留项也列出来 ——
+         * 例如勾了 LB 之后删掉了 LB+X 组合, LB 就不再满足"组合成员∩单键"而消失;
+         * 若此时不显示, 用户无法取消这项配置 (虽因交集为空而不生效, 但会一直残留)。 */
+        let mut stale: Vec<String> = self
+            .config
+            .chord_exclusive_keys
+            .iter()
+            .filter(|k| {
+                !candidates
+                    .iter()
+                    .any(|c| c.eq_ignore_ascii_case(k))
+            })
+            .cloned()
+            .collect();
+        if candidates.is_empty() && stale.is_empty() {
+            return;
+        }
+        stale.sort_unstable();
+        let active = candidates.clone();
+        candidates.extend(stale);
+        ui.label(th.hint_text(
+            "独占: 勾选的键放弃自己的单键功能, 只作为组合成员使用 —— \
+             牺牲 1 个键可换来「该键 + 其它键」的多个组合键。",
+        ));
+        ui.add_space(2.0);
+        let mut changed = false;
+        for name in &candidates {
+            let on = self
+                .config
+                .chord_exclusive_keys
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(name));
+            let mut checked = on;
+            /* 残留项标注"当前没有用到该键的组合"——运行时因交集为空而不生效 */
+            let is_active = active.iter().any(|c| c.eq_ignore_ascii_case(name));
+            let label = if is_active {
+                format!("{name} 单独按下时让位给组合")
+            } else {
+                format!("{name} 单独按下时让位给组合 (当前没有用到该键的组合)")
+            };
+            if ui
+                .checkbox(&mut checked, label)
+                .on_hover_text(
+                    "勾选后该键的单独映射不再触发 (即使按住也不触发); \
+                     不勾则单独按住约 0.15 秒后仍会触发其单独功能",
+                )
+                .changed()
+            {
+                if checked {
+                    if !on {
+                        self.config.chord_exclusive_keys.push(name.clone());
+                    }
+                } else {
+                    self.config
+                        .chord_exclusive_keys
+                        .retain(|k| !k.eq_ignore_ascii_case(name));
+                }
+                changed = true;
+            }
+        }
+        if changed {
+            self.gp_save_and_reload();
+            self.set_gamepad_toast("独占设置已保存");
+        }
+    }
 }
 
 /* ================================== 单测 ================================== */
 #[cfg(test)]
 mod tests {
     use super::*;
-
     /* XInput 按钮 id (xinput.rs BUTTON_MAP): LB=0x09 RB=0x0A A=0x0B X=0x0D
      * Y=0x0E START=0x05 BACK=0x06 LT=0x18 RT=0x19 */
     const LB: u32 = 0x09;
@@ -537,22 +665,34 @@ mod tests {
         assert!(validate_chord_trigger(&c, 0x045E, &[0x18, 0x19]).is_ok());
     }
 
+    /// ★v24.49: 与切换键共用按键**不再拒绝** (运行时仲裁: 单独按切换键才切,
+    /// 按组合只触发组合)。这里锁新语义 + 提示文案。
     #[test]
-    fn test_validate_chord_rejects_switch_key_overlap() {
+    fn test_validate_chord_allows_switch_key_overlap() {
         let mut c = config_with(&[]);
         c.switch_key = "GAMEPAD_045E_BACK".to_string();
-        /* 与连发切换键共享 BACK → 拒绝 */
-        assert!(validate_chord_trigger(&c, 0x045E, &[BACK, RB]).is_err());
-        /* 不共享 → 允许 */
+        /* 与连发切换键共享 BACK → 允许, 但给出提示 */
+        assert!(
+            validate_chord_trigger(&c, 0x045E, &[BACK, RB]).is_ok(),
+            "v24.49 起切换键可与组合共用 (运行时仲裁)"
+        );
+        let notes = chord_switch_overlap_notes(&c, 0x045E, &[BACK, RB]);
+        assert_eq!(notes.len(), 1, "应提示与连发切换键共用: {notes:?}");
+        assert!(notes[0].contains("连发切换键"), "{notes:?}");
+        /* 不共享 → 无提示 */
         assert!(validate_chord_trigger(&c, 0x045E, &[LB, RB]).is_ok());
-        /* 预设切换键 */
+        assert!(chord_switch_overlap_notes(&c, 0x045E, &[LB, RB]).is_empty());
+        /* 预设切换键: 同样是"允许 + 提示" */
         let mut c2 = config_with(&[]);
         c2.presets.push(crate::config::Preset {
             name: "预设1".to_string(),
             mappings: Vec::new(),
             switch_key: "GAMEPAD_045E_START".to_string(),
         });
-        assert!(validate_chord_trigger(&c2, 0x045E, &[START, RB]).is_err());
+        assert!(validate_chord_trigger(&c2, 0x045E, &[START, RB]).is_ok());
+        let notes2 = chord_switch_overlap_notes(&c2, 0x045E, &[START, RB]);
+        assert_eq!(notes2.len(), 1, "{notes2:?}");
+        assert!(notes2[0].contains("预设1"), "{notes2:?}");
     }
 
     #[test]
@@ -561,6 +701,54 @@ mod tests {
         let names = chord_solo_member_names(&c, 0x045E, &[RB, X]);
         assert_eq!(names, vec!["X"], "X 有单独映射, RB 没有");
     }
+
+    /// ★v24.49: 可勾「独占」的键 = 「多键组合成员」∩「有自己的单键映射」。
+    /// 纯组合成员 (无单键功能) 与纯单键 (不参与组合) 都不列出。
+    #[test]
+    fn test_chord_solo_member_names_by_vid() {
+        let c = config_with(&[
+            "GAMEPAD_045E_LB",     // LB 单键
+            "GAMEPAD_045E_LB+X",   // LB 也是组合成员 → LB 可勾独占
+            "GAMEPAD_045E_LB+Y",   // 同一键的第二个组合
+            "GAMEPAD_045E_A",      // A 只有单键, 不参与任何组合 → 不列出
+            "GAMEPAD_045E_RB+B",   // RB/B 无单键映射 → 不列出
+        ]);
+        let names = chord_solo_member_names_by_vid(&c);
+        assert_eq!(names, vec!["LB"], "只有 LB 既在组合里又有单键映射: {names:?}");
+    }
+
+    /// ★v24.49: 没有"组合成员兼单键"时, 独占区不出现 (避免无意义勾选)
+    #[test]
+    fn test_chord_solo_member_names_by_vid_empty_when_no_overlap() {
+        let c = config_with(&["GAMEPAD_045E_A", "GAMEPAD_045E_LB+X"]);
+        assert!(
+            chord_solo_member_names_by_vid(&c).is_empty(),
+            "A 是纯单键、LB/X 是纯组合成员, 无可独占项"
+        );
+    }
+
+    /// ★v24.49: 独占配置残留的判定 —— 勾了 LB 之后删掉全部 LB 组合,
+    /// LB 就不再是候选, 但配置里仍留着。GUI 必须能把它列出来供取消。
+    #[test]
+    fn test_chord_exclusive_stale_entries_are_listed() {
+        let mut c = config_with(&["GAMEPAD_045E_LB", "GAMEPAD_045E_LB+X"]);
+        c.chord_exclusive_keys = vec!["LB".to_string()];
+        /* 有 LB+X 时 LB 是有效候选 */
+        assert_eq!(chord_solo_member_names_by_vid(&c), vec!["LB"]);
+
+        /* 删掉组合后: 候选空, 但配置仍残留 → GUI 需列出 (由调用方合并 stale) */
+        c.mappings.retain(|m| m.trigger_key != "GAMEPAD_045E_LB+X");
+        assert!(
+            chord_solo_member_names_by_vid(&c).is_empty(),
+            "没有组合后 LB 不再是候选"
+        );
+        assert_eq!(
+            c.chord_exclusive_keys,
+            vec!["LB".to_string()],
+            "配置项仍在 (GUI 需据此显示残留项让用户取消)"
+        );
+    }
+
 
     /// ★v24.39: LB+LT (肩键+扳机, 纯按键组合) 必须能被组合捕获选中 ——
     /// 捕获帧选择在组合捕获期间强制 max-inputs (xinput 侧), 这里锁挑选器契约。

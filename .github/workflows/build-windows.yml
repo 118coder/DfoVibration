@@ -1,0 +1,45 @@
+name: build-windows
+
+# 云端构筑 (用户决策 2026-11-09: 本机构筑太慢 → GitHub Actions 代建)。
+# 配方与既有 ci.yml 一致 (PR #10/#11 全绿): RUSTUP_TOOLCHAIN=1.96.0 → **MSVC 宿主直构**
+# (runner rustup 解析不了全三元 gnu channel; MSVC 下 embed-resource 走 rc.exe 链路一致)。
+# ⚠ 云端产物 = MSVC 工具链构建 (功能等价); 本地交付仍以 MinGW 为准 (中文路径铁律不动)。
+# 分支: release/v24.49-chord-exclusive (组合键独占成员键; 本分支无音频/模型)。
+on:
+  push: # 任意分支触发
+  workflow_dispatch:
+
+env:
+  RUSTUP_TOOLCHAIN: "1.96.0"
+  CARGO_HTTP_TIMEOUT: "120"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain (MSVC host, 与 ci.yml 同配方)
+        run: rustup toolchain install 1.96.0
+
+
+
+      - name: Build (release)
+        run: cargo build --release
+
+      - name: Rename artifact + SHA256
+        shell: pwsh
+        run: |
+          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_v24.49_chord.exe"
+          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_v24.49_chord.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  DfoVibration-Sorahk_v24.49_chord.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding ascii
+          Get-Content "target/release/SHA256SUMS.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: "SorahkDFO-v24.49-chord"
+          path: |
+            target/release/DfoVibration-Sorahk_v24.49_chord.exe
+            target/release/SHA256SUMS.txt
+          if-no-files-found: error

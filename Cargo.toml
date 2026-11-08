@@ -47,6 +47,9 @@ eframe = { version = "0.33.3", default-features = false, features = ["default_fo
 resvg = "0.44.0"
 egui-phosphor = "0.11.0"
 usvg = "0.44.0"
+# 无头截图导出 (src/gui/headless.rs)。resvg 已把 png 0.18 带进依赖树,
+# 这里显式声明只是为了让代码能 `use png::…` —— 不新增任何下载。
+png = "0.18.0"
 ico = "0.5.0"
 rfd = { version = "0.16.0", default-features = false }
 scc = "3.4.8"

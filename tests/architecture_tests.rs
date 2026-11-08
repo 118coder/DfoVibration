@@ -169,10 +169,10 @@ const EXPECTED_VIBRATION_KEYS: &[&str] = &[
 ];
 
 const EXPECTED_APP_KEYS: &[&str] = &[
-    "always_on_top", "classic_mode", "combo_key_gap_ms", "current_preset",
-    "dark_mode", "device_api_preferences", "dfo_player", "event_duration",
-    "guide_seen", "hid_baselines", "hid_slot_usages", "input_timeout",
-    "interval", "language", "mappings", "minimal_mode",
+    "always_on_top", "chord_exclusive_keys", "classic_mode", "combo_key_gap_ms",
+    "current_preset", "dark_mode", "device_api_preferences", "dfo_player",
+    "event_duration", "guide_seen", "hid_baselines", "hid_slot_usages",
+    "input_timeout", "interval", "language", "mappings", "minimal_mode",
     "minimal_vib_preset_job", "presets", "process_whitelist",
     "rawinput_capture_mode", "show_notifications", "show_tray_icon",
     "switch_key", "universal_macros", "vib_edition_asked", "vib_legacy_client",

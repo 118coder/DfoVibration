@@ -250,9 +250,30 @@ struct XInputDeviceState {
     /// 这类按钮单独按下时不立即派发, 先挂起 [`Self::pending_solos`]:
     /// 组合在宽限期内完成 → 取消挂起 (成员不先触发单独功能, "RB+X=Space 不带出 X");
     /// 宽限期满或提前松开 → 补发 (快速点按不受影响)。与 combo_masks 同生命周期。
+    ///
+    /// ★v24.49: 改为在 `combo_masks` 重建时真正赋值 —— v24.37 起该字段虽有纯函数
+    /// [`Self::chord_solo_bits_from_combos`] 与单测, 但**从未被调用**, 恒为 0 ⇒
+    /// 延迟抑制实际未生效 (按 LB+X 时 LB 的单键映射照常先触发)。
     chord_solo_bits: u32,
+    /// ★v24.49 独占成员集 (位图): 单键功能被组合"牺牲"掉的按钮。
+    /// 来源 = [`crate::config::AppConfig::chord_exclusive_keys`] (GUI 里勾选「独占该键」)。
+    /// 与 `chord_solo_bits` 的区别:
+    /// - `chord_solo_bits` 的成员在宽限期满后**补发**单键 (组合与单键共存);
+    /// - `chord_exclusive_bits` 的成员**永不补发**单键 —— 单键功能整份让位给组合,
+    ///   即使宽限期满仍按住也不触发 (这正是"牺牲 LB 单键功能, 换 LB+X/Y/A/B"的语义)。
+    /// 与 combo_masks 同生命周期。
+    chord_exclusive_bits: u32,
     /// ★v24.37 挂起中的单键组合: (按钮 id, 补发截止时刻)
     pending_solos: SmallVec<[(u32, std::time::Instant); 4]>,
+    /// ★v24.49 挂起中的切换键触发 (切换键与某组合共用按键时): 截止时刻。
+    /// 组合在宽限期内成立 → 取消 (只触发组合); 到期仍单独按住 → 真正切换。
+    /// 与 `pending_solos` 同一结算时机 (`process_pending_solos`)。
+    pending_switch: Option<std::time::Instant>,
+    /// ★v24.49 挂起切换键的按钮掩码 (位图) —— 用于"切换键已松开"的快速判定
+    pending_switch_mask: u32,
+    /// ★v24.49 当前设备的组合掩码表 (供 [`Self::inputs_complete_any_chord`] 用;
+    /// 与 `combo_masks` 同生命周期 —— 切换键检测早于 `combo_masks` 重建, 需要独立可查)。
+    chord_masks_cache: SmallVec<[ComboMask; 16]>,
 }
 
 /// XInput handler for Xbox controller input.
@@ -312,7 +333,11 @@ axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
 chord_solo_bits: 0,
+chord_exclusive_bits: 0,
 pending_solos: SmallVec::new(),
+pending_switch: None,
+pending_switch_mask: 0,
+chord_masks_cache: SmallVec::new(),
                     });
 
                     // Register device display info
@@ -389,6 +414,7 @@ pending_solos: SmallVec::new(),
         // Check and clear cache if configuration was reloaded
         if unlikely(self.state.check_and_reset_xinput_cache_invalid()) {
             let pool = self.state.get_worker_pool().cloned();
+            let app_state = self.state.clone();
             for device_state in self.device_states.iter_mut().flatten() {
                 if let Some(pool) = &pool {
                     // 配置重载清缓存前补发 Released (同上: 防注入键悬空)
@@ -407,6 +433,18 @@ pending_solos: SmallVec::new(),
                 /* ★v24.37: 组合键成员集/挂起与缓存同步失效 (下帧按新配置重建) */
                 device_state.chord_solo_bits = 0;
                 device_state.pending_solos.clear();
+                /* ★v24.49: 独占集/切换仲裁缓存同步失效。
+                 * 注意 `chord_masks_cache` **立即重建**: 切换键检测在
+                 * `combo_masks` 重建之前执行, 若这里留空, 配置刚改完的第一帧
+                 * 切换键会误判为"未构成组合"而抢先切换。 */
+                device_state.chord_exclusive_bits = 0;
+                device_state.pending_switch = None;
+                device_state.pending_switch_mask = 0;
+                let all_combos = app_state
+                    .get_xinput_combos_for_device(&DeviceType::Gamepad(device_state.vid_pid.0));
+                let mut masks = SmallVec::<[ComboMask; 16]>::new();
+                Self::build_combo_masks(&all_combos, &mut masks);
+                device_state.chord_masks_cache = masks;
                 /* ★v21.0: 奔跑阈值缓存与三区状态同步失效 (下帧按新配置重建) */
                 device_state.run_thr = [0; 8];
                 device_state.run_gap_ms = [0; 8];
@@ -480,13 +518,28 @@ pending_solos: SmallVec::new(),
 
                     /* ★v24.37 组合键成员挂起: **每帧**处理 (不只在输入变化帧) ——
                      * 到期补发单独按下 / 提前松开保住快速点按。采集模式与暂停时不派发。
-                     * 放在边沿处理之后: 同帧既有组合完成又到期的极端情况下, 组合取消优先。 */
+                     * 放在边沿处理之后: 同帧既有组合完成又到期的极端情况下, 组合取消优先。
+                     * ★v24.49: 条件里加上 pending_switch —— 切换键与组合共用时, 切换键
+                     * 也要走这条结算路径 (组合成立则不切)。
+                     * ★v24.49 修复: `!is_paused()` 只应挡**单键补发**, 不能挡**切换键结算** ——
+                     * 切换键的作用就是"暂停/恢复", 若暂停态下不结算挂起的切换键,
+                     * 用户一旦暂停就再也切不回来 (连发彻底失效)。
+                     * 这里去掉暂停条件, 改在推导时按状态分别处理。 */
                     if !self.state.is_raw_input_capture_active()
-                        && !self.state.is_paused()
-                        && !device_state.pending_solos.is_empty()
+                        && (!device_state.pending_solos.is_empty()
+                            || device_state.pending_switch.is_some())
                         && let Some(pool) = self.state.get_worker_pool()
                     {
-                        Self::process_pending_solos(device_state, &current_inputs, pool, vid_pid.0);
+                        let do_switch = Self::process_pending_solos(
+                            device_state,
+                            &current_inputs,
+                            pool,
+                            vid_pid.0,
+                            self.state.is_paused(),
+                        );
+                        if do_switch {
+                            self.state.handle_switch_key_toggle();
+                        }
                     }
                 } else if self.device_states[idx].is_none() {
                     let vid_pid =
@@ -515,7 +568,11 @@ axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
 chord_solo_bits: 0,
+chord_exclusive_bits: 0,
 pending_solos: SmallVec::new(),
+pending_switch: None,
+pending_switch_mask: 0,
+chord_masks_cache: SmallVec::new(),
                         });
                     }
                 }
@@ -650,7 +707,26 @@ pending_solos: SmallVec::new(),
                 let was_active = (device_state.last_input_bits & xinput_mask) == xinput_mask;
 
                 if unlikely(!was_active && switch_active) {
-                    state.handle_switch_key_toggle();
+                    /* ★v24.49 切换键与组合共用时的仲裁。
+                     * ⚠ 判据必须是"切换键**是**某组合的成员"而不是"组合已凑齐":
+                     * 真机按 LB+X 的时序是先按 LB (此刻组合还没成立) → 再按 X。
+                     * 若用"已凑齐"判定, 第一帧就会立刻切换 (用户按组合反而暂停连发)。
+                     * 挂起后由 process_pending_solos 结算:
+                     *   组合凑齐 → 取消 (只触发组合);
+                     *   切换键松开 → 立即切 (快速点按手感);
+                     *   到期仍单独按住 → 才真正切换。
+                     * ⚠ 不能用本帧的 `chord_masks_cache` 判 —— 首次按键时它可能还没建
+                     * (combo_masks 重建在本函数后半段), 那会退化成"立即切换"。直接查
+                     * AppState 的组合表, 与设备缓存生命周期无关。 */
+                    if state.switch_key_may_form_chord(&device_type) {
+                        device_state.pending_switch = Some(
+                            std::time::Instant::now()
+                                + std::time::Duration::from_millis(CHORD_SOLO_GRACE_MS),
+                        );
+                        device_state.pending_switch_mask = xinput_mask;
+                    } else {
+                        state.handle_switch_key_toggle();
+                    }
                 }
             }
         }
@@ -698,6 +774,18 @@ pending_solos: SmallVec::new(),
             let all_combos = state.get_xinput_combos_for_device(&device_type);
             Self::build_combo_masks(&all_combos, &mut device_state.combo_masks);
             Self::build_layered_index(&all_combos, &mut device_state.layered_index);
+            /* ★v24.49: 组合键成员集真正赋值 —— v24.37 的延迟抑制因漏了这一步而从未生效。
+             * `chord_solo_bits` = 既有多键组合、又有单独映射的按钮 (需要"先等组合")。 */
+            device_state.chord_solo_bits = Self::chord_solo_bits_from_combos(&all_combos);
+            /* ★v24.49: 独占成员集 = 用户勾选的独占键 ∩ 实际出现在组合里的按钮
+             * (勾了独占但没被任何组合用到 → 交集为空, 单键功能不白丢) */
+            device_state.chord_exclusive_bits = Self::exclusive_bits_from_combos(
+                &all_combos,
+                state.chord_exclusive_bits_for_device(&device_type),
+            );
+            /* ★v24.49: 切换键仲裁用的独立掩码副本 —— 切换键检测发生在
+             * combo_masks 重建**之前**, 需要早一帧就可用 */
+            device_state.chord_masks_cache = device_state.combo_masks.clone();
             /* ★v21.0: 奔跑重推阈值缓存 —— 遍历 8 个摇杆单方向组合, 勾选【奔跑】的
              * 方向记录阈值绝对值; 与 combo_masks 同生命周期 (配置重载时一起清) */
             for i in 0..8usize {
@@ -772,9 +860,20 @@ pending_solos: SmallVec::new(),
         // Find newly activated combos
         for combo in &new_active_combos {
             if !Self::contains_combo(&prev_active, combo) {
+                /* ★v24.49 独占成员 (单键功能已被组合"牺牲"): 永不派发单键。
+                 * 与下面的延迟抑制的区别 —— 抑制是"先等组合, 等不到再补发",
+                 * 独占是"这个键的单独功能整份让位给组合", 宽限期满也不补发。
+                 * 用户语义: 牺牲 LB 单键功能, 换 LB+X/Y/A/B 四个组合键。 */
+                if combo.len() == 1
+                    && device_state.chord_exclusive_bits & (1u32 << (combo[0] & 31)) != 0
+                {
+                    continue;
+                }
                 /* ★v24.37 组合键成员延迟抑制: 单键成员 (既有单独映射又属于某组合)
                  * 按下时不立即派发, 挂起等待 —— 组合在宽限期内完成则取消 (成员不先
-                 * 触发单独功能); 到期/提前松开由 process_pending_solos 补发。 */
+                 * 触发单独功能); 到期/提前松开由 process_pending_solos 补发。
+                 * ★v24.49: 独占成员已在上面 continue 掉, 走不到这里 —— 独占键永不挂起,
+                 * 因此也不会通过"到期补发"复活 (两者的关键差别)。 */
                 if combo.len() == 1
                     && device_state.chord_solo_bits & (1u32 << (combo[0] & 31)) != 0
                 {
@@ -822,14 +921,17 @@ pending_solos: SmallVec::new(),
 
         // ★v24.37: active_combos 只记录**已派发**的组合 —— 挂起中的单键不在此列
         // (否则松开时会派发无源的 Released; 到期补发时由 process_pending_solos 登记)
+        // ★v24.49: 独占成员的单键同样不登记 —— 它自始至终没有 Pressed, 登记会在
+        // 松开时派发无源 Released (注入键悬空/游戏侧空放技能)。
         device_state.active_combos = new_active_combos
             .into_iter()
             .filter(|combo| {
                 combo.len() != 1
-                    || !device_state
-                        .pending_solos
-                        .iter()
-                        .any(|(b, _)| *b == combo[0])
+                    || (device_state.chord_exclusive_bits & (1u32 << (combo[0] & 31)) == 0
+                        && !device_state
+                            .pending_solos
+                            .iter()
+                            .any(|(b, _)| *b == combo[0]))
             })
             .collect();
         device_state.last_input_bits = current_bits;
@@ -857,6 +959,26 @@ pending_solos: SmallVec::new(),
         member_bits & solo_bits
     }
 
+    /// ★v24.49 独占成员集 (纯函数): 既出现在**多键组合**里、又被声明为独占的按钮位图。
+    ///
+    /// 与 [`Self::chord_solo_bits_from_combos`] 的差别只在"候选来源": 抑制候选由
+    /// "是否有单独映射"推出, 独占候选由用户显式勾选 (`AppConfig::chord_exclusive_keys`)。
+    /// 交集保证「勾了独占但没被任何组合用到」的键不会白白丢掉单键功能。
+    #[inline]
+    fn exclusive_bits_from_combos(combos: &[Vec<u32>], declared: u32) -> u32 {
+        let mut member_bits = 0u32;
+        for combo in combos {
+            if combo.len() >= 2 {
+                for &id in combo {
+                    if id < 32 {
+                        member_bits |= 1u32 << id;
+                    }
+                }
+            }
+        }
+        member_bits & declared
+    }
+
     /// ★v24.37 取消组合成员的挂起 (组合新激活时调用)。
     #[inline]
     fn cancel_pending_solos(device_state: &mut XInputDeviceState, combo: &[u32]) {
@@ -865,20 +987,60 @@ pending_solos: SmallVec::new(),
             .retain(|(b, _)| !combo.contains(b));
     }
 
+    /// ★v24.49 切换键 arbitration 的**取消**判据: 宽限期内组合是否真的凑齐了。
+    ///
+    /// 与 AppState::switch_key_may_form_chord 的分工:
+    /// - 那个决定**是否挂起** (按键那一刻组合通常还没凑齐, 只能看"是否是成员");
+    /// - 本函数决定**挂起后是否取消** (宽限期结束时组合是否已成立)。
+    #[inline]
+    fn inputs_complete_any_chord(
+        current_inputs: &[u32],
+        device_state: &XInputDeviceState,
+    ) -> bool {
+        if device_state.chord_masks_cache.is_empty() {
+            return false;
+        }
+        let bits = Self::inputs_to_bitset(current_inputs);
+        device_state
+            .chord_masks_cache
+            .iter()
+            .any(|m| m.combo_size >= 2 && (bits & m.required_bits) == m.required_bits)
+    }
+
     /// ★v24.37 挂起单键的每帧结算 ( poll_device 每帧调用, 不只在输入变化帧 ):
     /// - 按钮已松开 (宽限内点按) → 补发完整点击 (Pressed+Released), 点按手感不变;
     /// - 宽限到期仍按住 → 正常派发 Pressed 并登记 active_combos (后续松开走常规路径);
     /// - 其余 → 继续挂起。
-    /// 调用方保证: 非采集模式、非暂停、pending 非空。
+    /// ★v24.49 同时结算**挂起的切换键** (见 [`XInputDeviceState::pending_switch`]):
+    /// - 宽限内已补全某组合 → 取消 (组合优先, 不切);
+    /// - 到期仍按住且未构成组合 → 返回 true, 由调用方真正切换;
+    /// - 期间松开 → 返回 true (用户快速点按切换键, 意图就是切换)。
+    /// `paused` = 当前是否暂停。**只影响单键补发**: 暂停态下不应派发映射,
+    /// 但**切换键必须照常结算** —— 它的职责就是暂停/恢复, 挡掉会导致"暂停后再也切不回来"。
+    /// 调用方保证: 非采集模式。
+    /// 返回值 = 本次是否应执行切换键切换。
     fn process_pending_solos(
         device_state: &mut XInputDeviceState,
         current_inputs: &[u32],
         pool: &std::sync::Arc<dyn crate::state::EventDispatcher>,
         vid: u16,
-    ) {
+        paused: bool,
+    ) -> bool {
         let now = std::time::Instant::now();
         let mut still_pending = SmallVec::<[(u32, std::time::Instant); 4]>::new();
         for (button_id, deadline) in device_state.pending_solos.drain(..) {
+            /* ★v24.49 防御: 独占成员不得从挂起路径补发 —— 正常流程里它根本不会入队
+             * (派发循环已 continue), 但配置热重载可能让某键在"挂起中"变成独占,
+             * 这里丢掉即可, 避免单键功能意外复活。 */
+            if device_state.chord_exclusive_bits & (1u32 << (button_id & 31)) != 0 {
+                continue;
+            }
+            /* ★v24.49: 暂停态下不补发单键 (与旧行为一致: 暂停 = 不注入任何映射);
+             * 但保留在队列里由 deadline 自然过期 —— 这里直接丢弃更简单,
+             * 语义上也对: 暂停期间的那次按键不应在恢复后"补打"出来。 */
+            if paused {
+                continue;
+            }
             let device = InputDevice::XInputCombo {
                 device_type: DeviceType::Gamepad(vid),
                 button_ids: vec![button_id],
@@ -896,6 +1058,28 @@ pending_solos: SmallVec::new(),
             }
         }
         device_state.pending_solos = still_pending;
+
+        /* ★v24.49 挂起的切换键结算 */
+        let Some(deadline) = device_state.pending_switch else {
+            return false;
+        };
+        if Self::inputs_complete_any_chord(current_inputs, device_state) {
+            /* 组合成立 → 组合优先, 本次不切换 */
+            device_state.pending_switch = None;
+            return false;
+        }
+        /* ★v24.49: "切换键本身已松开" 也算独立意图 —— 用户快速点按切换键就是
+         * 要切, 不必等满宽限期 (否则每次切都要拖 150ms, 手感变钝)。
+         * 判据 = 切换键的掩码位已全部抬起 (组合成员键是否还按着无关紧要)。 */
+        let released = {
+            let mask = device_state.pending_switch_mask;
+            mask != 0 && (Self::inputs_to_bitset(current_inputs) & mask) != mask
+        };
+        if released || now >= deadline {
+            device_state.pending_switch = None;
+            return true;
+        }
+        false
     }
 
     /// Converts input IDs to bitset representation
@@ -1809,7 +1993,11 @@ axis_hist: [[0; 8]; 32],
 axis_hist_t: std::array::from_fn(|_| std::time::Instant::now()),
 axis_hist_len: 0,
 chord_solo_bits: 0,
+chord_exclusive_bits: 0,
 pending_solos: SmallVec::new(),
+pending_switch: None,
+pending_switch_mask: 0,
+chord_masks_cache: SmallVec::new(),
         }
     }
 
@@ -1887,6 +2075,10 @@ pending_solos: SmallVec::new(),
 
     const LB: u32 = 0x09;
     const RB: u32 = 0x0A;
+    #[allow(dead_code)]
+    const X: u32 = 0x0D; // A=0x0B B=0x0C X=0x0D Y=0x0E
+    #[allow(dead_code)]
+    const Y: u32 = 0x0E;
 
     /// 成员集 = 多键组合 ∩ 单键映射 的交集; 只有交集里的键需要挂起
     #[test]
@@ -1921,7 +2113,7 @@ pending_solos: SmallVec::new(),
             events: std::sync::Mutex::new(Vec::new()),
         });
         let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
-        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID);
+        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID, false);
         let ev = mock.events.lock().unwrap();
         assert_eq!(ev.len(), 1, "到期只补发 Pressed: {ev:?}");
         match &ev[0] {
@@ -1949,7 +2141,7 @@ pending_solos: SmallVec::new(),
             events: std::sync::Mutex::new(Vec::new()),
         });
         let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
-        XInputHandler::process_pending_solos(&mut ds, &[], &pool, XBOX_VID);
+        XInputHandler::process_pending_solos(&mut ds, &[], &pool, XBOX_VID, false);
         let ev = mock.events.lock().unwrap();
         assert_eq!(ev.len(), 2, "点按 = Pressed+Released 成对补发: {ev:?}");
         assert!(matches!(
@@ -1976,7 +2168,7 @@ pending_solos: SmallVec::new(),
             events: std::sync::Mutex::new(Vec::new()),
         });
         let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
-        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID);
+        XInputHandler::process_pending_solos(&mut ds, &[RB], &pool, XBOX_VID, false);
         assert!(mock.events.lock().unwrap().is_empty());
         assert_eq!(ds.pending_solos.as_slice(), &[(RB, deadline)]);
         assert!(ds.active_combos.is_empty());
@@ -1992,6 +2184,500 @@ pending_solos: SmallVec::new(),
         XInputHandler::cancel_pending_solos(&mut ds, &[LB, RB]);
         assert_eq!(ds.pending_solos.len(), 1);
         assert_eq!(ds.pending_solos[0].0, 0x0B);
+    }
+
+    /* ===== ★v24.49 独占成员键 (牺牲单键换组合) ===== */
+
+    /// 独占集 = 用户勾选的独占键 ∩ 实际出现在组合里的按钮
+    #[test]
+    fn test_exclusive_bits_from_combos() {
+        let combos = vec![vec![LB, X], vec![LB, Y], vec![0x0B]];
+        /* 只勾 LB, 且 LB 确实在组合里 → 只有 LB 一位 */
+        assert_eq!(
+            XInputHandler::exclusive_bits_from_combos(&combos, 1 << LB),
+            1 << LB
+        );
+        /* 勾了 A (0x0B) 但它只在单键映射里、不在任何多键组合 → 交集为空, 不白丢功能 */
+        assert_eq!(XInputHandler::exclusive_bits_from_combos(&combos, 1 << 0x0B), 0);
+        /* 勾了不在组合里的键 + 在组合里的键 → 只取交集 */
+        assert_eq!(
+            XInputHandler::exclusive_bits_from_combos(&combos, (1 << LB) | (1 << RB)),
+            1 << LB
+        );
+        /* 没勾任何 → 空 */
+        assert_eq!(XInputHandler::exclusive_bits_from_combos(&combos, 0), 0);
+    }
+
+    /// 切换键仲裁: 当前输入补全某多键组合 → 视为"组合成立"
+    #[test]
+    fn test_inputs_complete_any_chord() {
+        let mut ds = make_device_state([0; 8]);
+        /* 缓存未建立 (首帧) → 恒 false (退化为旧行为, 不会漏切换) */
+        assert!(!XInputHandler::inputs_complete_any_chord(&[LB, X], &ds));
+        ds.chord_masks_cache = SmallVec::new();
+        ds.chord_masks_cache.push(ComboMask {
+            required_bits: (1 << LB) | (1 << X),
+            combo_size: 2,
+            button_ids: SmallVec::from_slice(&[LB, X]),
+        });
+        /* 完整按下 LB+X → 组合成立 */
+        assert!(XInputHandler::inputs_complete_any_chord(&[LB, X], &ds));
+        /* 只按 LB → 未成立 */
+        assert!(!XInputHandler::inputs_complete_any_chord(&[LB], &ds));
+        /* LB+X+B (多按一个) → 仍然成立 (子集命中) */
+        assert!(XInputHandler::inputs_complete_any_chord(&[LB, X, 0x0C], &ds));
+        /* 单键掩码不参与判定 (combo_size >= 2 才看) */
+        ds.chord_masks_cache.clear();
+        ds.chord_masks_cache.push(ComboMask {
+            required_bits: 1 << LB,
+            combo_size: 1,
+            button_ids: SmallVec::from_slice(&[LB]),
+        });
+        assert!(
+            !XInputHandler::inputs_complete_any_chord(&[LB], &ds),
+            "单键掩码不应让切换键被挂起"
+        );
+    }
+
+    /// 挂起的切换键: 组合在宽限期内成立 → 取消 (返回 false, 不切换)
+    #[test]
+    fn test_pending_switch_cancelled_by_chord() {
+        let mut ds = make_device_state([0; 8]);
+        ds.chord_masks_cache.push(ComboMask {
+            required_bits: (1 << LB) | (1 << X),
+            combo_size: 2,
+            button_ids: SmallVec::from_slice(&[LB, X]),
+        });
+        ds.pending_switch = Some(std::time::Instant::now() + std::time::Duration::from_millis(100));
+        ds.pending_switch_mask = 1 << LB;
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let want = XInputHandler::process_pending_solos(&mut ds, &[LB, X], &pool, XBOX_VID, false);
+        assert!(!want, "组合成立时不应切换");
+        assert!(ds.pending_switch.is_none(), "挂起应被清掉");
+    }
+
+    /// 挂起的切换键: 宽限内松开 → 立即切换 (不必等满 150ms, 手感)
+    #[test]
+    fn test_pending_switch_fires_on_release() {
+        let mut ds = make_device_state([0; 8]);
+        ds.pending_switch = Some(std::time::Instant::now() + std::time::Duration::from_millis(100));
+        ds.pending_switch_mask = 1 << LB;
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        /* 当前输入里已经没有 LB → 视为已松开 */
+        let want = XInputHandler::process_pending_solos(&mut ds, &[], &pool, XBOX_VID, false);
+        assert!(want, "松开切换键应真正切换");
+        assert!(ds.pending_switch.is_none());
+    }
+
+    /// 挂起的切换键: 到期仍单独按住且未构成组合 → 切换
+    #[test]
+    fn test_pending_switch_fires_on_deadline() {
+        let mut ds = make_device_state([0; 8]);
+        ds.pending_switch = Some(std::time::Instant::now() - std::time::Duration::from_millis(10));
+        ds.pending_switch_mask = 1 << LB;
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let want = XInputHandler::process_pending_solos(&mut ds, &[LB], &pool, XBOX_VID, false);
+        assert!(want, "到期且未成组合应切换");
+        assert!(ds.pending_switch.is_none());
+    }
+
+    /// 挂起的切换键: 宽限内仍按住、也还没到组合 → 继续等
+    #[test]
+    fn test_pending_switch_keeps_waiting_within_grace() {
+        let mut ds = make_device_state([0; 8]);
+        ds.chord_masks_cache.push(ComboMask {
+            required_bits: (1 << LB) | (1 << X),
+            combo_size: 2,
+            button_ids: SmallVec::from_slice(&[LB, X]),
+        });
+        ds.pending_switch = Some(std::time::Instant::now() + std::time::Duration::from_millis(100));
+        ds.pending_switch_mask = 1 << LB;
+        let mock = std::sync::Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: std::sync::Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let want = XInputHandler::process_pending_solos(&mut ds, &[LB], &pool, XBOX_VID, false);
+        assert!(!want, "宽限内既不切换也不取消");
+        assert!(ds.pending_switch.is_some(), "应继续挂起");
+    }
+
+    /* ===== ★v24.49 端到端: 用户实际场景 (牺牲 LB 单键 → LB+X/Y/A/B 四个组合) =====
+     *
+     * 走完整 `handle_normal_mode_xinput`: 真实 AppState + 真实配置 + 真实派发路径。
+     * 锁定的行为契约:
+     *   ① 只按 LB (独占) → 不派发任何单键 (LB 的单键功能已让位);
+     *   ② 按 LB+X → 只派发组合 [LB,X], 同时不带出 LB 单键;
+     *   ③ 不勾独占时 (旧行为) → LB 单键照常触发。 */
+
+    /// 构造「LB 单键 + LB+X/Y/A/B 四组合」的配置
+    fn exclusive_scenario_config(exclusive: bool) -> crate::config::AppConfig {
+        use crate::config::KeyMapping;
+        let mut c = crate::config::AppConfig::default();
+        c.mappings.clear();
+        let mk = |trigger: &str, target: &str| KeyMapping {
+            release_targets: Default::default(),
+            sequence_text: String::new(),
+            trigger_key: trigger.to_string(),
+            target_keys: smallvec::smallvec![target.to_string()],
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            note: String::new(),
+        };
+        c.mappings.push(mk("GAMEPAD_045E_LB", "F1"));
+        c.mappings.push(mk("GAMEPAD_045E_LB+X", "Q"));
+        c.mappings.push(mk("GAMEPAD_045E_LB+Y", "W"));
+        c.mappings.push(mk("GAMEPAD_045E_LB+A", "E"));
+        c.mappings.push(mk("GAMEPAD_045E_LB+B", "R"));
+        if exclusive {
+            c.chord_exclusive_keys = vec!["LB".to_string()];
+        }
+        c
+    }
+
+    /// 收集「派发出来的单键按下」的按钮 id 列表
+    fn pressed_solo_ids(events: &[crate::state::InputEvent]) -> Vec<Vec<u32>> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                crate::state::InputEvent::Pressed(crate::state::InputDevice::XInputCombo {
+                    button_ids,
+                    ..
+                }) => Some(button_ids.to_vec()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_e2e_exclusive_solo_is_swallowed() {
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let state = Arc::new(AppState::new(exclusive_scenario_config(true)).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        /* 帧 1: 只按 LB —— 建缓存 + 独占判定 */
+        let inputs: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds,
+            &inputs,
+            0,
+            (XBOX_VID, 0x028E),
+            &pool,
+            &state,
+        );
+
+        assert_ne!(
+            ds.chord_exclusive_bits & (1 << LB),
+            0,
+            "LB 应被识别为独占成员 (配置勾选 × 出现在组合里)"
+        );
+        let ev = mock.events.lock().unwrap().clone();
+        let solos = pressed_solo_ids(&ev);
+        assert!(
+            !solos.iter().any(|c| c.as_slice() == [LB]),
+            "独占键单独按下不得派发单键: {solos:?}"
+        );
+        drop(ev);
+
+        /* 宽限到期再跑一轮 (独占永不补发, 这里验证它确实不会) */
+        ds.pending_solos
+            .push((LB, std::time::Instant::now() - std::time::Duration::from_millis(1)));
+        let _ = XInputHandler::process_pending_solos(&mut ds, &[LB], &pool, XBOX_VID, false);
+        let ev = mock.events.lock().unwrap();
+        let solos = pressed_solo_ids(&ev);
+        assert!(
+            !solos.iter().any(|c| c.as_slice() == [LB]),
+            "独占键不得通过挂起补发路径复活: {solos:?}"
+        );
+        /* 队列也必须被清空 (丢弃而非继续等) */
+        assert!(
+            ds.pending_solos.iter().all(|(b, _)| *b != LB),
+            "独占键的挂起项应被丢弃"
+        );
+    }
+
+    #[test]
+    fn test_e2e_exclusive_chord_fires_and_no_solo() {
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let state = Arc::new(AppState::new(exclusive_scenario_config(true)).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        /* 帧 1: 只按 LB (建缓存) */
+        let only_lb: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &only_lb, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+        mock.events.lock().unwrap().clear();
+
+        /* 帧 2: 再按 X 补全 LB+X → 只应派发组合 */
+        let lb_x: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB, X];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &lb_x, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+
+        let ev = mock.events.lock().unwrap().clone();
+        let pressed = pressed_solo_ids(&ev);
+        let has_chord = pressed.iter().any(|c| {
+            c.len() == 2 && c.contains(&LB) && c.contains(&X)
+        });
+        assert!(has_chord, "应派发组合 [LB,X]: {pressed:?}");
+        assert!(
+            !pressed.iter().any(|c| c.as_slice() == [LB]),
+            "组合触发时不得同时派发 LB 单键: {pressed:?}"
+        );
+        assert!(
+            !pressed.iter().any(|c| c.as_slice() == [X]),
+            "X 无单键映射, 不应出现: {pressed:?}"
+        );
+    }
+
+    /// 不勾独占 = 旧行为: LB 单键照常在自己的宽限后触发
+    #[test]
+    fn test_e2e_no_exclusive_keeps_solo() {        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let state = Arc::new(AppState::new(exclusive_scenario_config(false)).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        let only_lb: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &only_lb, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+
+        assert_eq!(ds.chord_exclusive_bits, 0, "未勾独占 → 独占集应为空");
+        assert_eq!(
+            ds.chord_solo_bits & (1 << LB),
+            1 << LB,
+            "LB 既是组合成员又有单键映射 → 应被延迟抑制 (v24.37 修复点)"
+        );
+        /* 抑制态: 当下不派发, 而是挂起 */
+        assert!(
+            ds.pending_solos.iter().any(|(b, _)| *b == LB),
+            "LB 应处于挂起等待组合"
+        );
+        assert!(
+            pressed_solo_ids(&mock.events.lock().unwrap()).is_empty(),
+            "挂起期间不应派发"
+        );
+
+        /* 宽限到期 → 补发单键 (与独占的关键区别) */
+        ds.pending_solos
+            .push((LB, std::time::Instant::now() - std::time::Duration::from_millis(1)));
+        let _ = XInputHandler::process_pending_solos(&mut ds, &[LB], &pool, XBOX_VID, false);
+        let ev = mock.events.lock().unwrap();
+        assert!(
+            pressed_solo_ids(&ev).iter().any(|c| c.as_slice() == [LB]),
+            "非独占成员到期后应补发单键"
+        );
+    }
+
+    /* ===== ★v24.49 切换键与组合共用的真实交互 (复核回归) ===== */
+
+    /// ★v24.49: 切换键 (LB) 同时是组合成员 (LB+X) 时, **先按 LB 再按 X** 的时序。
+    ///
+    /// 真机时序必然是「先按下 LB (此时组合未成立) → 再按下 X (组合成立)」。
+    /// 若实现只在"切换键按下那一帧组合已成立"才挂起, 那么第一帧就会立刻切换 ——
+    /// 用户按 LB+X 想触发组合, 结果连发被暂停了。
+    /// 本测试锁: 第一帧 (只按 LB) 不得切换。
+    #[test]
+    fn switch_key_member_does_not_toggle_before_chord_completes() {
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let mut c = exclusive_scenario_config(false);
+        /* LB 既是切换键, 又是 LB+X 的成员 */
+        c.switch_key = "GAMEPAD_045E_LB".to_string();
+
+        let state = Arc::new(AppState::new(c).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        /* 帧 1: 只按 LB (组合尚未成立) */
+        let only_lb: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &only_lb, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+
+        assert!(
+            !state.is_paused(),
+            "只按下切换键成员 (组合还没补齐) 时不应立刻暂停/切换"
+        );
+    }
+
+    /// ★v24.49: 单独按切换键 (不与任何组合共用) 必须仍然立即切换 (旧行为不变)。
+    #[test]
+    fn switch_key_alone_toggles_immediately() {
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let mut c = exclusive_scenario_config(false);
+        /* BACK 是切换键, 不参与任何组合 */
+        c.switch_key = "GAMEPAD_045E_BACK".to_string();
+
+        let state = Arc::new(AppState::new(c).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        let back: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![0x06u32];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &back, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+
+        assert!(state.is_paused(), "单独按切换键应立即切换 (旧行为不变)");
+    }
+
+    /// ★v24.49: 暂停态下按"切换键兼组合成员", 松开后必须能恢复。
+    ///
+    /// 结算路径 (`process_pending_solos`) 的调用条件含 `!is_paused()`;
+    /// 若挂起在暂停态下永远不被结算, 用户就再也切不回来了。
+    #[test]
+    fn switch_key_recovers_even_when_paused() {
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        let mut c = exclusive_scenario_config(false);
+        c.switch_key = "GAMEPAD_045E_LB".to_string();
+
+        let state = Arc::new(AppState::new(c).expect("state"));
+        state.set_paused(true); // 已处于暂停态
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        state.set_worker_pool(pool.clone());
+        let mut ds = make_device_state([0; 8]);
+
+        /* 按 LB (切换键兼组合成员) → 应挂起而非立即切换 */
+        let only_lb: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![LB];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &only_lb, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+        assert!(state.is_paused(), "刚按下时还在暂停态");
+
+        /* 松开 LB → 应恢复 (走 poll_device 的每帧结算路径, 不是测试自己驱动) */
+        let empty: SmallVec<[u32; MAX_INPUTS]> = SmallVec::new();
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &empty, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+        /* 模拟 poll_device 的每帧结算块 (与生产代码同一条件: v24.49 起不再因暂停而跳过) */
+        if !state.is_raw_input_capture_active()
+            && (!ds.pending_solos.is_empty() || ds.pending_switch.is_some())
+            && let Some(pool_ref) = state.get_worker_pool()
+        {
+            let want = XInputHandler::process_pending_solos(
+                &mut ds,
+                &[],
+                pool_ref,
+                XBOX_VID,
+                state.is_paused(),
+            );
+            if want {
+                state.handle_switch_key_toggle();
+            }
+        }
+
+        assert!(
+            !state.is_paused(),
+            "暂停态下松开切换键应恢复连发 (否则永远切不回来)"
+        );
+    }
+
+    /// ★v24.49 用户 40 键方案的核心形态: **方向键当独占成员**。
+    /// 方向键名 (`DPad_Up`) 与按钮名走同一条解析/位图路径, 因此
+    /// 「牺牲 4 个方向键 = 4×8 组合」与「牺牲 4 个侧键 = 4×4 组合」代码上无差别。
+    #[test]
+    fn test_e2e_dpad_as_exclusive_member() {
+        use crate::config::KeyMapping;
+        use crate::state::AppState;
+        use std::sync::Arc;
+
+        const DPAD_UP: u32 = 0x01;
+        let mut c = crate::config::AppConfig::default();
+        c.mappings.clear();
+        let mk = |trigger: &str, target: &str| KeyMapping {
+            release_targets: Default::default(),
+            sequence_text: String::new(),
+            trigger_key: trigger.to_string(),
+            target_keys: smallvec::smallvec![target.to_string()],
+            interval: None,
+            event_duration: None,
+            turbo_enabled: false,
+            move_speed: 5,
+            double_tap_enabled: false,
+            double_tap_gap_ms: 50,
+            run_enabled: false,
+            run_threshold: 80,
+            run_recheck: true,
+            lock_enabled: false,
+            note: String::new(),
+        };
+        c.mappings.push(mk("GAMEPAD_045E_DPad_Up", "UP"));
+        c.mappings.push(mk("GAMEPAD_045E_DPad_Up+A", "Q"));
+        c.mappings.push(mk("GAMEPAD_045E_DPad_Up+B", "W"));
+        /* 方向键的短名与按钮名一样能被独占配置接受 */
+        c.chord_exclusive_keys = vec!["DPad_Up".to_string()];
+
+        let state = Arc::new(AppState::new(c).expect("state"));
+        let mock = Arc::new(MockPool {
+            events: std::sync::Mutex::new(Vec::new()),
+        });
+        let pool: Arc<dyn crate::state::EventDispatcher> = mock.clone();
+        let mut ds = make_device_state([0; 8]);
+
+        let up: SmallVec<[u32; MAX_INPUTS]> = smallvec::smallvec![DPAD_UP];
+        XInputHandler::handle_normal_mode_xinput(
+            &mut ds, &up, 0, (XBOX_VID, 0x028E), &pool, &state,
+        );
+
+        assert_ne!(
+            ds.chord_exclusive_bits & (1 << DPAD_UP),
+            0,
+            "方向键应被识别为独占成员"
+        );
+        assert!(
+            !pressed_solo_ids(&mock.events.lock().unwrap())
+                .iter()
+                .any(|c| c.as_slice() == [DPAD_UP]),
+            "独占方向键单独按下不得派发单键"
+        );
     }
 
     /// 构造急推判定测试态: 方向 0 配奔跑 (阈值 80%, 间隔 gap_ms), 其余无

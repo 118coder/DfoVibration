@@ -29,6 +29,8 @@ pub enum Icon {
     Pause,
     Exit,
     Sliders,
+    /// ★v24.50 音频震动页 (声波)
+    SoundWave,
     /// ★v24.40b 关闭 ✕ (弹窗角标)
     X,
 }
@@ -53,6 +55,7 @@ impl Icon {
             Icon::Pause => ic::PAUSE,
             Icon::Exit => ic::SIGN_OUT,
             Icon::Sliders => ic::SLIDERS_HORIZONTAL,
+            Icon::SoundWave => ic::WAVEFORM,
             Icon::X => ic::X,
         }
     }

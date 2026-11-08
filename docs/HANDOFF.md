@@ -8,12 +8,25 @@
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
 **当前状态**: 基线 = **R2.0 已发布 · 全部落库 · 无待办** (2026-09-28 收官)。
-  * 🆕 **v24.49 组合键大扩展 (独占成员键)** —— 2026-11-09 以 PR 上库 (CI 分支
-    `release/v24.49-chord-exclusive`)。
-    - **改号说明 (用户决策 2026-11-09)**: 本功能开发期曾称 v24.48 —— 但远端 main 的
-      v24.48 号段已被 HidHide 复活线占用 (v24.48a~d, 2026-10-25 失败归档)。
-      本功能改号 **v24.49**; 此前交付的 exe 文件名 (DfoVibration-Sorahk_v24.48_组合键
-      独占成员键_20261029.exe) 是历史原名, 内容即本 v24.49。
+  * 🆕 **2026-11-09 v24.50 音频震动模式** (分支 `release/v24.50-audio-haptics`, 堆叠于 v24.49 之上; 构筑走 GitHub Actions)。
+    - **独立可选事件源, 默认关**: WASAPI 环回 → DSP 快通道 (相对谱通量 onset + 5 频带,
+      20-40ms) → 震动线程三处输出点 **max 合流**; YAMNet 语义层 (tract-onnx 纯 Rust,
+      纯净反馈门控 + 枪声/爆炸语义震感)。关闭态音频贡献恒 0 → DLL/主模式零影响。
+      模块 `src/audio_haptics/{mod,dsp,resample,mapping,sem}.rs` + `src/state/audio_state.rs`。
+    - **模型双轨**: build.rs 检测 `models/yamnet.onnx` → 内嵌 (个人版); 无内嵌 →
+      exe 旁 `models\` 或 `%APPDATA%\SorahkDFO\models\` (公开版 mod), 缺失自动降级纯 DSP。
+      冒烟已验证: 内嵌生效, 加载 615ms / 推理 461ms 每 2s 窗 (iter 档, release 更快)。
+    - **⚠ 选型变更**: ort 2.0.0-rc.15 无 windows-gnu 预编译 → **tract-onnx** (调研报告
+      §4.3 备选); runner rustup 解析不了全三元 channel → CI 用 `RUSTUP_TOOLCHAIN=1.96.0`
+      + `--target x86_64-pc-windows-gnu` (MSVC 宿主 + 自带 rust-mingw)。
+    - **⚠ git 分叉真相**: 本地 main 与远端 main **无关历史** (PR #10 后本地历史被重写);
+      两条 "v24.48" = 并行线 (远端 HidHide 复活→v24.48d 失败归档 / 本地组合键独占)。
+      `release/v24.49-chord-exclusive` 与 `release/v24.50-audio-haptics` 两分支
+      = origin/main (PR #11) ⊕ 本地 main 全内容 (堆叠), 树差异仅
+      `docs/frozen/hidhide.rs` (保留远端 v24.48d 新归档)。**main 归一方向待用户拍板**。
+    - 测试: 全量 426 passed / 1 failed —— 失败项 `svg_raster` 为环境性 (键盘 SVG 纹理
+      2240 > 软渲染上限 2048), 与音频无关; 音频模块 18/18 全绿。
+  * ✅ **2026-10-29 v24.49 组合键大扩展 (独占成员键)** —— 已随 release/v24.49-chord-exclusive 上库 (origin 基)。
     - **根因修复**: `chord_solo_bits` 自 v24.37 引入后**从未被赋值**
       (`chord_solo_bits_from_combos()` 有实现有单测但没有调用点) ⇒ 组合成员延迟抑制
       实际从未生效。用户感知的"组合键不能与单键共用按键"就是它的表现。现已在

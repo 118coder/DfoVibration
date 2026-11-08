@@ -25,6 +25,15 @@ xinput_capture_mode = "DiagonalPriority"  # XInput capture mode: "DiagonalPriori
 # ─── Control Settings ───
 switch_key = "DELETE"        # Reserved key to toggle SoraHK behavior
 
+# ─── Chord-exclusive buttons (★v24.49) ───
+# 列出"放弃单键功能、只作组合成员"的手柄按钮短名 (LB / X / DPad_Up, 不带设备前缀)。
+# 用途: 牺牲 1 个键 → 换该键 + 其它键的多个组合键。
+#   例: chord_exclusive_keys = ["LB"] + LB+X / LB+Y / LB+A / LB+B 四条组合
+#       = 牺牲 LB 单键, 得到 4 个组合键 (Q/W/E/R)。
+# 只在"该键确实出现在某个多键组合里"时才生效 (勾了但没组合用 → 单键功能保留)。
+# 空数组 = 旧行为 (成员键单独按住约 0.15 秒后仍触发自己的映射)。
+chord_exclusive_keys = []
+
 # ─── Process Whitelist ───
 # Process whitelist (empty = all processes enabled)
 # Only processes in this list will have turbo-fire enabled

@@ -166,6 +166,10 @@ pub struct AppState {
     /// 捕获模式会跳过 `handle_normal_mode_xinput`(阈值注册/映射派发), 实机表现为
     /// 进游戏后摇杆方向与奔跑全部失效。
     live_xinput: RwLock<Option<(u16, u32)>>,
+    /// ★v24.49 独占成员键表: `(设备哈希, 按钮位图)` —— 这些按钮的单键功能让位给组合,
+    /// 单独按住也**永不**补发 (用户语义: "牺牲 LB 的单键功能, 换 LB+X/Y/A/B")。
+    /// 来源 = `AppConfig::chord_exclusive_keys`; 随配置重载重建。
+    chord_exclusive: RwLock<Vec<(u32, u32)>>,
     /// Application exit flag
     pub should_exit: Arc<AtomicBool>,
     /// Key repeat pause state
@@ -592,6 +596,7 @@ impl AppState {
             live_hid_pad: RwLock::new(None),
             live_hid_state: RwLock::new(None),
             live_xinput: RwLock::new(None),
+            chord_exclusive: RwLock::new(Self::build_chord_exclusive(&config)),
             should_exit: Arc::new(AtomicBool::new(false)),
             is_paused: AtomicBool::new(false),
             gp_calibrating: AtomicBool::new(false),
@@ -879,6 +884,9 @@ impl AppState {
          * 有才在 RawInput 热路径调用 HidP_GetUsages 做语义翻译, 否则零开销。 */
         self.semantic_hid_mappings
             .store(Self::config_has_semantic_mappings(&config), Ordering::Relaxed);
+
+        /* ★v24.49 独占成员键表随配置重载重建 (XInput 侧下帧据此重算位图) */
+        *util::write_guard(&self.chord_exclusive) = Self::build_chord_exclusive(&config);
 
         // Update cached data structures
         self.cached_turbo_other.clear_sync();
@@ -1169,6 +1177,85 @@ impl AppState {
     /// GUI 读取最新 XInput 实时输入 (vid, 位图)。
     pub fn live_xinput_state(&self) -> Option<(u16, u32)> {
         *util::read_guard(&self.live_xinput)
+    }
+
+    /// ★v24.49 由配置构建独占成员键表: `[(设备哈希, 按钮位图)]`。
+    ///
+    /// `config.chord_exclusive_keys` 存**按钮短名** (`LB`/`X`/`DPad_Up`, 无设备前缀),
+    /// 好处: 同一预设下有线和蓝牙各一份配置时不用重复勾选。
+    /// 这里按"配置里实际出现过的设备"逐个换算成运行时位图 (与 XInput input id 同一套 bit);
+    /// 解析不出的名字直接忽略 (手写脏数据不应让整条按键失效)。
+    fn build_chord_exclusive(config: &AppConfig) -> Vec<(u32, u32)> {
+        if config.chord_exclusive_keys.is_empty() {
+            return Vec::new();
+        }
+        /* 收集出现过的 XInput 设备 (vid) —— 独占按键要按设备登记 */
+        let mut devices: Vec<(u32, DeviceType)> = Vec::new();
+        for m in &config.mappings {
+            if let Some(InputDevice::XInputCombo { device_type, .. }) =
+                Self::input_name_to_device(&m.trigger_key)
+            {
+                let h = Self::hash_device_type(&device_type);
+                if !devices.iter().any(|(dh, _)| *dh == h) {
+                    devices.push((h, device_type));
+                }
+            }
+        }
+        let mut out: Vec<(u32, u32)> = Vec::new();
+        for (hash, dev_type) in devices {
+            let (prefix, vid) = match dev_type {
+                DeviceType::Gamepad(v) => ("GAMEPAD", v),
+                DeviceType::Joystick(v) => ("JOYSTICK", v),
+                /* 独占只对 XInput 类设备有意义 (短名 `LB` 无法表达 HID 原始位) */
+                _ => continue,
+            };
+            let mut bits = 0u32;
+            for name in &config.chord_exclusive_keys {
+                /* 补设备前缀后走统一解析路径 (与组合触发键同一套编码) */
+                let full = format!("{prefix}_{vid:04X}_{name}");
+                if let Some(InputDevice::XInputCombo { button_ids, .. }) =
+                    Self::input_name_to_device(&full)
+                    && let &[id] = button_ids.as_slice()
+                {
+                    bits |= 1u32 << (id & 31);
+                }
+            }
+            if bits != 0 {
+                out.push((hash, bits));
+            }
+        }
+        out
+    }
+
+    /// ★v24.49 取某设备的独占成员位图 (由 [`Self::build_chord_exclusive`] 预计算)。
+    #[inline]
+    pub fn chord_exclusive_bits_for_device(&self, device_type: &DeviceType) -> u32 {
+        let hash = Self::hash_device_type(device_type);
+        util::read_guard(&self.chord_exclusive)
+            .iter()
+            .filter(|(h, _)| *h == hash)
+            .fold(0u32, |acc, (_, bits)| acc | bits)
+    }
+
+    /// ★v24.49 切换键是否**可能**构成某多键组合 (= 该切换键的子集出现在某组合里)。
+    ///
+    /// 供 XInput 切换键仲裁使用: 真机按 LB+X 的时序是先按 LB (此刻组合还没凑齐) →
+    /// 再按 X。若只在"组合已凑齐"时才挂起, 第一帧就会立刻切换 (按组合反而暂停连发)。
+    /// 这里直接查配置缓存, 不依赖 XInput 设备侧的 `chord_masks_cache`
+    /// (后者在首次按键时可能尚未建立)。
+    pub fn switch_key_may_form_chord(&self, device_type: &DeviceType) -> bool {
+        let mask = self.switch_key_cache.xinput_button_mask.load(Ordering::Relaxed);
+        if mask == 0 {
+            return false;
+        }
+        self.get_xinput_combos_for_device(device_type)
+            .iter()
+            .any(|combo| {
+                combo.len() >= 2
+                    && combo
+                        .iter()
+                        .any(|id| mask & (1u32 << (id & 31)) != 0)
+            })
     }
 
     /// Sends HID device activation request.

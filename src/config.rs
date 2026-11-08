@@ -1429,6 +1429,15 @@ pub struct AppConfig {    /// Display tray icon
     /// 0 = 关闭 (整组同按, 旧行为)
     #[serde(default = "default_combo_key_gap_ms")]
     pub combo_key_gap_ms: u64,
+    /// ★v24.49 独占成员键: 这些手柄按钮的单键映射**让位给组合键** ——
+    /// 单独按住也不再触发自己的映射, 只参与组合 (如牺牲 LB 单键, 换 LB+X/Y/A/B)。
+    ///
+    /// 存**按钮名** (`LB` / `X` / `DPad_Up`), 不带设备前缀 —— 同一预设下有线/蓝牙
+    /// 各一份配置时无需重复勾选。运行时只对"实际出现在某多键组合里"的按钮生效
+    /// (勾了但没组合用 → 交集为空, 单键功能不白丢)。
+    /// 空 = 旧行为 (成员键照常单独触发)。
+    #[serde(default)]
+    pub chord_exclusive_keys: Vec<String>,
     /// Worker thread count (0 for auto-detection)
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
@@ -1751,6 +1760,7 @@ impl Default for AppConfig {
             dfo_player: default_dfo_player(),
             vib_legacy_client: false,
             combo_key_gap_ms: 40,
+            chord_exclusive_keys: Vec::new(),
             vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {

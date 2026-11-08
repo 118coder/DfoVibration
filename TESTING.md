@@ -60,8 +60,71 @@ Located in `tests/` directory:
 ```
 tests/
 ├── integration_tests.rs    # Cross-module tests
+├── headless_ui_tests.rs    # 无头 UI 渲染回归 (像素级)
 └── example_test_guide.rs   # Testing patterns reference
 ```
+
+## 无头 UI 渲染 (Headless UI)
+
+整套界面可以在**没有窗口、没有 GPU、没有显示设备**的环境下渲染成 PNG。
+调整排版时不必再"启动 exe → 挪窗口 → PrintWindow 抓帧"。
+
+### 为什么能这样
+
+`SorahkGui::update_ctx(ctx)` 是 UI 的完整驱动逻辑, 签名里**没有** `eframe::Frame`。
+`eframe::App::update` 只是转调它, 无头路径 (`src/gui/headless.rs`) 也是转调它 ——
+所以截图与真机跑的是同一段渲染代码, 不存在"截图版和真机版不一致"。
+
+光栅化是自实现的 CPU 扫描线填充 (`src/gui/headless.rs` 的 `Canvas`), 颜色在
+**gamma 空间**按预乘 alpha 混合, 与 `egui_glow` 的 `fragment.glsl` 一致
+(改成线性空间会让文字出现色边/发灰)。
+
+### 导出一整套图
+
+```bash
+# 默认: work/headless_shots/, 1180x760, 深色, 5 页面 + 分段滚动 + 3 个弹窗
+sorahk.exe --headless-shots
+
+# 指定目录 / 尺寸 / 2x 高清 / 明暗都要
+sorahk.exe --headless-shots=D:\shots --headless-size=1600x1000 --headless-ppp=2 --headless-themes=dark,light
+
+# 只要页面, 不要弹窗和滚动
+sorahk.exe --headless-shots --headless-no-dialogs --headless-scroll=0
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--headless-shots[=目录]` | 触发无头导出 (默认 `work/headless_shots`) |
+| `--headless-size=WxH` | 逻辑尺寸 (points), 默认 `1180x760` |
+| `--headless-ppp=N` | 物理像素/逻辑点, 默认 `1.0`; `2` = 2x 高清 |
+| `--headless-themes=dark,light` | 要导出哪些主题 |
+| `--headless-scroll=N` | 长页面 (震动/职业预设) 分段滚动段数, `0` = 不导 |
+| `--headless-no-dialogs` | 不导弹窗 |
+
+导出时**自动到底就停**: 滚不动时不再产出重复图。
+
+### 在测试里用
+
+```rust
+use sorahk::gui::headless::{HeadlessGui, HeadlessOptions};
+use sorahk::gui::types::Page;
+
+let mut app = HeadlessGui::new(config, HeadlessOptions::default())?;
+app.gui.skip_first_run_for_shot();   // 截图不该被首启向导遮挡
+app.gui.set_page(Page::Vibration);
+let out = app.warmup(3);             // 至少 3 帧: 首帧没有上一帧的尺寸/动画状态
+let shot = app.headless.shot(&out, "probe")?;
+```
+
+`tests/headless_ui_tests.rs` 会验证: 五个页面都画出真实内容 (色数/亮度)、
+明暗主题互为反相、PNG 合法、以及无头路径仍与 `update_ctx` 同源。
+**UI 排版改坏了 (某页变空白/整页偏色), 这里会直接失败。**
+
+### 边界
+
+* `Primitive::Callback` 不渲染 (GPU 专用扩展点, 本项目未使用)。
+* 弹窗需要先 `set_dialog(...)`: 弹窗状态由调用方控制, 无头下没有"点按钮"这一步。
+* 手柄/键盘页的 SVG 走 `prewarm_textures()` 同步灌入 (真机是后台线程)。
 
 ## Test Coverage
 

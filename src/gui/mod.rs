@@ -22,9 +22,14 @@ mod mouse_scroll_dialog;
 mod settings_dialog;
 mod classic_mode;
 mod theme;
-mod types;
+pub mod types;
 mod widgets;
 pub(crate) mod utils;
+/// 无头渲染 + 截图: 无窗口/无 GPU 也能把整套界面逐帧渲染成 PNG。
+/// 命令行入口见 `main.rs` 的 `--headless-shots`。
+pub mod headless;
+/// 批量导出编排 (全部页面 × 明暗主题 + 弹窗 + 分段滚动)。
+pub mod headless_shots;
 
 use crate::config::AppConfig;
 use crate::gui::theme::Theme;
@@ -656,4 +661,74 @@ impl SorahkGui {
         )
         .map_err(|e| anyhow::anyhow!("Failed to run GUI: {}", e))
     }
+}
+
+/// 无头渲染用的访问器 —— 只暴露 `headless` 模块需要的私有状态。
+///
+/// 独立成块是为了让"哪些私有字段被无头路径读到"一目了然; 新增方法时请同步
+/// 考虑是否真的需要, 避免把无头支持扩散成第二个 GUI 入口。
+impl SorahkGui {
+    /// 当前主题 (明/暗)。
+    pub fn dark_mode(&self) -> bool {
+        self.dark_mode
+    }
+
+    /// 同步塞入 SVG 纹理 (无头路径用; 正式路径走后台线程 + `poll_texture_prewarm`)。
+    pub fn set_prewarmed_textures(
+        &mut self,
+        gamepad: Option<egui::TextureHandle>,
+        keyboard: Option<egui::TextureHandle>,
+        dark: bool,
+    ) {
+        if let Some(t) = gamepad {
+            self.gamepad_texture = Some(t);
+            self.gamepad_texture_dark = dark;
+        }
+        if let Some(t) = keyboard {
+            self.keyboard_texture = Some(t);
+            self.keyboard_texture_dark = dark;
+        }
+        // 标记预热已完成, 防止 `ensure_texture_prewarm` 又在无头环境里起线程
+        self.tex_prewarm_dark = Some(dark);
+        self.tex_prewarm_rx = None;
+    }
+
+    /// 设置当前页面 (无头导出时逐页切换)。
+    pub fn set_page(&mut self, page: Page) {
+        self.active_page = page;
+    }
+
+    /// 打开/关闭指定弹窗, 供截图覆盖"每个弹窗"。
+    pub fn set_dialog(&mut self, dialog: DialogForShot, open: bool) {
+        match dialog {
+            DialogForShot::Settings => self.show_settings_dialog = open,
+            DialogForShot::About => self.show_about_dialog = open,
+            DialogForShot::DeviceManager => {
+                self.show_device_manager = open;
+                if open {
+                    self.device_manager_dialog = None; // 让下一帧按配置重建
+                }
+            }
+            DialogForShot::Close => self.show_close_dialog = open,
+        }
+    }
+
+    /// 跳过首次运行向导 (截图不应被向导遮挡; 正式流程不受影响)。
+    pub fn skip_first_run_for_shot(&mut self) {
+        self.config.guide_seen = true;
+        self.dfo_ask_answered = true;
+        self.show_guide = false;
+        self.show_edition_ask = false;
+        self.first_run_rerun = false;
+        self.modal_defer = 0;
+    }
+}
+
+/// 可截图的弹窗集合。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DialogForShot {
+    Settings,
+    About,
+    DeviceManager,
+    Close,
 }

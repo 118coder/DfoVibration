@@ -47,8 +47,44 @@ fn setup_panic_hook() {
     }));
 }
 
+/// `--headless-shots` 的实现: 读配置 → 批量渲染导出 → 打印清单后退出。
+fn run_headless_shots(plan: &gui::headless_shots::ShotPlan) -> Result<()> {
+    // 截图不需要真实用户配置里的路径记忆等瞬态; 缺文件时用默认值即可
+    let config = AppConfig::load_or_create("Config.toml").unwrap_or_default();
+
+    println!(
+        "[headless] 输出目录: {} · 尺寸 {}x{} @{}x · 主题 {:?}",
+        plan.opts.out_dir.display(),
+        plan.opts.width,
+        plan.opts.height,
+        plan.opts.pixels_per_point,
+        plan.themes
+    );
+
+    let shots = gui::headless_shots::run(plan, &config)?;
+    for s in &shots {
+        println!(
+            "[headless] {} -> {} ({}x{})",
+            s.name,
+            s.path.display(),
+            s.width,
+            s.height
+        );
+    }
+    println!("[headless] 完成, 共 {} 张", shots.len());
+    Ok(())
+}
+
 fn main() -> Result<()> {
     setup_panic_hook();
+
+    /* 无头截图模式: 在任何钩子/引擎/托盘起线程之前分流。
+     * 这条路径完全不碰输入钩子、震动引擎与托盘, 只读配置 + 渲染 PNG,
+     * 所以可在 CI / 无桌面的远程机器上跑。 */
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(plan) = gui::headless_shots::ShotPlan::from_args(&argv) {
+        return run_headless_shots(&plan);
+    }
 
     signal::set_control_ctrl_handler()?;
 

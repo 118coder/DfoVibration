@@ -94,6 +94,8 @@ pub struct AudioHapState {
     pub sem_enabled: AtomicBool,      // 语义层开关 (模型缺失时自动失效)
     pub gate_music: AtomicU32,        // % Music 命中时快通道保留比 (0=完全过滤)
     pub gate_speech: AtomicU32,       // % Speech 命中时快通道保留比
+    /// ★v24.50.1 只听白名单进程 (默认 false = 全局听; 独立于连发白名单语义)
+    pub whitelist_filter: AtomicBool,
     // ── 输出 (引擎写, 震动线程合流读; 关闭/暂停/静默时恒 0) ──
     pub out_l: AtomicU16,
     pub out_r: AtomicU16,
@@ -117,6 +119,7 @@ impl Default for AudioHapState {
             sem_enabled: AtomicBool::new(true),
             gate_music: AtomicU32::new(20),
             gate_speech: AtomicU32::new(30),
+            whitelist_filter: AtomicBool::new(false),
             out_l: AtomicU16::new(0),
             out_r: AtomicU16::new(0),
             status: AtomicU8::new(AUDIO_STATUS_OFF),
@@ -170,6 +173,7 @@ impl AudioHapState {
         self.sem_enabled.store(c.sem_enabled, Ordering::Relaxed);
         self.gate_music.store(c.gate_music_pct.clamp(0, 100), Ordering::Relaxed);
         self.gate_speech.store(c.gate_speech_pct.clamp(0, 100), Ordering::Relaxed);
+        self.whitelist_filter.store(c.whitelist_filter, Ordering::Relaxed);
         if !c.enabled {
             self.set_idle(AUDIO_STATUS_OFF);
         }
@@ -204,10 +208,12 @@ mod tests {
         c.enabled = true;
         c.master_gain_pct = 300; // 超界 → 收敛到 200
         c.onset_sensitivity = 99; // 超界 → 收敛到 8
+        c.whitelist_filter = true;
         s.apply_config(&c);
         assert!(s.is_enabled());
         assert_eq!(s.master_gain.load(Ordering::Relaxed), 200);
         assert_eq!(s.onset_sensitivity.load(Ordering::Relaxed), 80);
+        assert!(s.whitelist_filter.load(Ordering::Relaxed));
         // 关闭 → 输出/状态归零
         c.enabled = false;
         s.out_l.store(1234, Ordering::Relaxed);

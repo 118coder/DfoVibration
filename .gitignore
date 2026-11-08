@@ -26,3 +26,19 @@ work/*.log
 # ★v24.50 音频震动: 模型资产目录不进 git (15MB 二进制; CI 构建时从 HF 下载,
 # 本地 sync_and_build.sh 会拷到构建目录 → build.rs 检测后内嵌)
 models/
+
+# 运行时产物 (本地试跑生成, 不进库)
+SorahkDFO_vib.log
+Vibration.toml
+Vibration-ACT.toml
+JobVibration.toml
+_a.json
+_r.json
+_p.json
+_m.json
+_c.json
+_t.json
+_h.json
+_b.json
+_ci_*.json
+_fail.log

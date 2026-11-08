@@ -148,6 +148,8 @@ fn engine_loop(state: Arc<AppState>) {
     // 延迟自证: onset → 本线程写输出的时间差 (策划案 §7.1 软件链路验收)
     let mut last_onset_ms: u64 = 0;
     let mut last_latency_log = 0u64;
+    // ★v24.50.1 状态机日志: 状态翻转才记一行 (排查"引擎没反应"不再靠猜)
+    let mut last_status = 255u8;
 
     loop {
         if state.should_exit() {
@@ -163,6 +165,7 @@ fn engine_loop(state: Arc<AppState>) {
             resampler = None;
             sem_layer = None;
             ah.set_idle(AUDIO_STATUS_OFF);
+            log_status_change(ah, &mut last_status);
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
@@ -172,20 +175,25 @@ fn engine_loop(state: Arc<AppState>) {
             analyzer = None;
             resampler = None;
             ah.set_idle(AUDIO_STATUS_PAUSED);
+            log_status_change(ah, &mut last_status);
             std::thread::sleep(Duration::from_millis(100));
             continue;
         }
-        // ── 闸门 3: 前台白名单 (500ms 缓存; 复用现有语义) ──
-        if last_wl_check.elapsed() >= Duration::from_millis(500) {
-            whitelisted = state.is_process_whitelisted();
-            last_wl_check = Instant::now();
-        }
-        if !whitelisted {
-            capture = None;
-            analyzer = None;
-            ah.set_idle(AUDIO_STATUS_WAIT_GAME);
-            std::thread::sleep(Duration::from_millis(200));
-            continue;
+        // ── 闸门 3: 前台白名单 (★v24.50.1 改为音频专属开关, 默认关 = 全局听 ——
+        //    开箱即用; 开启时复用连发白名单语义, 500ms 缓存) ──
+        if ah.whitelist_filter.load(Ordering::Relaxed) {
+            if last_wl_check.elapsed() >= Duration::from_millis(500) {
+                whitelisted = state.is_process_whitelisted();
+                last_wl_check = Instant::now();
+            }
+            if !whitelisted {
+                capture = None;
+                analyzer = None;
+                ah.set_idle(AUDIO_STATUS_WAIT_GAME);
+                log_status_change(ah, &mut last_status);
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
         }
         // ── 设备管理 (失败 5s 重试; 拔插自愈) ──
         if capture.is_none() {
@@ -194,6 +202,7 @@ fn engine_loop(state: Arc<AppState>) {
                 std::thread::sleep(Duration::from_millis(200));
                 continue;
             }
+            log_status_change(ah, &mut last_status);
             last_retry = Instant::now();
             match open_loopback() {
                 Ok(c) => {
@@ -262,6 +271,7 @@ fn engine_loop(state: Arc<AppState>) {
                 // 环回静默 (系统无播放, WASAPI 环回缓冲不推进) → 包络照常衰减
                 if last_data.elapsed() > Duration::from_secs(3) {
                     ah.set_idle(AUDIO_STATUS_WAIT_SOUND);
+                    log_status_change(ah, &mut last_status);
                 } else {
                     finish_tick(&state, an, &(0.5, 0.5), &mut last_onset_ms, &mut last_latency_log);
                 }
@@ -303,7 +313,17 @@ fn engine_loop(state: Arc<AppState>) {
             }
         }
 
+        log_status_change(ah, &mut last_status);
         std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// ★v24.50.1: 状态翻转时记一行日志 (状态本身不常变, 天然节流)。
+fn log_status_change(ah: &AudioHapState, last: &mut u8) {
+    let s = ah.status.load(Ordering::Relaxed);
+    if s != *last {
+        *last = s;
+        crate::vibration::vib_log(&format!("[AUDIO] 状态 -> {}", audio_status_name(s)));
     }
 }
 

@@ -62,6 +62,7 @@ max_onsets_per_sec = 12
 sem_enabled = true
 gate_music_pct = 20
 gate_speech_pct = 30
+whitelist_filter = false
 
 # ─── Process Whitelist ───
 # Process whitelist (empty = all processes enabled)

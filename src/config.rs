@@ -1404,6 +1404,10 @@ pub struct AudioHapticsConfig {
     /// Speech 族命中 (>60%) 时快通道保留 %
     #[serde(default = "default_ah_gate_speech")]
     pub gate_speech_pct: u32,
+    /// ★v24.50.1 只听白名单进程 (默认 false = 全局听系统声音, 开箱即用;
+    /// 开启后复用连发白名单语义 —— 测试/任何游戏场景建议保持关)
+    #[serde(default)]
+    pub whitelist_filter: bool,
 }
 
 impl Default for AudioHapticsConfig {
@@ -1421,6 +1425,7 @@ impl Default for AudioHapticsConfig {
             sem_enabled: default_ah_sem(),
             gate_music_pct: default_ah_gate_music(),
             gate_speech_pct: default_ah_gate_speech(),
+            whitelist_filter: false,
         }
     }
 }

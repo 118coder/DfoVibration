@@ -304,7 +304,10 @@ pub fn run(state: Arc<AppState>) {
                  * max 合并 —— DLL 事件与音频互相取大、互不覆盖; 暂停/总开关关闭时音频
                  * 贡献归零 (音频引擎自己也冻结)。关闭态 audio_out 恒 0 → 与 v24.49
                  * 行为逐字节一致。 */
-                let (audio_l, audio_r) = if enabled {
+                /* ★v24.50.1 音频门与震动总开关**解耦**: 总开关只管 DLL 引擎通道,
+                 * 音频是独立可选模式 (双向不影响)。暂停键仍统一静音 (audio_on 含 !is_paused)。 */
+                let audio_on = state.audio_hap.is_enabled() && !state.is_paused();
+                let (audio_l, audio_r) = if audio_on {
                     state.audio_hap.output()
                 } else {
                     (0u16, 0u16)
@@ -644,10 +647,11 @@ pub fn run(state: Arc<AppState>) {
                         }
                     }
                 } else {
-                    send_vibration(0, 0);
+                    /* ★v24.50.1: 总开关关 = DLL 引擎通道归零; 音频模式独立续跑 */
+                    send_vibration(audio_l, audio_r);
                     engine.clear_output();
-                    state.vibration_out_l.store(0, Ordering::Relaxed);
-                    state.vibration_out_r.store(0, Ordering::Relaxed);
+                    state.vibration_out_l.store(audio_l as u32, Ordering::Relaxed);
+                    state.vibration_out_r.store(audio_r as u32, Ordering::Relaxed);
                 }
 
                 std::thread::sleep(std::time::Duration::from_millis(15));

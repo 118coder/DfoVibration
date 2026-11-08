@@ -134,6 +134,15 @@ impl SorahkGui {
             slider!(sustain_gain_pct, 0..=100, "持续音强度 %", "引擎/环境低鸣的跟震");
             slider!(silence_threshold, 0..=100, "静音阈值", "比这更小的声音不震");
             slider!(max_onsets_per_sec, 4..=30, "每秒触发上限", "DNF 技能连放保护");
+            let mut wl = self.config.audio_haptics.whitelist_filter;
+            if ui
+                .checkbox(&mut wl, "只听白名单进程 (默认关: 全局听系统声音, 开箱即用)")
+                .on_hover_text("开启后与连发白名单同语义: 前台不在白名单时引擎闲置。\n测试或玩白名单外的游戏请保持关闭。")
+                .changed()
+            {
+                self.config.audio_haptics.whitelist_filter = wl;
+                dirty = true;
+            }
         });
         th.panel(ui, Some("纯净反馈 (语义门控)"), |ui| {
             let mut sem_enabled = self.config.audio_haptics.sem_enabled;

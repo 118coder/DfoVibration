@@ -23,6 +23,6 @@ Thumbs.db
 work/_patch_*.py
 work/*.log
 
-# ★v24.49/v24.50 音频震动: 模型资产目录不进 git (15MB 二进制; CI 从 HF 下载,
-# 本地 sync_and_build.sh 拷到构建目录 → build.rs 检测后内嵌)
+# ★v24.50 音频震动: 模型资产目录不进 git (15MB 二进制; CI 构建时从 HF 下载,
+# 本地 sync_and_build.sh 会拷到构建目录 → build.rs 检测后内嵌)
 models/

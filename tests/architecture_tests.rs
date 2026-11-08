@@ -98,6 +98,7 @@ fn gui_dependency_allowlist() {
         "config", "state", "i18n", "util", "job_presets", "sequence",
         "rawinput", "xinput", "hid_layout",   // 输入层公开 API (类型/查询函数)
         "vibration",                           // 引擎公开助手 (now_ms_u64 等)
+        "audio_haptics",                       // ★v24.50 音频震动页 (模型来源查询/mod 目录)
         "auto_inject",                         // host_dir_dll 等查询
         "input_manager",                       // 设备管理操作 (request_xinput_reset 等 3 处)
     ];
@@ -169,7 +170,7 @@ const EXPECTED_VIBRATION_KEYS: &[&str] = &[
 ];
 
 const EXPECTED_APP_KEYS: &[&str] = &[
-    "always_on_top", "chord_exclusive_keys", "classic_mode", "combo_key_gap_ms",
+    "always_on_top", "audio_haptics", "chord_exclusive_keys", "classic_mode", "combo_key_gap_ms",
     "current_preset", "dark_mode", "device_api_preferences", "dfo_player",
     "event_duration", "guide_seen", "hid_baselines", "hid_slot_usages",
     "input_timeout", "interval", "language", "mappings", "minimal_mode",

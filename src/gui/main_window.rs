@@ -59,6 +59,11 @@ impl SorahkGui {
                 );
                 self.vib_params_dirty_since = None;
             }
+            /* ★v24.50 音频震动参数同款退出落盘 */
+            if self.audio_params_dirty_since.is_some() {
+                let _ = self.config.save_to_file("Config.toml");
+                self.audio_params_dirty_since = None;
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
@@ -72,6 +77,14 @@ impl SorahkGui {
                     crate::config::AppConfig::vibration_path_for("Config.toml"),
                 );
                 self.vib_params_dirty_since = None;
+            }
+        }
+
+        /* ★v24.50 音频震动参数自动落盘 (同款去抖 1 秒 → Config.toml) */
+        if let Some(t) = self.audio_params_dirty_since {
+            if t.elapsed().as_millis() >= 1000 {
+                let _ = self.config.save_to_file("Config.toml");
+                self.audio_params_dirty_since = None;
             }
         }
 
@@ -1005,6 +1018,14 @@ impl SorahkGui {
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
                                 self.render_vibration_full_page(ui, frame_state, true);
+                                ui.add_space(12.0);
+                            });
+                    }
+                    Page::AudioHaptics => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                self.render_audio_haptics_page(ui, ctx);
                                 ui.add_space(12.0);
                             });
                     }

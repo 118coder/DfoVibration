@@ -1361,6 +1361,83 @@ pub fn pick_preset_for_apply(
 }
 
 /// Main application configuration structure.
+/// ★v24.50 音频震动模式 (独立可选, 默认关)。
+///
+/// 语义: 监听系统/游戏声音 → DSP 快通道 (onset/频带, 20-40ms) + YAMNet 语义层
+/// (纯净反馈门控, 0.5-1s) → 驱动手柄马达。与 DLL 震动互不影响 (输出端 max 合并,
+/// 关闭态音频贡献恒 0)。字段全部带 serde default → 旧 Config.toml 无此节照常加载。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioHapticsConfig {
+    /// 总开关 (默认关 —— 不开就与 v24.49 行为完全一致)
+    #[serde(default)]
+    pub enabled: bool,
+    /// 总强度 % (0-200)
+    #[serde(default = "default_ah_master")]
+    pub master_gain_pct: u32,
+    /// 低频增益 % (爆炸/重砸的沉闷感, 0-200)
+    #[serde(default = "default_ah_low")]
+    pub low_gain_pct: u32,
+    /// 高频增益 % (枪声/打击的脆响, 0-200)
+    #[serde(default = "default_ah_high")]
+    pub high_gain_pct: u32,
+    /// onset 灵敏度 1-8 (谱通量自适应阈值倍数; 越小越易触发, 太小会把 BGM 鼓点当枪声)
+    #[serde(default = "default_ah_sensitivity")]
+    pub onset_sensitivity: u32,
+    /// 冲击衰减 ms (一下响声震多久, 50-500)
+    #[serde(default = "default_ah_release")]
+    pub onset_release_ms: u32,
+    /// 持续音强度 % (引擎/环境低鸣跟震, 0-100)
+    #[serde(default = "default_ah_sustain")]
+    pub sustain_gain_pct: u32,
+    /// 静音阈值 0-100 (比这更小的声音不震)
+    #[serde(default = "default_ah_silence")]
+    pub silence_threshold: u32,
+    /// 每秒触发上限 4-30 (DNF 技能连放保护)
+    #[serde(default = "default_ah_maxpersec")]
+    pub max_onsets_per_sec: u32,
+    /// 语义层 (YAMNet 纯净反馈) 开关; 模型缺失时自动降级纯 DSP
+    #[serde(default = "default_ah_sem")]
+    pub sem_enabled: bool,
+    /// Music 族命中 (>60%) 时快通道保留 % (0=完全过滤, 100=不过滤)
+    #[serde(default = "default_ah_gate_music")]
+    pub gate_music_pct: u32,
+    /// Speech 族命中 (>60%) 时快通道保留 %
+    #[serde(default = "default_ah_gate_speech")]
+    pub gate_speech_pct: u32,
+}
+
+impl Default for AudioHapticsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            master_gain_pct: default_ah_master(),
+            low_gain_pct: default_ah_low(),
+            high_gain_pct: default_ah_high(),
+            onset_sensitivity: default_ah_sensitivity(),
+            onset_release_ms: default_ah_release(),
+            sustain_gain_pct: default_ah_sustain(),
+            silence_threshold: default_ah_silence(),
+            max_onsets_per_sec: default_ah_maxpersec(),
+            sem_enabled: default_ah_sem(),
+            gate_music_pct: default_ah_gate_music(),
+            gate_speech_pct: default_ah_gate_speech(),
+        }
+    }
+}
+
+fn default_ah_master() -> u32 { 100 }
+fn default_ah_low() -> u32 { 100 }
+fn default_ah_high() -> u32 { 80 }
+fn default_ah_sensitivity() -> u32 { 3 }
+fn default_ah_release() -> u32 { 120 }
+fn default_ah_sustain() -> u32 { 40 }
+fn default_ah_silence() -> u32 { 20 }
+fn default_ah_maxpersec() -> u32 { 12 }
+fn default_ah_sem() -> bool { true }
+fn default_ah_gate_music() -> u32 { 20 }
+fn default_ah_gate_speech() -> u32 { 30 }
+
+/// Main application configuration structure.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct AppConfig {    /// Display tray icon
     pub show_tray_icon: bool,
@@ -1438,6 +1515,9 @@ pub struct AppConfig {    /// Display tray icon
     /// 空 = 旧行为 (成员键照常单独触发)。
     #[serde(default)]
     pub chord_exclusive_keys: Vec<String>,
+    /// ★v24.50 音频震动模式 (独立可选, 默认关; 见 [`AudioHapticsConfig`])
+    #[serde(default)]
+    pub audio_haptics: AudioHapticsConfig,
     /// Worker thread count (0 for auto-detection)
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
@@ -1761,6 +1841,7 @@ impl Default for AppConfig {
             vib_legacy_client: false,
             combo_key_gap_ms: 40,
             chord_exclusive_keys: Vec::new(),
+            audio_haptics: AudioHapticsConfig::default(),
             vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {

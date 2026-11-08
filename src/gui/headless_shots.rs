@@ -191,6 +191,7 @@ fn page_slug(page: Page) -> &'static str {
         Page::Whitelist => "whitelist",
         Page::Vibration => "vibration",
         Page::JobPresets => "jobs",
+        Page::AudioHaptics => "audio_haptics",
     }
 }
 

@@ -14,6 +14,14 @@ path = "src/main.rs"
 [build-dependencies]
 embed-resource = "3.0.6"
 
+# ★v24.50 音频震动模式 feature:
+#   default        = 完整版 (含 YAMNet 语义层, 需要 ort 静态链接 ONNX Runtime)
+#   --no-default-features = 精简版 (纯 DSP 快通道, exe 不增 ONNX 体积)
+# 精简版其余功能 (连发/组合键/DLL 震动) 与完整版逐字节一致。
+[features]
+default = ["audio-sem"]
+audio-sem = ["dep:tract-onnx"]
+
 [dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
@@ -54,6 +62,14 @@ ico = "0.5.0"
 rfd = { version = "0.16.0", default-features = false }
 scc = "3.4.8"
 smallvec = { version = "1.15.1", features = ["serde"] }
+# ★v24.50 音频震动: WASAPI 环回采集 (loopback + 按进程环回) + FFT 频谱分析。
+# wasapi/rustfft 均 MIT/Apache 纯 Rust; 红线组件 aubio(GPL)/essentia(AGPL) 禁用 (见调研报告 §5)。
+wasapi = "0.27.0"
+rustfft = "6.4.1"
+# 语义层 (audio-sem feature): tract-onnx —— 纯 Rust ONNX 推理, 无 C 依赖/无 DLL。
+# (原选 ort 2.0.0-rc.15 静态链接, 但其预编译二进制不支持 x86_64-pc-windows-gnu
+#  —— 本项目 GNU 工具链铁律 → 改用调研报告 §4.3 备选 tract-onnx, 单 exe 哲学无损。)
+tract-onnx = { version = "0.23.10", optional = true }
 
 [profile.release]
 opt-level = 3

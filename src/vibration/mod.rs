@@ -300,6 +300,15 @@ pub fn run(state: Arc<AppState>) {
                 };
                 let enabled = state.vibration_enabled.load(Ordering::Relaxed)
                     && !state.is_paused();
+                /* ★v24.50 音频震动合流: 独立引擎的马达贡献仅在总输出开 (enabled) 时并入,
+                 * max 合并 —— DLL 事件与音频互相取大、互不覆盖; 暂停/总开关关闭时音频
+                 * 贡献归零 (音频引擎自己也冻结)。关闭态 audio_out 恒 0 → 与 v24.49
+                 * 行为逐字节一致。 */
+                let (audio_l, audio_r) = if enabled {
+                    state.audio_hap.output()
+                } else {
+                    (0u16, 0u16)
+                };
                 /* ★输出闸门诊断 (v14.1.1): 事件消费在总开关判断之前, 总开关关闭/
                  * 暂停时 [INJ] 照打但每轮强制 send(0,0) —— 曾因此"日志有注入命中、
                  * 马达纹丝不动"无从排查。有效输出状态一旦翻转, 记一行 [GATE]。 */
@@ -539,6 +548,8 @@ pub fn run(state: Arc<AppState>) {
                             } else {
                                 (vl, vr)
                             };
+                            /* ★v24.50 音频合流: max 取大 (评分脉冲 vs 音频震感) */
+                            let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
@@ -608,6 +619,8 @@ pub fn run(state: Arc<AppState>) {
                             } else {
                                 (vl, vr)
                             };
+                            /* ★v24.50 音频合流: max 取大 (移动步伐 vs 音频震感) */
+                            let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);
@@ -622,6 +635,9 @@ pub fn run(state: Arc<AppState>) {
                             let rk = 1.0 + rnd;
                             let vl = ((l as f32) * motor_l * rk).min(65535.0) as u16;
                             let vr = ((r as f32) * motor_r * rk).min(65535.0) as u16;
+                            /* ★v24.50 音频合流: max 取大 (战斗 FONT 输出 vs 音频震感);
+                             * 暂停/总开关关闭时 audio_l/r 已归零, 本分支不执行。 */
+                            let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                             state.vibration_out_r.store(vr as u32, Ordering::Relaxed);

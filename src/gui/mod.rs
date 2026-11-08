@@ -8,6 +8,7 @@ mod device_info;
 pub mod device_manager_dialog;
 mod error_dialog;
 mod fonts;
+mod audio_page;
 mod gamepad_mapping;
 mod keyboard_quick;
 mod hid_activation_dialog;
@@ -290,6 +291,8 @@ pub struct SorahkGui {
     /// ★60 槽滑块自动落盘脏标 (v16.2): 拖动即镜像进 config.vibration 并记时刻,
     /// 主循环静默 1 秒后统一写 Vibration.toml (去抖, 防逐帧写盘)。仅非职业模式。
     pub vib_params_dirty_since: Option<std::time::Instant>,
+    /// ★v24.50 音频震动参数落盘脏标 (同款去抖; 静默 1s 后写 Config.toml)
+    pub audio_params_dirty_since: Option<std::time::Instant>,
     /// 连发映射页预设管理卡状态
     pub page_preset_name_input: String,
     pub page_preset_rename_input: String,
@@ -458,6 +461,7 @@ impl SorahkGui {
             minimal_vib_preset_job,
             minimal_job_block_w: 0.0,
             vib_params_dirty_since: None,
+            audio_params_dirty_since: None,
             page_preset_name_input: String::new(),
             page_preset_rename_input: String::new(),
             page_preset_rename_show: false,

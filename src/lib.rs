@@ -3,6 +3,7 @@
 //! This library exposes internal modules for testing purposes.
 //! It is not intended for external use as a library.
 
+pub mod audio_haptics;
 pub mod config;
 pub mod gui;
 pub mod hid_layout;

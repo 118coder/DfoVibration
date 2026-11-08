@@ -1,6 +1,7 @@
 // Hide console window in release mode
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod audio_haptics;
 mod config;
 mod gui;
 mod hid_layout;
@@ -150,6 +151,9 @@ fn main() -> Result<()> {
 
     // Start vibration engine (reads DFO battle events via shared memory)
     vibration::run(app_state.clone());
+
+    // ★v24.50 音频震动引擎 (独立可选, 默认关; 关闭态空转零副作用)
+    audio_haptics::spawn(app_state.clone());
 
     // ★S1 ACT1 老方案: 免 Loader 自动注入线程 (路线关闭时线程待机不注入;
     // 检测到 DNF.exe 且 DLL 就位才注入, 普通连发玩家零影响)

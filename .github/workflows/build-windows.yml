@@ -4,7 +4,7 @@ name: build-windows
 # 配方与既有 ci.yml 一致 (PR #10/#11 全绿): RUSTUP_TOOLCHAIN=1.96.0 → **MSVC 宿主直构**
 # (runner rustup 解析不了全三元 gnu channel; MSVC 下 embed-resource 走 rc.exe 链路一致)。
 # ⚠ 云端产物 = MSVC 工具链构建 (功能等价); 本地交付仍以 MinGW 为准 (中文路径铁律不动)。
-# 分支: release/v24.49-chord-exclusive (组合键独占成员键; 本分支无音频/模型)。
+# 分支: release/v24.50-audio-haptics (音频震动; full 变体内嵌 YAMNet 模型)。
 on:
   push: # 任意分支触发
   workflow_dispatch:
@@ -22,6 +22,15 @@ jobs:
       - name: Install pinned toolchain (MSVC host, 与 ci.yml 同配方)
         run: rustup toolchain install 1.96.0
 
+      # v24.50 full 变体: 下载官方 YAMNet (Apache-2.0) → build.rs 检测 models/yamnet.onnx
+      # → include_bytes 内嵌 (个人版 15MB, 离线可用; 无文件则自动降级纯 DSP)
+      - name: Download YAMNet model (Apache-2.0)
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -sSL --retry 3 "https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx" -o models/yamnet.onnx
+          ls -la models/
+
 
 
       - name: Build (release)
@@ -30,16 +39,16 @@ jobs:
       - name: Rename artifact + SHA256
         shell: pwsh
         run: |
-          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_v24.49_chord.exe"
-          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_v24.49_chord.exe" -Algorithm SHA256).Hash.ToLower()
-          "$hash  DfoVibration-Sorahk_v24.49_chord.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding ascii
+          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_v24.50_audio_yamnet.exe"
+          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_v24.50_audio_yamnet.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  DfoVibration-Sorahk_v24.50_audio_yamnet.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding ascii
           Get-Content "target/release/SHA256SUMS.txt"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "SorahkDFO-v24.49-chord"
+          name: "SorahkDFO-v24.50-audio"
           path: |
-            target/release/DfoVibration-Sorahk_v24.49_chord.exe
+            target/release/DfoVibration-Sorahk_v24.50_audio_yamnet.exe
             target/release/SHA256SUMS.txt
           if-no-files-found: error

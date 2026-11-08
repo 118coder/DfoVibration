@@ -133,6 +133,13 @@ mod inject;
 mod turbo;
 mod vib_mirror;
 mod types;
+/// ★v24.50 音频震动模式运行态 (引擎线程写 / 震动线程与 GUI 读; 默认全零=关闭)
+pub mod audio_state;
+pub use audio_state::{
+    audio_status_name, AudioHapState, AudioTelemetry, SemSnapshot, AUDIO_STATUS_NO_DEVICE,
+    AUDIO_STATUS_OFF, AUDIO_STATUS_PAUSED, AUDIO_STATUS_RUNNING, AUDIO_STATUS_WAIT_GAME,
+    AUDIO_STATUS_WAIT_SOUND,
+};
 pub use types::*;
 #[cfg(test)]
 mod tests;
@@ -262,6 +269,8 @@ pub struct AppState {
     xinput_cache_invalid: AtomicBool,
     /// Vibration master switch (runtime toggle)
     pub vibration_enabled: AtomicBool,
+    /// ★v24.50 音频震动模式运行态 (独立可选引擎; 关闭态输出恒 0, 对 DLL 震动/连发主模式零影响)
+    pub audio_hap: audio_state::AudioHapState,
     /// Whether damage-font hit events are enabled (default off)
     pub vibration_font_hits: AtomicBool,
     /// Whether vibration shared memory (DfoVibration.dll) is connected
@@ -643,6 +652,12 @@ impl AppState {
             xinput_cache_invalid: AtomicBool::new(false),
             /* ★v24.10: 「仅用连发」(dfo_player=false) 时震动一律关闭 —— 入口已隐藏就不该在后台驱动 */
             vibration_enabled: AtomicBool::new(config.vibration.enabled && config.dfo_player),
+            /* ★v24.50 音频震动: 参数镜像进原子量; 不受 dfo_player 门控 (任何游戏通用模式) */
+            audio_hap: {
+                let a = audio_state::AudioHapState::default();
+                a.apply_config(&config.audio_haptics);
+                a
+            },
             vibration_font_hits: AtomicBool::new(true),
             vibration_connected: AtomicBool::new(false),
             vibration_events_received: std::sync::atomic::AtomicU64::new(0),
@@ -857,6 +872,8 @@ impl AppState {
         // ★S1 老方案总开关 (设置切换 / 首启选择后即时生效)
         self.vib_legacy_client
             .store(config.vib_legacy_client, Ordering::Relaxed);
+        // ★v24.50 音频震动参数镜像 (含总开关; 关闭时引擎下个 tick 闲置并归零)
+        self.audio_hap.apply_config(&config.audio_haptics);
         // ★S1 输出引擎模式 (v20): 配置导入/重载后同步
         self.vibration_legacy_output_mode
             .store(config.vibration.legacy_output_mode, Ordering::Relaxed);

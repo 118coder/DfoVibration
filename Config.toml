@@ -34,6 +34,35 @@ switch_key = "DELETE"        # Reserved key to toggle SoraHK behavior
 # 空数组 = 旧行为 (成员键单独按住约 0.15 秒后仍触发自己的映射)。
 chord_exclusive_keys = []
 
+# ─── Audio Haptics (★v24.50 音频震动, 独立可选模式, 默认关) ───
+# 监听系统声音 → 识别枪声/爆炸/音乐/人声 → 自动驱动手柄震动 (免注入, 任何游戏)。
+# 与 DLL 震动/连发主模式互不影响: enabled=false 时本节完全不参与运行。
+#   master_gain_pct     总强度 % (0-200)
+#   low_gain_pct        低频增益 % (爆炸/重砸的沉闷感)
+#   high_gain_pct       高频增益 % (枪声/打击的脆响)
+#   onset_sensitivity   onset 灵敏度 1-8 (越小越易触发; 太小会把 BGM 鼓点当枪声)
+#   onset_release_ms    冲击衰减 ms (一下响声震多久, 50-500)
+#   sustain_gain_pct    持续音强度 % (引擎/环境低鸣跟震)
+#   silence_threshold   静音阈值 0-100 (比这更小的声音不震)
+#   max_onsets_per_sec  每秒触发上限 4-30 (技能连放保护)
+#   sem_enabled         语义层 (YAMNet 纯净反馈): 音乐/人声不乱震; 需要模型文件
+#                       (个人版 exe 内嵌; 公开版放 exe 同目录 models\yamnet.onnx)
+#   gate_music_pct      Music 命中时快通道保留 % (0=完全过滤)
+#   gate_speech_pct     Speech 命中时快通道保留 %
+[audio_haptics]
+enabled = false
+master_gain_pct = 100
+low_gain_pct = 100
+high_gain_pct = 80
+onset_sensitivity = 3
+onset_release_ms = 120
+sustain_gain_pct = 40
+silence_threshold = 20
+max_onsets_per_sec = 12
+sem_enabled = true
+gate_music_pct = 20
+gate_speech_pct = 30
+
 # ─── Process Whitelist ───
 # Process whitelist (empty = all processes enabled)
 # Only processes in this list will have turbo-fire enabled

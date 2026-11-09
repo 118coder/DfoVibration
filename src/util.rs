@@ -192,7 +192,9 @@ pub fn crash_log(context: &str, detail: &str) {
         .as_secs();
     let line = format!(
         "[{ts}] [thread:{thread}] [uptime:{uptime}s] [v:{}] [{context}] {detail}\n",
-        env!("CARGO_PKG_VERSION"),
+        /* ★v24.57 日志里的版本号与关于框/发行包同口径 (原来是 crate 版本 0.4.0,
+         * 玩家报日志时根本对不上是哪一版, 排查全靠猜)。 */
+        crate::update::APP_VERSION,
     );
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)

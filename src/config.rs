@@ -1361,86 +1361,282 @@ pub fn pick_preset_for_apply(
 }
 
 /// Main application configuration structure.
-/// ★v24.50 音频震动模式 (独立可选, 默认关)。
+/// ★v24.60 音频震动模式 (独立可选, 默认关)。
 ///
-/// 语义: 监听系统/游戏声音 → DSP 快通道 (onset/频带, 20-40ms) + YAMNet 语义层
-/// (纯净反馈门控, 0.5-1s) → 驱动手柄马达。与 DLL 震动互不影响 (输出端 max 合并,
-/// 关闭态音频贡献恒 0)。字段全部带 serde default → 旧 Config.toml 无此节照常加载。
+/// 语义: 监听系统/游戏声音 → 频带电平跟随融合引擎 (纯算法, 无 AI 模型) →
+/// 驱动手柄马达。骨架取自 xbox-audio-rumble-studio (噪声底自适应门槛 + 内容
+/// 三分类 + 攻/放/死区), 映射手感取自 audio-to-controller-vibration (频带分马达 +
+/// 幂律压缩)。与 DLL 震动互不影响 (输出端 max 合并, 关闭态音频贡献恒 0)。
+/// 字段全部带 serde default → 旧 Config.toml 无此节照常加载;
+/// v24.59 及更早版本的旧字段 (sem_*/sep_*/gate_* 等) 会被 serde 安全忽略。
+/// ★v24.61 一个自定义音频预设 (音频震动页「保存为」产物; 存进
+/// `[audio_haptics.presets]`)。字段与引擎参数一一对应, 应用时逐项写回 config +
+/// 原子量。内置预设不在列表里 (永远活在代码里, [`crate::audio_haptics::mapping::PRESETS`]);
+/// 同名应用时**自定义优先** (对齐震动区 pick_preset_for_apply 语义)。
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct AudioHapticsConfig {
-    /// 总开关 (默认关 —— 不开就与 v24.49 行为完全一致)
-    #[serde(default)]
-    pub enabled: bool,
-    /// 总强度 % (0-200)
+pub struct AudioPresetConfig {
+    pub name: String,
+    /// true = 用户保存的自定义预设 (内置影子项用; 当前内置不进列表, 恒为 true)
+    #[serde(default = "default_true")]
+    pub user_modified: bool,
     #[serde(default = "default_ah_master")]
     pub master_gain_pct: u32,
-    /// 低频增益 % (爆炸/重砸的沉闷感, 0-200)
     #[serde(default = "default_ah_low")]
     pub low_gain_pct: u32,
-    /// 高频增益 % (枪声/打击的脆响, 0-200)
     #[serde(default = "default_ah_high")]
     pub high_gain_pct: u32,
-    /// onset 灵敏度 1-8 (谱通量自适应阈值倍数; 越小越易触发, 太小会把 BGM 鼓点当枪声)
-    #[serde(default = "default_ah_sensitivity")]
-    pub onset_sensitivity: u32,
-    /// 冲击衰减 ms (一下响声震多久, 50-500)
+    #[serde(default = "default_ah_punch")]
+    pub punch_pct: u32,
+    #[serde(default = "default_ah_mask_threshold")]
+    pub mask_threshold: u32,
+    #[serde(default = "default_ah_adaptive")]
+    pub adaptive_threshold: bool,
+    #[serde(default = "default_ah_auto_profile")]
+    pub auto_profile: bool,
+    #[serde(default = "default_ah_music_mask")]
+    pub music_mask_pct: u32,
+    #[serde(default = "default_ah_quiet_mask")]
+    pub quiet_mask: bool,
+    #[serde(default = "default_ah_rhythm")]
+    pub rhythm_pct: u32,
+    #[serde(default = "default_ah_texture")]
+    pub texture_pct: u32,
+    #[serde(default = "default_ah_attack")]
+    pub attack_pct: u32,
     #[serde(default = "default_ah_release")]
-    pub onset_release_ms: u32,
-    /// 持续音强度 % (引擎/环境低鸣跟震, 0-100)
-    #[serde(default = "default_ah_sustain")]
-    pub sustain_gain_pct: u32,
-    /// 静音阈值 0-100 (比这更小的声音不震)
-    #[serde(default = "default_ah_silence")]
-    pub silence_threshold: u32,
-    /// 每秒触发上限 4-30 (DNF 技能连放保护)
-    #[serde(default = "default_ah_maxpersec")]
-    pub max_onsets_per_sec: u32,
-    /// 语义层 (YAMNet 纯净反馈) 开关; 模型缺失时自动降级纯 DSP
-    #[serde(default = "default_ah_sem")]
-    pub sem_enabled: bool,
-    /// Music 族命中 (>60%) 时快通道保留 % (0=完全过滤, 100=不过滤)
-    #[serde(default = "default_ah_gate_music")]
-    pub gate_music_pct: u32,
-    /// Speech 族命中 (>60%) 时快通道保留 %
-    #[serde(default = "default_ah_gate_speech")]
-    pub gate_speech_pct: u32,
+    pub release_pct: u32,
+    #[serde(default = "default_ah_dead_zone")]
+    pub dead_zone_pct: u32,
+    #[serde(default = "default_ah_map_max")]
+    pub map_max: u32,
+    #[serde(default = "default_ah_dual_motor")]
+    pub dual_motor: bool,
+    #[serde(default = "default_ah_vocal_only")]
+    pub vocal_only: bool,
+    #[serde(default = "default_ah_bass_high")]
+    pub bass_high_hz: u32,
+    #[serde(default = "default_ah_vocal_low")]
+    pub vocal_low_hz: u32,
+    #[serde(default = "default_ah_vocal_high")]
+    pub vocal_high_hz: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct AudioHapticsConfig {
+    /// 总开关 (默认关 —— 不开就不参与任何运行)
+    #[serde(default)]
+    pub enabled: bool,
+    /// 预设名 (mapping::PRESETS 之一; 引擎不读它, GUI 一键应用用)
+    #[serde(default = "default_ah_preset")]
+    pub preset: String,
+    /// 全局总强度 % (0-150)
+    #[serde(default = "default_ah_master")]
+    pub master_gain_pct: u32,
+    /// 低频量感 % (0-200; 左马达: 爆炸/重击/贝斯的"闷"劲)
+    #[serde(default = "default_ah_low")]
+    pub low_gain_pct: u32,
+    /// 高频量感 % (0-200; 右马达: 枪声/打击的"脆"劲)
+    #[serde(default = "default_ah_high")]
+    pub high_gain_pct: u32,
+    /// 打击对比度 0-200 (幂律 gamma; 100=线性, <100 轻声也震, >100 只震重击)
+    #[serde(default = "default_ah_punch")]
+    pub punch_pct: u32,
+    /// 屏蔽门槛 (int16 尺度 RMS 0-1200; 比这更小的声音不震)
+    /// 量纲说明: 游戏人声/枪声约 2000-6000, 城市 BGM 约 500-2000, 安静夜晚 <200。
+    #[serde(default = "default_ah_mask_threshold")]
+    pub mask_threshold: u32,
+    /// 自适应底噪: 门槛随背景噪声自动抬高 (threshold = max(滑条, 噪声底×1.55))
+    #[serde(default = "default_ah_adaptive")]
+    pub adaptive_threshold: bool,
+    /// 智能识别: 自动判断 BGM/人声/安静段并按模式调整手感 (xbox6 auto_profile)
+    #[serde(default = "default_ah_auto_profile")]
+    pub auto_profile: bool,
+    /// BGM 段压制 % (0-100): 识别为背景音乐时, 连续震动额外压制的比例
+    #[serde(default = "default_ah_music_mask")]
+    pub music_mask_pct: u32,
+    /// 安静段静音 (false = 保留一半跟随)
+    #[serde(default = "default_ah_quiet_mask")]
+    pub quiet_mask: bool,
+    /// 节奏力度 % (0-100): BGM 段跟鼓点震的强度
+    #[serde(default = "default_ah_rhythm")]
+    pub rhythm_pct: u32,
+    /// 细腻麻感 % (0-100): 人声/细节段的微颤纹理强度
+    #[serde(default = "default_ah_texture")]
+    pub texture_pct: u32,
+    /// 响应速度 5-90 (越大出手越快越跟手; xbox6 attack_rate×100)
+    #[serde(default = "default_ah_attack")]
+    pub attack_pct: u32,
+    /// 余韵 2-60 (越大收尾越绵; xbox6 release_rate×100)
+    #[serde(default = "default_ah_release")]
+    pub release_pct: u32,
+    /// 死区 0-20 (低于此百分比的输出归零, 消除马达"嗡嗡"底噪)
+    #[serde(default = "default_ah_dead_zone")]
+    pub dead_zone_pct: u32,
+    /// 满量程 (int16 尺度 RMS 500-12000; 到这个响度算满格)
+    #[serde(default = "default_ah_map_max")]
+    pub map_max: u32,
+    /// 双马达分频: 低频→左马达 / 高频→右马达 (false = 双马达同步)
+    #[serde(default = "default_ah_dual_motor")]
+    pub dual_motor: bool,
+    /// 只跟人声频段 (双马达关闭时生效; 开了以后音乐/环境音基本不震)
+    #[serde(default = "default_ah_vocal_only")]
+    pub vocal_only: bool,
+    /// 低频带上限 Hz (200-1000; 低于此频率算"低频"走左马达)
+    #[serde(default = "default_ah_bass_high")]
+    pub bass_high_hz: u32,
+    /// 人声带下限 Hz (300-1500)
+    #[serde(default = "default_ah_vocal_low")]
+    pub vocal_low_hz: u32,
+    /// 人声带上限 Hz (1500-8000)
+    #[serde(default = "default_ah_vocal_high")]
+    pub vocal_high_hz: u32,
+    /// ★v24.61 自定义预设列表 (音频页「保存为」写入; 内置预设不在此列)
+    #[serde(default)]
+    pub presets: Vec<AudioPresetConfig>,
     /// ★v24.50.1 只听白名单进程 (默认 false = 全局听系统声音, 开箱即用;
     /// 开启后复用连发白名单语义 —— 测试/任何游戏场景建议保持关)
+    /// ⚠ v24.51 起为**遗留别名**: 保留仅为兼容旧 Config.toml 与既有契约测试,
+    /// 真实开关请用 whitelist_enabled。两者取或。
     #[serde(default)]
     pub whitelist_filter: bool,
+    /// ★v24.51 音频专属白名单总开关 (默认关 = 全局听; 玩家可自行选择是否开启)
+    /// 与连发白名单 `process_whitelist` 完全独立, 不读写、不修改连发语义。
+    #[serde(default)]
+    pub whitelist_enabled: bool,
+    /// ★v24.52 白名单条目来源: "macro" = 直接复用连发白名单 (默认, 玩家只维护一份);
+    /// "custom" = 只用下面的 whitelist_processes。
+    /// 旧版把音频白名单做成独立空列表 + fail-closed, 开关一开就永远"等待白名单游戏" ——
+    /// 这是"开白名单就没震动、但连发正常"的根因, 故默认改为复用连发列表。
+    #[serde(default = "default_ah_whitelist_source")]
+    pub whitelist_source: String,
+    /// 音频白名单条目 (source=custom 时生效): 进程名 (dnf.exe, 忽略大小写)
+    /// 或完整路径 (含 \ 或 /)。**列表为空 = 不做过滤** (只记日志提示), 不再静默全拒。
+    #[serde(default)]
+    pub whitelist_processes: Vec<String>,
+    /// "process" = 按 PID 精确环回 (Win10 2004+, 只读白名单进程的声音);
+    /// "foreground" = 仅前台白名单门控 + 默认输出设备全量环回 (兼容旧系统)。
+    #[serde(default = "default_ah_whitelist_mode")]
+    pub whitelist_mode: String,
+    /// process 模式是否连目标进程的子进程音频一起采集
+    #[serde(default = "default_ah_whitelist_tree")]
+    pub whitelist_include_tree: bool,
 }
 
 impl Default for AudioHapticsConfig {
     fn default() -> Self {
+        // ⚠ config 是叶子模块 (architecture_tests::config_stays_leaf), 不允许引用
+        // audio_haptics —— 这里的默认值**硬编码**自内置预设第一档「人声清晰」
+        // (★v24.61 Owner 实测最佳, 打游戏也优先推荐)。改动预设排序/数值时必须同步这里,
+        // 一致性由 state::audio_state::tests::config_defaults_match_preset 保证。
         Self {
             enabled: false,
-            master_gain_pct: default_ah_master(),
-            low_gain_pct: default_ah_low(),
-            high_gain_pct: default_ah_high(),
-            onset_sensitivity: default_ah_sensitivity(),
-            onset_release_ms: default_ah_release(),
-            sustain_gain_pct: default_ah_sustain(),
-            silence_threshold: default_ah_silence(),
-            max_onsets_per_sec: default_ah_maxpersec(),
-            sem_enabled: default_ah_sem(),
-            gate_music_pct: default_ah_gate_music(),
-            gate_speech_pct: default_ah_gate_speech(),
+            preset: default_ah_preset(),
+            master_gain_pct: 72,
+            low_gain_pct: 100,
+            high_gain_pct: 100,
+            punch_pct: 123,
+            mask_threshold: 260,
+            adaptive_threshold: true,
+            auto_profile: false,
+            music_mask_pct: 40,
+            quiet_mask: true,
+            rhythm_pct: 0,
+            texture_pct: 30,
+            attack_pct: 38,
+            release_pct: 12,
+            dead_zone_pct: 5,
+            map_max: 4200,
+            dual_motor: false,
+            vocal_only: true,
+            bass_high_hz: 520,
+            vocal_low_hz: 650,
+            vocal_high_hz: 3600,
+            presets: Vec::new(),
             whitelist_filter: false,
+            whitelist_enabled: false,
+            whitelist_source: default_ah_whitelist_source(),
+            whitelist_processes: Vec::new(),
+            whitelist_mode: default_ah_whitelist_mode(),
+            whitelist_include_tree: default_ah_whitelist_tree(),
         }
     }
 }
 
-fn default_ah_master() -> u32 { 100 }
+fn default_ah_preset() -> String { "人声清晰".to_string() }
+fn default_ah_whitelist_source() -> String { "macro".to_string() }
+fn default_ah_whitelist_mode() -> String { "process".to_string() }
+fn default_ah_whitelist_tree() -> bool { true }
+/* serde default 函数与 Default::default() 同值 (旧 Config.toml 缺字段时逐项兜底) */
+fn default_ah_master() -> u32 { 72 }
 fn default_ah_low() -> u32 { 100 }
-fn default_ah_high() -> u32 { 80 }
-fn default_ah_sensitivity() -> u32 { 3 }
-fn default_ah_release() -> u32 { 120 }
-fn default_ah_sustain() -> u32 { 40 }
-fn default_ah_silence() -> u32 { 20 }
-fn default_ah_maxpersec() -> u32 { 12 }
-fn default_ah_sem() -> bool { true }
-fn default_ah_gate_music() -> u32 { 20 }
-fn default_ah_gate_speech() -> u32 { 30 }
+fn default_ah_high() -> u32 { 100 }
+fn default_ah_punch() -> u32 { 123 }
+fn default_ah_mask_threshold() -> u32 { 260 }
+fn default_ah_adaptive() -> bool { true }
+fn default_ah_auto_profile() -> bool { false }
+fn default_ah_music_mask() -> u32 { 40 }
+fn default_ah_quiet_mask() -> bool { true }
+fn default_ah_rhythm() -> u32 { 0 }
+fn default_ah_texture() -> u32 { 30 }
+fn default_ah_attack() -> u32 { 38 }
+fn default_ah_release() -> u32 { 12 }
+fn default_ah_dead_zone() -> u32 { 5 }
+fn default_ah_map_max() -> u32 { 4200 }
+fn default_ah_dual_motor() -> bool { false }
+fn default_ah_vocal_only() -> bool { true }
+fn default_ah_bass_high() -> u32 { 520 }
+fn default_ah_vocal_low() -> u32 { 650 }
+fn default_ah_vocal_high() -> u32 { 3600 }
+
+/// ★v24.55 检查更新配置。
+///
+/// 语义: 启动后按需向"更新清单源"取最新版本号与发行包地址, 有新版本只弹一个
+/// 会自动淡出的小浮窗 (不阻断、不强制)。**下载与否、下哪个包全由用户决定**:
+///   - basic = 基础引擎 (--no-default-features, 无音频震动, ~10MB)
+///   - full  = 完全版 (内嵌音频模型, 含后续全部 MOD, ~49MB)
+/// 全部字段带 serde default → 旧 Config.toml 无此节照常加载 (auto_check 默认开)。
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UpdateConfig {
+    /// 启动时自动检查 (默认开; 关掉后仍可从设置手动检查)
+    #[serde(default = "default_uc_auto")]
+    pub auto_check: bool,
+    /// 自定义清单地址 (留空 = 用内置源列表: jsDelivr → raw → GitHub Releases API)。
+    /// 想走自建镜像/CDN 时填这里 (支持自建 update.json 或 GitHub release API 响应体)。
+    #[serde(default)]
+    pub manifest_url: String,
+    /// 用户已选择"忽略此版本"的版本号 (命中则不再打扰; 手动检查仍会显示)
+    #[serde(default)]
+    pub skipped_version: String,
+    /// 下载保存目录 (留空 = exe 同级 updates\ 目录; 不可写时退回 %TEMP%)
+    #[serde(default)]
+    pub download_dir: String,
+    /// 渠道偏好 ("full"/"basic") —— 仅用于对话框里的默认高亮, 不改变"两个都能下"
+    #[serde(default = "default_uc_channel")]
+    pub channel: String,
+    /// 上次检查成功的时间戳 (Unix 秒; 4 小时内不重复自动检查)
+    #[serde(default)]
+    pub last_check_unix: i64,
+}
+
+fn default_uc_auto() -> bool { true }
+fn default_uc_channel() -> String { "full".to_string() }
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            auto_check: default_uc_auto(),
+            manifest_url: String::new(),
+            skipped_version: String::new(),
+            download_dir: String::new(),
+            channel: default_uc_channel(),
+            last_check_unix: 0,
+        }
+    }
+}
 
 /// Main application configuration structure.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -1523,6 +1719,9 @@ pub struct AppConfig {    /// Display tray icon
     /// ★v24.50 音频震动模式 (独立可选, 默认关; 见 [`AudioHapticsConfig`])
     #[serde(default)]
     pub audio_haptics: AudioHapticsConfig,
+    /// ★v24.55 检查更新 (默认开自动检查; 见 [`UpdateConfig`])
+    #[serde(default)]
+    pub update: UpdateConfig,
     /// Worker thread count (0 for auto-detection)
     #[serde(default = "default_worker_count")]
     pub worker_count: usize,
@@ -1847,6 +2046,7 @@ impl Default for AppConfig {
             combo_key_gap_ms: 40,
             chord_exclusive_keys: Vec::new(),
             audio_haptics: AudioHapticsConfig::default(),
+            update: UpdateConfig::default(),
             vib_edition_asked: false,
             switch_key: "DELETE".to_string(),
             mappings: vec![KeyMapping {

@@ -1,15 +1,6 @@
 fn main() {
-    // ★v24.50 音频震动: 个人版模型内嵌机制。
-    // 构建时若项目根存在 models/yamnet.onnx (~15MB, Apache-2.0) → include_bytes 内嵌进 exe
-    // (用户决策: 个人版 15MB 不算什么, 离线可用)。不存在 → 公开精简构建, 运行时从
-    // mod 目录 (exe 同目录 models\ 或 %APPDATA%\SorahkDFO\models\) 加载, 缺失自动降级纯 DSP。
-    println!("cargo:rustc-check-cfg=cfg(yamnet_embed)");
-    let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models").join("yamnet.onnx");
-    if model.is_file() {
-        println!("cargo:rustc-env=YAMNET_EMBED_PATH={}", model.display());
-        println!("cargo:rustc-cfg=yamnet_embed");
-        println!("cargo:rerun-if-changed=models/yamnet.onnx");
-    }
+    // ★v24.60 音频震动引擎已改为纯算法 (无 ONNX 模型), 旧 yamnet/mrx 内嵌机制随
+    // AI 层一并移除; 此处只保留 Windows 资源编译。
 
     // Only compile resources on Windows
     #[cfg(windows)]

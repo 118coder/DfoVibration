@@ -26,12 +26,7 @@ rm -rf "$DST/src" "$DST/tests"
 cp -r "$SRC/src" "$DST/src"
 # resources 全量同步 (gamepad.svg + sorahk.ico/sorahk.rc 图标资源, 漏拷会导致图标改动不生效)
 cp -r "$SRC/resources/." "$DST/resources/"
-# ★v24.50: 音频震动个人版模型内嵌 —— 源码树 models/yamnet.onnx 存在才同步
-# (build.rs 检测到即 include_bytes 内嵌; 没有该文件 = 公开精简构建, 运行时走 mod 目录)
-if [ -f "$SRC/models/yamnet.onnx" ]; then
-    mkdir -p "$DST/models"
-    cp "$SRC/models/yamnet.onnx" "$DST/models/"
-fi
+# ★v24.60: 音频震动引擎已改纯算法 (无模型), 旧 models/ 内嵌机制移除
 cp "$SRC/Cargo.toml" "$DST/Cargo.toml"
 cp "$SRC/build.rs" "$DST/build.rs"
 cp -r "$SRC/tests" "$DST/tests" 2>/dev/null || true

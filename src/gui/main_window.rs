@@ -398,6 +398,11 @@ impl SorahkGui {
         // Render main content
         self.render_shell(ctx, &frame_state);
 
+        /* ★v24.55 检查更新: 先拉快照/驱动浮窗计时, 再叠绘浮窗与面板
+         * (放在 render_shell 之后 = 永远画在主界面之上, 但不占据任何布局)。 */
+        self.tick_update();
+        self.render_update_overlay(ctx);
+
         // Check exit
         if frame_state.should_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);

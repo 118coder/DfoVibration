@@ -952,7 +952,9 @@ impl TranslationCache {
                 .to_string(),
 
             // About Dialog
-            about_version: format!("✨ Version {}", env!("CARGO_PKG_VERSION")),
+            /* ★v24.55: 关于框显示**发行版本号** (v24.55), 与检查更新/CI 产物名同口径;
+             * CARGO_PKG_VERSION 仍是内部 crate 版本 (0.4.0), 不再对用户可见。 */
+            about_version: format!("✨ Version v{}", crate::update::APP_VERSION),
             about_description_line1: get_raw_translation(lang, RawKey::AboutDescriptionLine1)
                 .to_string(),
             about_description_line2: get_raw_translation(lang, RawKey::AboutDescriptionLine2)

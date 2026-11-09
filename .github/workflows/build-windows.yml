@@ -3,11 +3,8 @@ name: build-windows
 # 云端构筑 (用户决策 2026-11-09; MSVC 宿主直构, 与 ci.yml 同配方 —— PR #10/#11 全绿)。
 # ⚠ 云端产物 = MSVC 工具链构建 (功能等价); 本地交付仍以 MinGW 为准 (中文路径铁律不动)。
 #
-# ★v24.50.1 三变体 (用户拍板: 模型既可内嵌个人版, 也可作可选下载 mod):
-#   embedded — 个人版: YAMNet (Apache-2.0) 内嵌 exe, 离线可用 (~49MB)
-#   mod      — 模型宿主分离: exe 含推理框架但不含模型, 运行时读 exe 旁 models\yamnet.onnx
-#              或 %APPDATA%\SorahkDFO\models\ (~34MB; 模型缺失自动降级纯 DSP)
-#   slim     — 纯 DSP: 无语义层, exe 最小 (~10.5MB)
+# ★v24.60 单变体 (用户拍板): 音频震动引擎改为纯算法内嵌 (无 YAMNet/MRX 模型,
+# 无 tract-onnx), 三变体 (embedded/mod/slim) 合并为单 exe, 无需下载任何模型。
 
 on:
   push: # 任意分支触发
@@ -20,52 +17,27 @@ env:
 jobs:
   build:
     runs-on: windows-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - variant: embedded
-            model: "download"
-            features: ""
-            exe: "DfoVibration-Sorahk_v24.50.1_audio_yamnet_embed.exe"
-          - variant: mod
-            model: "none"
-            features: ""
-            exe: "DfoVibration-Sorahk_v24.50.1_audio_mod.exe"
-          - variant: slim
-            model: "none"
-            features: "--no-default-features"
-            exe: "DfoVibration-Sorahk_v24.50.1_audio_slim.exe"
     steps:
       - uses: actions/checkout@v4
 
       - name: Install pinned toolchain (MSVC host, 与 ci.yml 同配方)
         run: rustup toolchain install 1.96.0
 
-      - name: Download YAMNet model (embedded variant only)
-        if: matrix.model == 'download'
-        shell: bash
-        run: |
-          mkdir -p models
-          curl -sSL --retry 3 "https://huggingface.co/audiomagic/yamnet-onnx/resolve/main/yamnet.onnx" -o models/yamnet.onnx
-          ls -la models/
-
       - name: Build (release)
-        run: cargo build --release ${{ matrix.features }}
+        run: cargo build --release
 
       - name: Rename artifact + SHA256
         shell: pwsh
         run: |
-          Rename-Item "target/release/sorahk.exe" "${{ matrix.exe }}"
-          $hash = (Get-FileHash "target/release/${{ matrix.exe }}" -Algorithm SHA256).Hash.ToLower()
-          "$hash  ${{ matrix.exe }}" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding ascii
+          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_R2.1.exe"
+          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_R2.1.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  DfoVibration-Sorahk_R2.1.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
           Get-Content "target/release/SHA256SUMS.txt"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "${{ matrix.exe }}"
+          name: "DfoVibration-Sorahk_R2.1.exe"
           path: |
-            target/release/${{ matrix.exe }}
+            target/release/DfoVibration-Sorahk_R2.1.exe
             target/release/SHA256SUMS.txt
-          if-no-files-found: error

@@ -14,14 +14,8 @@ path = "src/main.rs"
 [build-dependencies]
 embed-resource = "3.0.6"
 
-# ★v24.50 音频震动模式 feature:
-#   default        = 完整版 (含 YAMNet 语义层, 需要 ort 静态链接 ONNX Runtime)
-#   --no-default-features = 精简版 (纯 DSP 快通道, exe 不增 ONNX 体积)
-# 精简版其余功能 (连发/组合键/DLL 震动) 与完整版逐字节一致。
-[features]
-default = ["audio-sem"]
-audio-sem = ["dep:tract-onnx"]
-
+# ★v24.60 音频震动: 纯算法融合引擎, 不再有 feature 分叉 (三变体合并为单 exe)。
+# (旧 audio-sem feature 与 tract-onnx 依赖随 AI 模型层一并移除。)
 [dependencies]
 windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
@@ -47,8 +41,13 @@ windows = { version = "0.62.2", features = [
     # "Win32_System_IO",  # ★v24.19b HidHide 下线, 专用 feature 一并注释
     "Data_Xml_Dom",
     "UI_Notifications",
+    # ★v24.55 检查更新: WinHTTP (系统 TLS/系统代理, 免打包 ca 证书)
+    "Win32_Networking_WinHttp",
 ] }
 serde = { version = "1.0.228", features = ["derive"] }
+# ★v24.55 检查更新: 解析更新清单 (GitHub Releases API / 自建 update.json)。
+# 该 crate 早已在依赖树内 (tract 传递依赖), 此地只是提升为直接依赖, 不新增下载。
+serde_json = "1.0.154"
 toml = "0.9.8"
 anyhow = "1.0.100"
 eframe = { version = "0.33.3", default-features = false, features = ["default_fonts", "glow"] }
@@ -64,12 +63,9 @@ scc = "3.4.8"
 smallvec = { version = "1.15.1", features = ["serde"] }
 # ★v24.50 音频震动: WASAPI 环回采集 (loopback + 按进程环回) + FFT 频谱分析。
 # wasapi/rustfft 均 MIT/Apache 纯 Rust; 红线组件 aubio(GPL)/essentia(AGPL) 禁用 (见调研报告 §5)。
+# ★v24.60: tract-onnx 随 YAMNet/MRX AI 层一并移除 (纯算法引擎, 无模型依赖)。
 wasapi = "0.27.0"
 rustfft = "6.4.1"
-# 语义层 (audio-sem feature): tract-onnx —— 纯 Rust ONNX 推理, 无 C 依赖/无 DLL。
-# (原选 ort 2.0.0-rc.15 静态链接, 但其预编译二进制不支持 x86_64-pc-windows-gnu
-#  —— 本项目 GNU 工具链铁律 → 改用调研报告 §4.3 备选 tract-onnx, 单 exe 哲学无损。)
-tract-onnx = { version = "0.23.10", optional = true }
 
 [profile.release]
 opt-level = 3

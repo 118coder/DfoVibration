@@ -19,7 +19,7 @@
 //!
 //! 60 参数槽位, 基础 0-18 / 高级 19-59, 槽位常量见 `params.rs`。
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use windows::core::w;
@@ -42,6 +42,25 @@ pub use core::vib_log;
 pub use core::{invalidate_xinput_write_cache, FONT_ATTACK, FONT_EFFECT, FONT_HIT, FONT_HP, FONT_SPECIAL, FONT_STATE};
 
 use core::*;
+
+/// ★v24.51: 音频贡献实际到达输出端时, 每秒记一行 —— 让"音频震动有没有触发"
+/// 在 vib.log 里可判定, 不必靠手感猜 (旧实现只记状态, 不记电平)。
+static AUDIO_OUT_LOG_AT: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn log_audio_contribution(l: u16, r: u16, dll_gate: bool) {
+    if l == 0 && r == 0 {
+        return;
+    }
+    let now = now_ms_u64();
+    if now.saturating_sub(AUDIO_OUT_LOG_AT.load(Ordering::Relaxed)) >= 1000 {
+        AUDIO_OUT_LOG_AT.store(now, Ordering::Relaxed);
+        vib_log(&format!(
+            "[AUDIO-OUT] 音频贡献 L={l} R={r} 已送达输出端等待 max 合流 (DLL 通道={})",
+            if dll_gate { "开" } else { "关" }
+        ));
+    }
+}
 
 /// ★v16.8 高级算法总开关对 60 槽参数的覆盖 (纯函数, 便于测试):
 /// 关闭 = 把该算法的"关"语义写入参数 (滑块值仍保留在 AppState/config)。
@@ -306,12 +325,17 @@ pub fn run(state: Arc<AppState>) {
                  * 行为逐字节一致。 */
                 /* ★v24.50.1 音频门与震动总开关**解耦**: 总开关只管 DLL 引擎通道,
                  * 音频是独立可选模式 (双向不影响)。暂停键仍统一静音 (audio_on 含 !is_paused)。 */
-                let audio_on = state.audio_hap.is_enabled() && !state.is_paused();
+                /* ★v24.51: 自检脉冲即使在音频总开关关闭时也临时放行走马达,
+                 * 便于一击判定"输出链通不通" (脉冲结束立即回归原语义)。 */
+                let audio_on = (state.audio_hap.is_enabled()
+                    || state.audio_hap.self_check_active())
+                    && !state.is_paused();
                 let (audio_l, audio_r) = if audio_on {
                     state.audio_hap.output()
                 } else {
                     (0u16, 0u16)
                 };
+                log_audio_contribution(audio_l, audio_r, enabled);
                 /* ★输出闸门诊断 (v14.1.1): 事件消费在总开关判断之前, 总开关关闭/
                  * 暂停时 [INJ] 照打但每轮强制 send(0,0) —— 曾因此"日志有注入命中、
                  * 马达纹丝不动"无从排查。有效输出状态一旦翻转, 记一行 [GATE]。 */
@@ -474,7 +498,8 @@ pub fn run(state: Arc<AppState>) {
                         // 整引擎重置: 旧实现只清 left/right, hold/rhythm/评分脉冲等
                         // deadline 字段残留 (配合 u32 回绕会把震动卡死到下一轮 tick)
                         engine = RouteEngine::new(legacy);
-                        send_vibration(0, 0);
+                        /* ★v24.51: DLL 断开时不要把音频震动一起踩零 —— 两条通道独立共存 */
+                        send_vibration(audio_l, audio_r);
                     }
                 } else {
                     state.vibration_connected.store(false, Ordering::Relaxed);
@@ -500,6 +525,8 @@ pub fn run(state: Arc<AppState>) {
                         let pct = params[P_TEST].max(1) as f32 / 100.0;
                         let vl = (65535.0 * pct * motor_l).min(65535.0) as u16;
                         let vr = (65535.0 * pct * motor_r).min(65535.0) as u16;
+                        /* ★v24.51: 评分测试通道同样与音频 max 合流, 不独占马达 */
+                        let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                         send_vibration(vl, vr);
                         state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                         state.vibration_out_r.store(vr as u32, Ordering::Relaxed);

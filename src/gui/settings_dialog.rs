@@ -297,6 +297,9 @@ impl SorahkGui {
                                     self.settings_section_global(ui);
                                     self.settings_section_mappings(ui);
                                     self.settings_section_whitelist(ui);
+                                    /* ★v24.55 检查更新 (直接改 self.config 即时落盘,
+                                     * Save 时由下面的 temp_config.update 回灌保护) */
+                                    self.settings_section_update(ui);
                                 }); // End of ScrollArea
                         }); // End of Frame
                     ui.separator();
@@ -320,6 +323,14 @@ impl SorahkGui {
                  * 名单会把刚增删的那些条目写回 (回滚)。此处与 mappings/presets 同一
                  * 口径: Save 只提交弹窗自己拥有的字段。 */
                 temp_config.process_whitelist = self.config.process_whitelist.clone();
+                /* ★v24.55: 检查更新区同样是"直接改 self.config 即时落盘", 不回灌会被
+                 * 弹窗打开那一刻的旧值覆盖 (表现为开关/清单地址白改)。 */
+                temp_config.update = self.config.update.clone();
+                /* ★v24.59 (缺陷): 音频页同样是"直接改 self.config 即时落盘",
+                 * 不回灌会被弹窗打开那一刻的旧值覆盖 —— 表现为"刚拖的
+                 * 打击对比度/三类马达滑条, 关掉设置后又弹回去了"。
+                 * 弹窗是非模态的, 这条路径玩家真的会走到。 */
+                temp_config.audio_haptics = self.config.audio_haptics.clone();
                 temp_config.whitelist_enabled = self.config.whitelist_enabled;
                 temp_config.whitelist_simple_mode = self.config.whitelist_simple_mode;
                 temp_config.hid_baselines = self.config.hid_baselines.clone();

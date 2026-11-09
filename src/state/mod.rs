@@ -136,7 +136,7 @@ mod types;
 /// ★v24.50 音频震动模式运行态 (引擎线程写 / 震动线程与 GUI 读; 默认全零=关闭)
 pub mod audio_state;
 pub use audio_state::{
-    audio_status_name, AudioHapState, AudioTelemetry, SemSnapshot, AUDIO_STATUS_NO_DEVICE,
+    audio_status_name, AudioHapState, AudioTelemetry, AUDIO_STATUS_NO_DEVICE,
     AUDIO_STATUS_OFF, AUDIO_STATUS_PAUSED, AUDIO_STATUS_RUNNING, AUDIO_STATUS_WAIT_GAME,
     AUDIO_STATUS_WAIT_SOUND,
 };

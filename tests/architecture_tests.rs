@@ -98,7 +98,8 @@ fn gui_dependency_allowlist() {
         "config", "state", "i18n", "util", "job_presets", "sequence",
         "rawinput", "xinput", "hid_layout",   // 输入层公开 API (类型/查询函数)
         "vibration",                           // 引擎公开助手 (now_ms_u64 等)
-        "audio_haptics",                       // ★v24.50 音频震动页 (模型来源查询/mod 目录)
+        "audio_haptics",                       // ★v24.60 音频震动页 (预设表 mapping::PRESETS / 模式名)
+        "update",                              // ★v24.55 检查更新浮窗/设置页 (遗留补录)
         "auto_inject",                         // host_dir_dll 等查询
         "input_manager",                       // 设备管理操作 (request_xinput_reset 等 3 处)
     ];
@@ -176,7 +177,7 @@ const EXPECTED_APP_KEYS: &[&str] = &[
     "input_timeout", "interval", "language", "mappings", "minimal_mode",
     "minimal_vib_preset_job", "presets", "process_whitelist",
     "rawinput_capture_mode", "show_notifications", "show_tray_icon",
-    "switch_key", "universal_macros", "vib_edition_asked", "vib_legacy_client",
+    "switch_key", "universal_macros", "update", "vib_edition_asked", "vib_legacy_client",
     "whitelist_enabled", "whitelist_simple_mode", "worker_count",
     "xinput_capture_mode",
 ];

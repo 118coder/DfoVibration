@@ -1,266 +1,121 @@
 # ═══════════════════════════════════════════════════════
 #  🌸 Sorahk Configuration File 🌸
 # ═══════════════════════════════════════════════════════
+# 本文件由程序自动管理: 请在 GUI 内修改设置, 手改内容会在下次保存时被覆盖。
+#
+# 字段速查:
+#   language = "English" / "SimplifiedChinese" / "TraditionalChinese" / "Japanese"
+#   xinput_capture_mode / rawinput_capture_mode = "DiagonalPriority" / "MostSustained" / "LastStable"
+#   组合键: 用 + 连接, 如 "LALT+1"; 左右修饰键区分: "LALT1" 只响应左 Alt
+#   鼠标按键: LBUTTON / RBUTTON / MBUTTON / XBUTTON1 / XBUTTON2
+#   鼠标移动/滚轮: MOUSE_UP / MOUSE_DOWN / MOUSE_LEFT / MOUSE_RIGHT / SCROLL_UP / SCROLL_DOWN
+#   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 "GAMEPAD_045E_LS_RightUp+A"
+#   Raw Input 设备: DEVICE_VID_PID_SERIAL_Bx.x (首次使用会在 GUI 引导激活)
+#
+# 震动设置在旁边的 Vibration.toml (S1 ACT 路线为 Vibration-ACT.toml, 两者互不干扰);
+# 全职业微调在 JobVibration.toml。
 
-# ─── General Settings ───
-show_tray_icon = true        # Show system tray icon on startup
-show_notifications = true    # Enable/disable system notifications
-always_on_top = false        # Keep window always on top of other windows
-dark_mode = false            # Use dark theme (false = light theme, true = dark theme)
-language = "English"         # UI language: "English", "SimplifiedChinese", "TraditionalChinese", "Japanese"
-
-# ─── Performance Settings ───
-input_timeout = 10           # Input timeout in ms
-interval = 5                 # Default repeat interval between keystrokes (ms)
-event_duration = 5           # Duration of each simulated key press (ms)
-worker_count = 0             # Number of turbo workers (0 = auto-detect based on CPU cores)
-
-# ─── XInput Settings ───
-xinput_capture_mode = "DiagonalPriority"  # XInput capture mode: "DiagonalPriority", "MostSustained", "LastStable"
-                                          # DiagonalPriority: Prioritizes diagonal stick directions over straight directions
-                                          # MostSustained: Captures the most sustained input pattern
-                                          # LastStable: Captures the last stable input before release
-                                          # Note: Compile with RUSTFLAGS="-C target-feature=+avx2" for AVX2 optimizations
-
-# ─── Control Settings ───
-switch_key = "DELETE"        # Reserved key to toggle SoraHK behavior
-
-# ─── Chord-exclusive buttons (★v24.49) ───
-# 列出"放弃单键功能、只作组合成员"的手柄按钮短名 (LB / X / DPad_Up, 不带设备前缀)。
-# 用途: 牺牲 1 个键 → 换该键 + 其它键的多个组合键。
-#   例: chord_exclusive_keys = ["LB"] + LB+X / LB+Y / LB+A / LB+B 四条组合
-#       = 牺牲 LB 单键, 得到 4 个组合键 (Q/W/E/R)。
-# 只在"该键确实出现在某个多键组合里"时才生效 (勾了但没组合用 → 单键功能保留)。
-# 空数组 = 旧行为 (成员键单独按住约 0.15 秒后仍触发自己的映射)。
+show_tray_icon = true
+show_notifications = true
+always_on_top = false
+dark_mode = false
+language = "SimplifiedChinese"
+guide_seen = false
+minimal_mode = false
+classic_mode = false
+minimal_vib_preset_job = false
+dfo_player = true
+vib_legacy_client = false
+vib_edition_asked = false
+switch_key = "DELETE"
+universal_macros = []
+input_timeout = 5
+interval = 5
+event_duration = 5
+combo_key_gap_ms = 40
 chord_exclusive_keys = []
+worker_count = 0
+process_whitelist = []
+whitelist_enabled = true
+whitelist_simple_mode = false
+hid_baselines = []
+hid_slot_usages = []
+rawinput_capture_mode = "MostSustained"
+xinput_capture_mode = "MostSustained"
+current_preset = ""
 
-# ─── Audio Haptics (★v24.50 音频震动, 独立可选模式, 默认关) ───
-# 监听系统声音 → 识别枪声/爆炸/音乐/人声 → 自动驱动手柄震动 (免注入, 任何游戏)。
-# 与 DLL 震动/连发主模式互不影响: enabled=false 时本节完全不参与运行。
-#   master_gain_pct     总强度 % (0-200)
-#   low_gain_pct        低频增益 % (爆炸/重砸的沉闷感)
-#   high_gain_pct       高频增益 % (枪声/打击的脆响)
-#   onset_sensitivity   onset 灵敏度 1-8 (越小越易触发; 太小会把 BGM 鼓点当枪声)
-#   onset_release_ms    冲击衰减 ms (一下响声震多久, 50-500)
-#   sustain_gain_pct    持续音强度 % (引擎/环境低鸣跟震)
-#   silence_threshold   静音阈值 0-100 (比这更小的声音不震)
-#   max_onsets_per_sec  每秒触发上限 4-30 (技能连放保护)
-#   sem_enabled         语义层 (YAMNet 纯净反馈): 音乐/人声不乱震; 需要模型文件
-#                       (个人版 exe 内嵌; 公开版放 exe 同目录 models\yamnet.onnx)
-#   gate_music_pct      Music 命中时快通道保留 % (0=完全过滤)
-#   gate_speech_pct     Speech 命中时快通道保留 %
+[[mappings]]
+trigger_key = "Q"
+target_keys = ["Q"]
+turbo_enabled = true
+move_speed = 10
+double_tap_enabled = false
+double_tap_gap_ms = 50
+run_enabled = false
+run_threshold = 80
+run_recheck = true
+lock_enabled = false
+sequence_text = ""
+release_targets = []
+note = ""
+
+[[mappings]]
+trigger_key = "F8"
+target_keys = ["A"]
+turbo_enabled = false
+move_speed = 5
+double_tap_enabled = false
+double_tap_gap_ms = 50
+run_enabled = false
+run_threshold = 80
+run_recheck = true
+lock_enabled = false
+sequence_text = "NONE"
+release_targets = []
+note = ""
+
 [audio_haptics]
 enabled = false
-master_gain_pct = 100
+preset = "人声清晰"
+master_gain_pct = 72
 low_gain_pct = 100
-high_gain_pct = 80
-onset_sensitivity = 3
-onset_release_ms = 120
-sustain_gain_pct = 40
-silence_threshold = 20
-max_onsets_per_sec = 12
-sem_enabled = true
-gate_music_pct = 20
-gate_speech_pct = 30
+high_gain_pct = 100
+punch_pct = 123
+mask_threshold = 260
+adaptive_threshold = true
+auto_profile = false
+music_mask_pct = 40
+quiet_mask = true
+rhythm_pct = 0
+texture_pct = 30
+attack_pct = 38
+release_pct = 12
+dead_zone_pct = 5
+map_max = 4200
+dual_motor = false
+vocal_only = true
+bass_high_hz = 520
+vocal_low_hz = 650
+vocal_high_hz = 3600
+presets = []
 whitelist_filter = false
+whitelist_enabled = false
+whitelist_source = "macro"
+whitelist_processes = []
+whitelist_mode = "process"
+whitelist_include_tree = true
 
-# ─── Process Whitelist ───
-# Process whitelist (empty = all processes enabled)
-# Only processes in this list will have turbo-fire enabled
-process_whitelist = []       # Example: ["notepad.exe", "game.exe"]
+[update]
+auto_check = true
+manifest_url = ""
+skipped_version = ""
+download_dir = ""
+channel = "full"
+last_check_unix = 0
 
-# ─── Input Mappings ───
-# Input mapping definitions (supports keyboard, mouse, and HID devices)
-# Supported mouse buttons: LBUTTON, RBUTTON, MBUTTON, XBUTTON1, XBUTTON2
-# Key combinations: Use '+' to separate keys (e.g., "LALT+A", "RCTRL+RSHIFT+S")
+[device_api_preferences]
 
-# Turbo Mode Behavior:
-# - turbo_enabled = true: Auto-repeat with configurable interval (for rapid fire/continuous action)
-# - turbo_enabled = false: Press-to-press, release-to-release behavior
-#   * Keyboard targets: Supports Windows key repeat (holding trigger sends repeated key presses)
-#   * Mouse button targets: Pure follow mode (press follows trigger press, release follows trigger release)
-#   * Note: event_duration is ignored in non-turbo mode
-
-# ─── Single Key Examples ───
-[[mappings]]
-trigger_key = "A"            # Physical key you press
-target_keys = ["A"]          # Key(s) that get repeatedly sent
-interval = 5                 # Override global interval
-event_duration = 5           # Override global press duration
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "B"            # Physical key you press
-target_keys = ["F"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "F1"           # Physical key you press
-target_keys = ["1"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "F2"           # Physical key you press
-target_keys = ["2"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-[[mappings]]
-trigger_key = "LSHIFT"       # Physical key you press
-target_keys = ["3"]          # Key(s) that get repeatedly sent
-turbo_enabled = true         # Enable turbo mode (true = auto-repeat, false = follow trigger press/release)
-
-# ─── Key Combo Examples ───
-# Combo key mappings: Use '+' to separate keys (e.g., "LALT+A", "CTRL+SHIFT+S")
-# - Supports modifier keys: LSHIFT/RSHIFT, LCTRL/RCTRL, LALT/RALT, LWIN/RWIN
-# - Supports single modifier keys as triggers (e.g., "LSHIFT")
-# - Multiple combos with shared modifiers work simultaneously (e.g., LALT+1, RALT+2)
-# - Distinguishes left/right modifiers (e.g., "LSHIFT+1" only triggers with left Shift)
-# Uncomment to enable combo key mappings:
-# [[mappings]]
-# trigger_key = "LALT+1"     # Left ALT + 1 (won't trigger with right ALT)
-# target_keys = ["F1"]       # Auto-press F1
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "CTRL+SHIFT+F"  # Multiple modifiers
-# target_keys = ["ALT+F4"]      # Output can also be combo
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# ─── Mouse Button Examples ───
-# Uncomment to enable mouse button mappings:
-# [[mappings]]
-# trigger_key = "LBUTTON"    # Left mouse button trigger
-# target_keys = ["LBUTTON"]  # Auto-click left button
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "RBUTTON"    # Right mouse button trigger
-# target_keys = ["SPACE"]    # Press space when right-clicking
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# [[mappings]]
-# trigger_key = "XBUTTON1"   # Side button 1 trigger
-# target_keys = ["F"]        # Auto-press F key
-# turbo_enabled = true       # Enable turbo mode (true = auto-repeat, false = single press)
-
-# ─── Mouse Movement Examples ───
-# [[mappings]]
-# trigger_key = "W"          # Trigger key
-# target_keys = ["MOUSE_UP"] # Move cursor upward
-# move_speed = 5             # Speed in pixels (1-100)
-# interval = 5               # Update interval in ms
-# turbo_enabled = true       # Required for continuous movement
-
-# [[mappings]]
-# trigger_key = "S"
-# target_keys = ["MOUSE_DOWN"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# [[mappings]]
-# trigger_key = "A"
-# target_keys = ["MOUSE_LEFT"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# [[mappings]]
-# trigger_key = "D"
-# target_keys = ["MOUSE_RIGHT"]
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# Multiple target keys for diagonal movement (simultaneous press):
-# [[mappings]]
-# trigger_key = "Q"
-# target_keys = ["MOUSE_UP", "MOUSE_LEFT"]  # Move diagonally up-left
-# move_speed = 5
-# interval = 5
-# turbo_enabled = true
-
-# Or use built-in diagonal directions:
-# Diagonal: MOUSE_UP_LEFT, MOUSE_UP_RIGHT, MOUSE_DOWN_LEFT, MOUSE_DOWN_RIGHT
-
-# ─── Mouse Scroll Examples ───
-# [[mappings]]
-# trigger_key = "PAGEUP"       # Trigger key
-# target_keys = ["SCROLL_UP"]  # Scroll wheel upward
-# move_speed = 120             # Wheel delta (120 = standard notch)
-# interval = 5                 # Repeat interval in ms
-# turbo_enabled = true         # true = continuous, false = Windows repeat
-
-# [[mappings]]
-# trigger_key = "PAGEDOWN"
-# target_keys = ["SCROLL_DOWN"]
-# move_speed = 240             # Wheel delta (240 = 2x)
-# interval = 5
-# turbo_enabled = true
-
-# ─── HID Device Examples (Gamepads, Joysticks, Custom Controllers) ───
-# Automatic support for any HID device via GUI capture!
-#
-# XInput Controllers (Xbox, compatible gamepads):
-#   Format: GAMEPAD_VID_ButtonName[+ButtonName...] (readable format)
-#   Buttons: A, B, X, Y, Start, Back, LB, RB, LS_Click, RS_Click, LT, RT
-#   D-Pad: DPad_Up, DPad_Down, DPad_Left, DPad_Right, DPad_UpLeft, DPad_UpRight, DPad_DownLeft, DPad_DownRight
-#   Left Stick: LS_Up, LS_Down, LS_Left, LS_Right, LS_LeftUp, LS_LeftDown, LS_RightUp, LS_RightDown
-#   Right Stick: RS_Up, RS_Down, RS_Left, RS_Right, RS_LeftUp, RS_LeftDown, RS_RightUp, RS_RightDown
-#   Combos: Use '+' to combine buttons (e.g., "LS_RightUp+A+B")
-#
-# Raw Input Devices (other gamepads, joysticks):
-#   Format: DEVICE_VID_PID_SERIAL_Bx.x (with serial) or DEVICE_VID_PID_DEVxxxxxxxx_Bx.x (without serial)
-#
-# How to configure:
-# 1. Connect your device (XInput controllers work automatically, others require activation)
-# 2. First-time use for non-XInput devices: Activation dialog will appear when you press any button
-#    - Follow instructions: press and release a single button to establish baseline
-#    - Device activation data is saved automatically
-# 3. Open settings dialog, click Capture button for trigger key
-# 4. Press button(s) on your device (supports single button or combo keys)
-# 5. Release all buttons to complete capture
-#
-# XInput Examples:
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_A"              # Xbox controller A button
-# target_keys = ["SPACE"]                     # Press space
-# turbo_enabled = true                        # Enable turbo mode
-
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_LS_RightUp+A"   # Left stick right-up + A button
-# target_keys = ["LCTRL+C"]                   # Press Ctrl+C
-# turbo_enabled = true                        # Enable turbo mode
-
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_DPad_Up+B+X"    # D-Pad up + B + X buttons
-# target_keys = ["F"]                         # Auto-press F
-# turbo_enabled = true                        # Enable turbo mode
-
-# Raw Input Examples:
-# [[mappings]]
-# trigger_key = "GAMEPAD_045E_0B05_ABC123_B2.0"  # Raw Input format (with serial)
-# target_keys = ["SPACE"]                        # Press space
-# turbo_enabled = true                           # Enable turbo mode
-
-# [[mappings]]
-# trigger_key = "JOYSTICK_046D_C21D_B1.0"        # Logitech joystick button
-# target_keys = ["LBUTTON"]                      # Left mouse click
-# turbo_enabled = true                           # Enable turbo mode
-
-# ─── HID Device Baselines (Auto-generated, Do Not Edit) ───
-# This section is managed automatically by the application
-# Device activation data for press/release detection
-# Format: VID:PID:Serial or VID:PID (without serial)
-# [[hid_baselines]]
-# device_id = "045E:028E:1234567"
-# baseline_data = [0, 255, 127, 255, 127, 0, 128, 0, 0, 0, 0]
-
-# ─── Device API Preferences (Auto-managed) ───
-# Preferred input API for each device (VID:PID format)
-# Options: "Auto" (default), "XInput", "RawInput"
-# Configure via Device Manager GUI window
-# [device_api_preferences]
-# "045E:028E" = "XInput"    # Force XInput for Xbox 360 controller
-# "046D:C21D" = "RawInput"  # Force Raw Input for Logitech device
-
+[[presets]]
+name = "默认"
+mappings = []
+switch_key = ""

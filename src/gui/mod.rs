@@ -23,6 +23,8 @@ mod mouse_scroll_dialog;
 mod settings_dialog;
 mod classic_mode;
 mod theme;
+/// ★v24.55 检查更新界面 (右下淡入淡出浮窗 + 更新面板)
+mod update_ui;
 pub mod types;
 mod widgets;
 pub(crate) mod utils;
@@ -293,6 +295,16 @@ pub struct SorahkGui {
     pub vib_params_dirty_since: Option<std::time::Instant>,
     /// ★v24.50 音频震动参数落盘脏标 (同款去抖; 静默 1s 后写 Config.toml)
     pub audio_params_dirty_since: Option<std::time::Instant>,
+    /// ★v24.51 音频白名单编辑框缓冲 (逗号/换行分隔的进程名或完整路径)
+    pub audio_whitelist_edit: String,
+    /// ★v24.61 音频自定义预设「保存为」名称输入框缓冲
+    pub audio_preset_name: String,
+    /// ★v24.61 音频自定义预设下拉选中项 (config.audio_haptics.presets 下标)
+    pub audio_user_sel: usize,
+    /// ★v24.61 音频导出文件下拉选中项
+    pub audio_import_sel: usize,
+    /// ★v24.61 音频导出/导入结果提示 (文件名或错误)
+    pub audio_export_msg: Option<String>,
     /// 连发映射页预设管理卡状态
     pub page_preset_name_input: String,
     pub page_preset_rename_input: String,
@@ -314,6 +326,19 @@ pub struct SorahkGui {
     cached_dark_style: egui::Style,
     /// Cached light theme style
     cached_light_style: egui::Style,
+    /* ═══════ ★v24.55 检查更新 (浮窗/面板/设置区共用) ═══════ */
+    /// 状态容器: 后台线程写, 界面侧每帧取快照
+    pub(crate) update: crate::update::UpdateManager,
+    /// 本帧使用的快照 (tick 时同步, 绘制只读它)
+    pub(crate) update_state: crate::update::Snapshot,
+    /// 启动自动检查只跑一次
+    pub(crate) update_started: bool,
+    /// 更新面板可见性 (非模态, 不阻断主界面)
+    pub(crate) show_update_dialog: bool,
+    /// 右下浮窗出现时刻 (None = 不显示); 16 秒后自动淡出
+    pub(crate) update_toast_at: Option<std::time::Instant>,
+    /// 已为哪个版本弹过浮窗 (同版本每会话只弹一次, 免得反复打扰)
+    pub(crate) update_toast_ver: Option<String>,
 }
 
 impl SorahkGui {
@@ -336,6 +361,7 @@ impl SorahkGui {
         /* ★v24.18: 首次运行进完整界面 (classic 默认关); 显式设置的极简模式优先 (双标记同真时极简赢) */
         let classic_mode = config.classic_mode && !config.minimal_mode;
         let minimal_vib_preset_job = config.minimal_vib_preset_job;
+        let audio_whitelist_edit = config.audio_haptics.whitelist_processes.join(", ");
 
         /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
          * 原启动两步 (崩溃自愈 + 恢复意图) 与落盘块全部注释; 用户配置里没有遗留快照
@@ -462,6 +488,11 @@ impl SorahkGui {
             minimal_job_block_w: 0.0,
             vib_params_dirty_since: None,
             audio_params_dirty_since: None,
+            audio_whitelist_edit,
+            audio_preset_name: String::new(),
+            audio_user_sel: 0,
+            audio_import_sel: 0,
+            audio_export_msg: None,
             page_preset_name_input: String::new(),
             page_preset_rename_input: String::new(),
             page_preset_rename_show: false,
@@ -481,6 +512,12 @@ impl SorahkGui {
             preset_rename_input: String::new(),
             cached_dark_style,
             cached_light_style,
+            update: crate::update::UpdateManager::new(),
+            update_state: crate::update::Snapshot::default(),
+            update_started: false,
+            show_update_dialog: false,
+            update_toast_at: None,
+            update_toast_ver: None,
         }
     }
 

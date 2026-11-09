@@ -20,6 +20,8 @@ mod sequence;
 mod signal;
 mod state;
 mod tray;
+/// ★v24.55 检查更新 (与 lib.rs 同步声明)
+mod update;
 mod util;
 mod vibration;
 mod xinput;

@@ -27,7 +27,7 @@ use serde_json::Value;
 /// ⚠ 发版时改这一行 + `.github/workflows/build-windows.yml` 里的产物名。
 /// 语义: ★R2.1 起版本系切换为 **R X.Y** (R2.0 稳定线的延续; 旧 24.x 线停止发版),
 /// 与 tag `R2.1` 去掉 R 后逐段数值比较。跨系比较规则见 [`is_newer`]。
-pub const APP_VERSION: &str = "R2.1";
+pub const APP_VERSION: &str = "R2.11";
 
 /// 仓库 (清单源与下载地址都指向它)。
 pub const REPO: &str = "118coder/DfoVibration";

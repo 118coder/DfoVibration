@@ -29,15 +29,15 @@ jobs:
       - name: Rename artifact + SHA256
         shell: pwsh
         run: |
-          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_R2.1.exe"
-          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_R2.1.exe" -Algorithm SHA256).Hash.ToLower()
-          "$hash  DfoVibration-Sorahk_R2.1.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
+          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_R2.11.exe"
+          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_R2.11.exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  DfoVibration-Sorahk_R2.11.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
           Get-Content "target/release/SHA256SUMS.txt"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "DfoVibration-Sorahk_R2.1.exe"
+          name: "DfoVibration-Sorahk_R2.11.exe"
           path: |
-            target/release/DfoVibration-Sorahk_R2.1.exe
+            target/release/DfoVibration-Sorahk_R2.11.exe
             target/release/SHA256SUMS.txt

@@ -44,6 +44,7 @@ impl Default for ShotPlan {
                 Page::Whitelist,
                 Page::Vibration,
                 Page::JobPresets,
+                Page::AudioHaptics,
             ],
             dialogs: true,
             scroll_steps: 3,
@@ -125,6 +126,10 @@ pub fn run(plan: &ShotPlan, base_config: &AppConfig) -> anyhow::Result<Vec<Shot>
 
         let mut app = HeadlessGui::new(cfg, plan.opts.clone())?;
         app.gui.skip_first_run_for_shot();
+        // ★R2.2: 必须先跑一帧再灌纹理 —— `max_texture_side` 是随 RawInput 生效的,
+        // 首帧之前 Context 还是默认 2048 上限, 而键盘 SVG 纹理 2240×840,
+        // 直接 prewarm 会 panic ("maximum texture side is 2048"), 整批截图全丢。
+        app.warmup(1);
         // SVG 纹理 (手柄/键盘图) 必须同步灌入: 无头没有后台线程往返
         app.prewarm_textures();
 
@@ -196,7 +201,7 @@ fn page_slug(page: Page) -> &'static str {
 }
 
 fn is_long_page(page: Page) -> bool {
-    matches!(page, Page::Vibration | Page::JobPresets)
+    matches!(page, Page::Vibration | Page::JobPresets | Page::AudioHaptics)
 }
 
 /// 让页面内的滚动区域滚一段, 返回**是否真的滚动了**。

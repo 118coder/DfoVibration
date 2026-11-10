@@ -185,10 +185,14 @@ impl SorahkGui {
             .map(|t| t.clone());
 
         let mut dirty = false;
+        // ① 开不开
         dirty |= self.audio_hero(ui, &th, &tele, status, enabled);
         dirty |= self.audio_calib_strip(ui, &th);
+        // ② 听谁的声音（白名单）: 决定"这个功能对哪个游戏生效", 排在预设之前
+        dirty |= self.audio_whitelist_card(ui, &th, &tele);
+        // ③ 什么场景
         dirty |= self.audio_presets_card(ui, &th);
-        // 预设管理 (我的预设 / 备份分享) 紧跟宫格, 并排两块
+        // ④ 预设管理 (我的预设 / 备份分享) 紧跟宫格, 并排两块
         split_cols(ui, 2, SP_L, |ui, i| {
             if i == 0 {
                 dirty |= self.audio_user_presets_card(ui, &th);
@@ -196,10 +200,11 @@ impl SorahkGui {
                 dirty |= self.audio_backup_card(ui, &th);
             }
         });
+        // ⑤ 现在震得怎么样
         self.audio_monitor_card(ui, &th, &tele, enabled);
+        // ⑥ 细调 → ⑦ 屏蔽 → ⑧ 高级 → ⑨ 说明
         dirty |= self.audio_tuning_card(ui, &th);
         dirty |= self.audio_mask_card(ui, &th);
-        dirty |= self.audio_whitelist_card(ui, &th, &tele);
         dirty |= self.audio_advanced_card(ui, &th);
         self.audio_notes_card(ui, &th);
 
@@ -346,7 +351,7 @@ impl SorahkGui {
         applied
     }
 
-    /// ③ 预设宫格: 6 个场景平铺, 选中有描边 + 勾, 推荐档有星标。
+    /// ④ 预设宫格: 6 个场景平铺, 选中有描边 + 勾, 推荐档有星标。
     fn audio_presets_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
         let current = self.config.audio_haptics.preset.clone();
         let mut clicked: Option<&'static str> = None;
@@ -365,10 +370,8 @@ impl SorahkGui {
 
                 let total = ui.available_width();
                 let gap = SP_S;
-                // 6 档预设: 宽屏一行 6 个, 中屏 3×2, 窄屏 2×3 —— 不留孤零零的尾块
-                let cols = if total >= 860.0 {
-                    6
-                } else if total >= 560.0 {
+                // 6 档预设: 宽松 3×2（描述一行放得下, 不再断词）; 窄屏 2×3
+                let cols = if total >= 640.0 {
                     3
                 } else {
                     2
@@ -410,7 +413,7 @@ impl SorahkGui {
         }
     }
 
-    /// ④ 实时监测: 频谱 + 双马达电平 + 三个统计 + 判定横幅。
+    /// ⑥ 实时监测: 频谱 + 双马达电平 + 三个统计 + 判定横幅。
     fn audio_monitor_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -420,13 +423,22 @@ impl SorahkGui {
     ) {
         th.card(ui, Some("实时监测"), |ui| {
             if !enabled {
-                widgets::empty_state(
-                    ui,
-                    th,
-                    widgets::Icon::SoundWave,
-                    "音频震动已关闭",
-                    &["打开上面的总开关，这里会开始显示频谱、两条马达电平和当前判定。"],
-                );
+                // 空态做成一行, 不占版面 (原来整块空出 ~150px)
+                ui.horizontal(|ui| {
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                    widgets::Icon::SoundWave.paint(ui.painter(), r, th.hint);
+                    ui.add_space(SP_XS);
+                    ui.label(
+                        egui::RichText::new("音频震动已关闭")
+                            .size(13.5)
+                            .strong()
+                            .color(th.heading),
+                    );
+                    ui.add_space(SP_XS);
+                    ui.label(th.hint_text(
+                        "打开上面的总开关，这里就会显示频谱、两条马达电平和当前判定。",
+                    ));
+                });
                 return;
             }
             let Some(t) = tele else {
@@ -461,7 +473,7 @@ impl SorahkGui {
         });
     }
 
-    /// ⑤ 手感调节: 三组滑条, 组内双列。
+    /// ⑦ 手感调节: 三组滑条, 组内双列。
     fn audio_tuning_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
         let mut dirty = false;
         th.card_with_actions(
@@ -554,7 +566,7 @@ impl SorahkGui {
         dirty
     }
 
-    /// ⑥ 屏蔽选项: 三个自动开关 + 两条压制滑条 (双列, 左开关右滑条)。
+    /// ⑧ 屏蔽选项: 三个自动开关 + 两条压制滑条 (双列, 左开关右滑条)。
     fn audio_mask_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
         let mut dirty = false;
         th.card(ui, Some("屏蔽选项"), |ui| {
@@ -602,7 +614,7 @@ impl SorahkGui {
         dirty
     }
 
-    /// ⑦ 只听指定的游戏 (音频专属白名单, 玩家可完全不启用)。
+    /// ③ 听哪些声音 (音频专属白名单): 决定这个功能对谁生效 —— 开关在卡头, 命中情况右侧实时反馈。
     fn audio_whitelist_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -610,143 +622,182 @@ impl SorahkGui {
         tele: &Option<AudioTelemetry>,
     ) -> bool {
         let mut dirty = false;
-        th.card(ui, Some("只听指定的游戏（可选）"), |ui| {
-            ui.label(th.hint_text(
-                "默认关 = 听整个电脑的声音。开启后只听下面名单里的游戏，别的软件（QQ音乐、视频网站）的声音一律不理。",
-            ));
-            ui.add_space(SP_M);
+        let on = self.config.audio_haptics.whitelist_enabled;
+        let mut toggle: Option<bool> = None;
 
-            let mut on = self.config.audio_haptics.whitelist_enabled;
-            if ui
-                .checkbox(&mut on, "启用名单（只听名单里的应用）")
-                .on_hover_text("开启后如果游戏还没启动，状态会显示「等待白名单游戏」。")
-                .changed()
-            {
-                self.config.audio_haptics.whitelist_enabled = on;
-                // 老字段只作遗留别名, 不再驱动行为
-                self.config.audio_haptics.whitelist_filter = false;
-                dirty = true;
-            }
-
-            // 条目来源: 默认复用连发白名单 (玩家只维护一份)
-            let src_macro = !self
-                .config
-                .audio_haptics
-                .whitelist_source
-                .eq_ignore_ascii_case("custom");
-            ui.add_space(SP_S);
-            ui.horizontal(|ui| {
-                ui.label(th.hint_text("名单来源"));
-                if ui
-                    .selectable_label(src_macro, egui::RichText::new("和连发白名单共用一份").size(12.5))
-                    .on_hover_text("与「连发映射」页的白名单共用同一份列表（只读，不会改它）。推荐。")
-                    .clicked()
-                    && !src_macro
-                {
-                    self.config.audio_haptics.whitelist_source = "macro".to_string();
-                    dirty = true;
+        th.card_with_actions(
+            ui,
+            Some("听哪些声音"),
+            |ui| {
+                // 标题行本身是 right_to_left, 先放开关 (最右), 再放说明
+                let mut v = on;
+                if widgets::switch(ui, th, &mut v).changed() {
+                    toggle = Some(v);
                 }
-                if ui
-                    .selectable_label(!src_macro, egui::RichText::new("单独填一份").size(12.5))
-                    .on_hover_text("音频震动单独一份名单，和连发白名单互不影响。")
-                    .clicked()
-                    && src_macro
-                {
-                    self.config.audio_haptics.whitelist_source = "custom".to_string();
-                    dirty = true;
-                }
-            });
-
-            if !src_macro {
-                ui.add_space(SP_S);
-                let r = th.text_input(
-                    ui,
-                    &mut self.audio_whitelist_edit,
-                    "DNF.exe, E:\\Games\\DFO.exe（逗号分隔，可填完整路径）",
-                    ui.available_width().max(160.0),
-                    egui::Id::new("audio_whitelist_input"),
-                );
-                if r.changed() {
-                    self.config.audio_haptics.whitelist_processes = self
-                        .audio_whitelist_edit
-                        .split([',', '\n'])
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-                    dirty = true;
-                }
-            }
-
-            // 实时判定结果 (开名单后"到底有没有命中"一眼可见)
-            if let Some(t) = tele {
-                ui.add_space(SP_M);
-                let (text, fg, bg) = if !t.wl_matched {
-                    ("拦截中 · 前台不在名单里，不读声音", th.warn, th.warn_soft)
-                } else if t.wl_entries == 0 {
-                    ("未过滤 · 名单是空的，等于全局听", th.warn, th.warn_soft)
-                } else {
-                    ("命中 · 正在读取该游戏的声音", th.good, th.good_soft)
-                };
-                th.badge(ui, text, fg, bg);
                 ui.add_space(SP_XS);
-                ui.label(th.hint_text(format!(
-                    "来源 {} · 条目 {} · 前台 {}",
-                    if t.wl_source.is_empty() { "-" } else { &t.wl_source },
-                    t.wl_entries,
-                    if t.wl_foreground.is_empty() { "(未取到)" } else { &t.wl_foreground },
-                )));
-                if !t.wl_error.is_empty() {
-                    ui.label(
-                        egui::RichText::new(format!("进程信息获取提示：{}", t.wl_error))
-                            .color(th.warn)
-                            .size(11.5),
-                    );
-                }
-                if t.wl_degraded {
-                    ui.label(
-                        egui::RichText::new(
-                            "按进程精确监听不可用，已降级为听整个设备（仍按前台判断）。\n游戏以管理员运行时，请也以管理员身份启动本工具。",
-                        )
-                        .color(th.warn)
-                        .size(11.5),
-                    );
-                }
-            }
-
-            ui.add_space(SP_M);
-            hairline(ui, th);
-            ui.add_space(SP_S);
-            let mut process_mode = self
-                .config
-                .audio_haptics
-                .whitelist_mode
-                .eq_ignore_ascii_case("process");
-            if ui
-                .checkbox(&mut process_mode, "只监听名单进程的声音（Win10 2004+）")
-                .on_hover_text("开 = 只收名单里那个游戏的声音，别的程序的声音根本不进采集。\n关 = 只要前台在名单里就听整个设备的声音（兼容旧系统）。")
-                .changed()
-            {
-                self.config.audio_haptics.whitelist_mode = if process_mode {
-                    "process".to_string()
+                ui.label(th.hint_text(if on { "只听名单里的" } else { "听整个电脑" }));
+            },
+            |ui| {
+                ui.label(th.hint_text(if on {
+                    "只在名单里的应用跑到前台时才读声音：QQ 音乐、网页视频、语音通话的声音一律不理。"
                 } else {
-                    "foreground".to_string()
-                };
-                dirty = true;
-            }
-            let mut tree = self.config.audio_haptics.whitelist_include_tree;
-            if ui
-                .checkbox(&mut tree, "含子进程")
-                .on_hover_text("游戏启动器拉起的子进程（登录器/反作弊）也一起算。")
-                .changed()
-            {
-                self.config.audio_haptics.whitelist_include_tree = tree;
-                dirty = true;
-            }
-        });
+                    "现在听整个电脑的声音（音乐、视频、语音全算）。只想对某个游戏生效，就打开右上角的开关。"
+                }));
+
+                // 条目来源: 默认复用连发白名单 (玩家只维护一份)
+                let src_macro = !self
+                    .config
+                    .audio_haptics
+                    .whitelist_source
+                    .eq_ignore_ascii_case("custom");
+                ui.add_space(if on { SP_M } else { SP_S });
+                ui.horizontal(|ui| {
+                    ui.label(th.hint_text("名单用"));
+                    if ui
+                        .selectable_label(src_macro, egui::RichText::new("连发白名单那份").size(12.5))
+                        .on_hover_text("与「连发映射」页的白名单共用同一份列表（只读，不会改它）。推荐。")
+                        .clicked()
+                        && !src_macro
+                    {
+                        self.config.audio_haptics.whitelist_source = "macro".to_string();
+                        dirty = true;
+                    }
+                    if ui
+                        .selectable_label(!src_macro, egui::RichText::new("单独填一份").size(12.5))
+                        .on_hover_text("音频震动单独一份名单，和连发白名单互不影响。")
+                        .clicked()
+                        && src_macro
+                    {
+                        self.config.audio_haptics.whitelist_source = "custom".to_string();
+                        dirty = true;
+                    }
+
+                    // 右侧: 命中判定 (开名单后"到底有没有生效"一眼可见)
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        match (on, tele.as_ref()) {
+                            (false, _) => {
+                                th.badge(ui, "未启用 · 全局听", th.text_weak, th.card_alt);
+                            }
+                            (true, Some(t)) if t.wl_matched => {
+                                th.badge(ui, "命中 · 正在读这个游戏", th.good, th.good_soft);
+                            }
+                            (true, Some(t)) if t.wl_entries == 0 => {
+                                th.badge(ui, "名单是空的", th.warn, th.warn_soft);
+                            }
+                            (true, Some(_)) => {
+                                th.badge(ui, "拦截中 · 前台不在名单", th.warn, th.warn_soft);
+                            }
+                            (true, None) => {}
+                        }
+                    });
+                });
+
+                // 单独填一份时才给输入框; 复用连发那份就不用重复维护
+                if !src_macro {
+                    ui.add_space(SP_S);
+                    let r = th.text_input(
+                        ui,
+                        &mut self.audio_whitelist_edit,
+                        "DNF.exe, E:\\Games\\DFO.exe（逗号分隔，可填完整路径）",
+                        ui.available_width().max(160.0),
+                        egui::Id::new("audio_whitelist_input"),
+                    );
+                    if r.changed() {
+                        self.config.audio_haptics.whitelist_processes = self
+                            .audio_whitelist_edit
+                            .split([',', '\n'])
+                            .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        dirty = true;
+                    }
+                }
+
+                // 细节行: 来源 / 条目 / 前台 (只有开了名单才有意义)
+                if on {
+                    if let Some(t) = tele {
+                        ui.add_space(SP_S);
+                        ui.label(th.hint_text(format!(
+                            "来源 {} · 条目 {} · 前台 {}",
+                            if t.wl_source.is_empty() { "-" } else { &t.wl_source },
+                            t.wl_entries,
+                            if t.wl_foreground.is_empty() {
+                                "(未取到)"
+                            } else {
+                                &t.wl_foreground
+                            },
+                        )));
+                        if !t.wl_error.is_empty() {
+                            ui.label(
+                                egui::RichText::new(format!("进程信息获取提示：{}", t.wl_error))
+                                    .color(th.warn)
+                                    .size(11.5),
+                            );
+                        }
+                        if t.wl_degraded {
+                            ui.label(
+                                egui::RichText::new(
+                                    "按进程精确监听不可用，已降级为听整个设备（仍按前台判断）。\n游戏以管理员运行时，请也以管理员身份启动本工具。",
+                                )
+                                .color(th.warn)
+                                .size(11.5),
+                            );
+                        }
+                    }
+                }
+
+                // 监听方式属于排障项, 收起, 不占版面
+                ui.add_space(SP_S);
+                egui::CollapsingHeader::new(
+                    egui::RichText::new("监听方式（默认就够用）")
+                        .size(12.0)
+                        .color(th.text_weak),
+                )
+                .id_salt("audio_wl_advanced")
+                .show(ui, |ui| {
+                    ui.add_space(SP_XS);
+                    let mut process_mode = self
+                        .config
+                        .audio_haptics
+                        .whitelist_mode
+                        .eq_ignore_ascii_case("process");
+                    if ui
+                        .checkbox(&mut process_mode, "只监听名单进程的声音（Win10 2004+）")
+                        .on_hover_text(
+                            "开 = 只收名单里那个游戏的声音，别的程序的声音根本不进采集。\n关 = 只要前台在名单里就听整个设备的声音（兼容旧系统）。",
+                        )
+                        .changed()
+                    {
+                        self.config.audio_haptics.whitelist_mode = if process_mode {
+                            "process".to_string()
+                        } else {
+                            "foreground".to_string()
+                        };
+                        dirty = true;
+                    }
+                    let mut tree = self.config.audio_haptics.whitelist_include_tree;
+                    if ui
+                        .checkbox(&mut tree, "含子进程")
+                        .on_hover_text("游戏启动器拉起的子进程（登录器/反作弊）也一起算。")
+                        .changed()
+                    {
+                        self.config.audio_haptics.whitelist_include_tree = tree;
+                        dirty = true;
+                    }
+                });
+            },
+        );
+
+        if let Some(v) = toggle {
+            self.config.audio_haptics.whitelist_enabled = v;
+            // 老字段只作遗留别名, 不再驱动行为
+            self.config.audio_haptics.whitelist_filter = false;
+            dirty = true;
+        }
         dirty
     }
 
-    /// ⑧ 高级选项 (默认折叠, 默认值即最佳)。
+    /// ⑨ 高级选项 (默认折叠, 默认值即最佳)。
     fn audio_advanced_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
         let mut dirty = false;
         th.card(ui, None, |ui| {
@@ -821,7 +872,7 @@ impl SorahkGui {
         dirty
     }
 
-    /// ⑨ 说明 (预期管理: 六条, 双列排布)。
+    /// ⑩ 说明 (预期管理: 六条, 双列排布)。
     fn audio_notes_card(&mut self, ui: &mut egui::Ui, th: &Theme) {
         const NOTES: [&str; 6] = [
             "本引擎是纯算法（频带分析 + 自动门槛），不需要下载任何模型文件。",
@@ -849,7 +900,7 @@ impl SorahkGui {
         });
     }
 
-    /// ⑩ 我的预设 + 备份分享 (紧跟预设宫格, 归为"预设管理")。
+    /// ⑤ 我的预设 + 备份分享 (紧跟预设宫格, 归为"预设管理")。
     /// 拆成独立卡片, 避免宫格卡片过高。
     fn audio_user_presets_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
         let mut dirty = false;
@@ -1231,7 +1282,7 @@ fn preset_tile(
     selected: bool,
     w: f32,
 ) -> egui::Response {
-    let h = 78.0;
+    let h = 66.0;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(w, h), egui::Sense::click());
     let response = response
         .on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -1268,10 +1319,10 @@ fn preset_tile(
 
     // 名称
     p.text(
-        egui::pos2(rect.left() + 11.0, rect.top() + 10.0),
+        egui::pos2(rect.left() + 12.0, rect.top() + 11.0),
         egui::Align2::LEFT_TOP,
         name,
-        egui::FontId::proportional(13.0),
+        egui::FontId::proportional(13.5),
         if selected { th.accent_text } else { th.heading },
     );
 
@@ -1299,9 +1350,9 @@ fn preset_tile(
         feel.to_string(),
         egui::FontId::proportional(11.5),
         th.hint,
-        (w - 24.0).max(40.0),
+        (w - 26.0).max(40.0),
     );
-    p.galley(egui::pos2(rect.left() + 11.0, rect.top() + 33.0), galley, th.hint);
+    p.galley(egui::pos2(rect.left() + 12.0, rect.top() + 32.0), galley, th.hint);
 
     if response.has_focus() {
         p.rect_stroke(

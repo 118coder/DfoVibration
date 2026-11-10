@@ -727,6 +727,18 @@ impl SorahkGui {
                                 &t.wl_foreground
                             },
                         )));
+                        // 下一步该干什么, 直接说, 别让玩家自己猜
+                        if t.wl_entries == 0 {
+                            ui.label(
+                                egui::RichText::new(
+                                    "名单还是空的：去左边「白名单修改」加一个游戏，或上面切到「单独填一份」直接填进程名。",
+                                )
+                                .color(th.warn)
+                                .size(11.5),
+                            );
+                        } else if !t.wl_matched {
+                            ui.label(th.hint_text("把游戏切到前台，这里就会变成「命中」。"));
+                        }
                         if !t.wl_error.is_empty() {
                             ui.label(
                                 egui::RichText::new(format!("进程信息获取提示：{}", t.wl_error))

@@ -2315,7 +2315,7 @@ impl AppConfig {
              #   组合键: 用 + 连接, 如 \"LALT+1\"; 左右修饰键区分: \"LALT1\" 只响应左 Alt\n\
              #   鼠标按键: LBUTTON / RBUTTON / MBUTTON / XBUTTON1 / XBUTTON2\n\
              #   鼠标移动/滚轮: MOUSE_UP / MOUSE_DOWN / MOUSE_LEFT / MOUSE_RIGHT / SCROLL_UP / SCROLL_DOWN\n\
-             #   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 \"GAMEPAD_045E_LS_RightUp+A\"\n\
+             #   手柄: GAMEPAD_VID_按钮名, 组合用 + 连接, 如 \"GAMEPAD_045E_LT+A\"\n\
              #   Raw Input 设备: DEVICE_VID_PID_SERIAL_Bx.x (首次使用会在 GUI 引导激活)\n\
              #\n\
              # 震动设置在旁边的 Vibration.toml (S1 ACT 路线为 Vibration-ACT.toml, 两者互不干扰);\n\

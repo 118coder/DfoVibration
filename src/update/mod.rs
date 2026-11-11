@@ -39,12 +39,24 @@ pub const AUTO_CHECK_INTERVAL_SECS: i64 = 4 * 3600;
 
 /// 把版本号切成数值段 (`R2.1` / `v24.55` / `2.1-beta` 都能吃; 前导 v/V/r/R 一律剥掉)。
 fn version_parts(v: &str) -> Vec<u64> {
+    let r_series = is_r_series(v);
     v.trim()
         .trim_start_matches(['v', 'V', 'r', 'R'])
         .split(['.', '-', '_', '+'])
-        .map(|seg| {
+        .enumerate()
+        .map(|(i, seg)| {
             let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
-            digits.parse::<u64>().unwrap_or(0)
+            let n = digits.parse::<u64>().unwrap_or(0);
+            /* ★R2.12: R 系 minor 段按「两位十进制」比较, 修掉 R2.11 之后发 R2.2
+             * 会被判成旧版、老用户收不到更新提示的问题。
+             *   R2.0→[2,0] < R2.1→[2,10] < R2.11→[2,11] < R2.12→[2,12] < R2.2→[2,20]
+             * 只有 1 位的 minor 才 ×10 (R2.11 / R2.12 已是两位, 原样比较),
+             * 旧 24.x 数字系与跨系规则完全不受影响。 */
+            if r_series && i == 1 && digits.len() == 1 {
+                n * 10
+            } else {
+                n
+            }
         })
         .collect()
 }
@@ -101,6 +113,17 @@ mod version_tests {
         assert!(is_newer("R2.1", "24.59"));
         assert!(is_newer("R2.0", "24.61"), "R2.0 也新于 24.x (跨系规则)");
         assert!(!is_newer("24.62", "R2.1"), "旧系标签永远不算新");
+    }
+
+    /// ★R2.12: 短 minor (R2.2) 必须比两位 minor (R2.11/R2.12) 更新 ——
+    /// 修 R2.11 交接 §4 记录的「按段数值比较 11>2 会把 R2.2 判成旧版」。
+    #[test]
+    fn r_series_short_minor_is_a_newer_generation() {
+        assert!(is_newer("R2.2", "R2.11"), "R2.2 应比 R2.11 新");
+        assert!(is_newer("R2.2", "R2.12"), "R2.2 应比 R2.12 新");
+        assert!(!is_newer("R2.11", "R2.2"));
+        assert!(is_newer("R2.11", "R2.1"));
+        assert!(is_newer("R2.12", "R2.11"));
     }
 
     #[test]

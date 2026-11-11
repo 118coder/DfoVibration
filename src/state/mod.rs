@@ -1234,7 +1234,7 @@ impl AppState {
                     Self::input_name_to_device(&full)
                     && let &[id] = button_ids.as_slice()
                 {
-                    bits |= 1u32 << (id & 31);
+                    bits |= crate::xinput::XInputHandler::xinput_bit(id);
                 }
             }
             if bits != 0 {
@@ -1271,7 +1271,29 @@ impl AppState {
                 combo.len() >= 2
                     && combo
                         .iter()
-                        .any(|id| mask & (1u32 << (id & 31)) != 0)
+                        .any(|id| *id < 32 && mask & (1u32 << id) != 0)
+            })
+    }
+
+    /// ★R2.12 预设切换键是否可能是某多键组合的成员。
+    /// 与 [`Self::switch_key_may_form_chord`] 同一套判据, 但掩码来自该预设切换键
+    /// 本身 (每个预设可以有不同的切换键), 而不是全局 `switch_key_cache`。
+    /// v24.49 只给全局切换键补了仲裁, 预设切换键分支一直是「命中即切」, 会误切预设。
+    pub fn preset_switch_binding_may_form_chord(
+        &self,
+        device_type: &DeviceType,
+        mask: u32,
+    ) -> bool {
+        if mask == 0 {
+            return false;
+        }
+        self.get_xinput_combos_for_device(device_type)
+            .iter()
+            .any(|combo| {
+                combo.len() >= 2
+                    && combo
+                        .iter()
+                        .any(|id| *id < 32 && mask & (1u32 << id) != 0)
             })
     }
 

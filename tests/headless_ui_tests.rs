@@ -63,6 +63,11 @@ fn stats(rgb: &[u8]) -> Stats {
 #[test]
 fn headless_renders_all_pages_with_real_content() {
     let mut app = app(true, "sorahk_headless_test_pages");
+    /* ★R2.12: 与 headless_shots.rs 一致 —— 必须先跑一帧把 max_texture_side
+     * 提到 8192 再灌纹理。默认 Context 上限 2048 装不下 2240×840 的键盘 SVG,
+     * 直接 prewarm 会 panic ("maximum texture side is 2048"), 整批截图全丢。
+     * 这是既有的测试缺陷 (同源问题已在 keyboard_quick 单测修过), 与本轮改动无关。 */
+    let _ = app.warmup(1);
     app.prewarm_textures();
 
     let mut seen = Vec::new();

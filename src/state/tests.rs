@@ -1288,44 +1288,43 @@
         assert!(AppState::whitelist_entry_matches_in(false, path_a, Some(path_a)));
     }
 
+    /// ★R2.12 (优化 8): 前台探测改成「按窗口句柄命中」——
+    /// 同一窗口连续调用不该重复 OpenProcess; 窗口变了/缓存被清才重新探测。
     #[test]
     fn test_process_whitelist_cache() {
-        use std::thread;
-        use std::time::Duration;
-
         let mut config = AppConfig::default();
         config.process_whitelist = vec!["explorer.exe".to_string()];
 
         let state = AppState::new(config).unwrap();
 
-        // First call - cache miss (will query Windows API)
+        // 首次调用必然回填缓存
         let _ = state.is_process_whitelisted();
+        let (hwnd1, at1) = {
+            let cache = state.cached_process_info.read().unwrap();
+            (cache.hwnd, cache.at)
+        };
+        assert_ne!(hwnd1, -1, "首次调用后缓存应记住当前前台窗口句柄");
 
-        // Verify cache was populated
-        let cache = state.cached_process_info.read().unwrap();
-        let (cached_name, _) = &*cache;
-        let initial_name = cached_name.clone();
-        drop(cache);
-
-        // Second call immediately - cache hit (should use cached value)
+        // 立刻再调: 同一窗口 → 命中缓存 (时间戳不变, 没有重新探测)
         let _ = state.is_process_whitelisted();
+        let (hwnd2, at2) = {
+            let cache = state.cached_process_info.read().unwrap();
+            (cache.hwnd, cache.at)
+        };
+        assert_eq!(hwnd1, hwnd2);
+        assert_eq!(at1, at2, "前台窗口未变时应命中缓存, 不该重复探测");
 
-        // Verify cache still has same value
-        let cache = state.cached_process_info.read().unwrap();
-        let (cached_name, _) = &*cache;
-        assert_eq!(*cached_name, initial_name);
-        drop(cache);
-
-        // Wait for cache to expire (>50ms)
-        thread::sleep(Duration::from_millis(60));
-
-        // Third call after expiration - cache miss (will refresh)
+        // 强制让缓存「对应另一个窗口」→ 下次调用必须重新探测
+        {
+            let mut cache = state.cached_process_info.write().unwrap();
+            cache.hwnd = 0x0BAD_F00D;
+        }
         let _ = state.is_process_whitelisted();
-
-        // Cache should be refreshed with new timestamp
-        let cache = state.cached_process_info.read().unwrap();
-        let (_, timestamp) = &*cache;
-        assert!(timestamp.elapsed() < Duration::from_millis(10));
+        let hwnd3 = {
+            let cache = state.cached_process_info.read().unwrap();
+            cache.hwnd
+        };
+        assert_ne!(hwnd3, 0x0BAD_F00D, "窗口句柄变了应重新探测并回填");
     }
 
     #[test]

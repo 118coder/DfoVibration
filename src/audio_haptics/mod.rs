@@ -387,7 +387,9 @@ fn engine_loop(state: Arc<AppState>) {
                     /* 没有条目 → 不过滤。老语义是"空 = 全拒", 玩家完全无法理解;
                      * 空列表通常是"还没填", 按"不启用过滤"处理并明确提示。 */
                     ok = true;
-                } else if let Some(info) = AppState::foreground_probe() {
+                /* ★R2.12 (优化 8): 复用连发白名单的前台探测缓存 —— 同一窗口只探一次,
+                 * 两套白名单拿到的路径必然一致 (原来各探一遍, 偶发一个放行一个不放行) */
+                } else if let Some(info) = state.foreground_probe_cached() {
                     fg_text = info
                         .path
                         .clone()

@@ -13,6 +13,7 @@
 //!   → GitHub Releases API。前两个面向国内可达性, 最后一个是"只要有 Release 就能用"。
 
 pub mod http;
+pub mod sha256;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -24,7 +25,9 @@ use serde_json::Value;
 
 /// 本构建的发行版本号 (与 CI 产物名 / Release tag 必须一致)。
 ///
-/// ⚠ 发版时改这一行 + `.github/workflows/build-windows.yml` 里的产物名。
+/// ⚠ 发版时**只改这一行** —— ★R2.12 (优化 1) 起 `.github/workflows/build-windows.yml`
+/// 从本常量读取版本号生成产物名 (`DfoVibration-Sorahk_<APP_VERSION>.exe`),
+/// 不再需要同步改 workflow 里写死的文件名。
 /// 语义: ★R2.1 起版本系切换为 **R X.Y** (R2.0 稳定线的延续; 旧 24.x 线停止发版),
 /// 与 tag `R2.1` 去掉 R 后逐段数值比较。跨系比较规则见 [`is_newer`]。
 pub const APP_VERSION: &str = "R2.11";
@@ -132,6 +135,17 @@ mod version_tests {
         assert!(is_newer("24.60.1", "24.60"));
         assert!(!is_newer("24.59", "24.60"));
     }
+
+    /// ★R2.12 (优化 10): 失败退避必须单调递增且封顶 1 小时 ——
+    /// 递增太慢等于没退避, 没有上限会让网络恢复后迟迟不重试。
+    #[test]
+    fn backoff_grows_then_caps_at_one_hour() {
+        let seq: Vec<i64> = (1..=6).map(backoff_secs).collect();
+        assert_eq!(seq, vec![60, 300, 900, 1800, 3600, 3600]);
+        assert_eq!(backoff_secs(0), 60, "首次失败 1 分钟后重试");
+        assert!(seq.windows(2).all(|w| w[1] >= w[0]), "退避时长不能倒退");
+        assert!(*seq.last().unwrap() <= 3600, "退避上限 1 小时");
+    }
 }
 
 /* ═════════════════════ 发行包 / 清单 ═════════════════════ */
@@ -179,6 +193,9 @@ pub struct Package {
     pub url: String,
     /// 字节数; 0 = 清单没给 (进度条走"未知总量"形态)
     pub size: u64,
+    /// ★R2.12 (优化 10): 清单可选声明的 SHA256 (小写十六进制)。
+    /// 有值就下载后强制校验, 不匹配直接删包报错 —— 将来做自动替换 exe 时的安全底线。
+    pub sha256: Option<String>,
 }
 
 /// 一份更新清单 (自建 JSON 或 GitHub Release 归一后的结果)。
@@ -277,6 +294,10 @@ fn parse_own_manifest(v: &Value) -> Result<Release> {
                 label,
                 url: url.trim().to_string(),
                 size: item.get("size").and_then(Value::as_u64).unwrap_or(0),
+                sha256: item
+                    .get("sha256")
+                    .and_then(Value::as_str)
+                    .and_then(sha256::normalize_expected),
             });
         }
     }
@@ -326,6 +347,9 @@ fn parse_github_release(v: &Value) -> Result<Release> {
                 label: ch.default_label().to_string(),
                 url: url.to_string(),
                 size: asset.get("size").and_then(Value::as_u64).unwrap_or(0),
+                /* GitHub Release 资产本身不带摘要; 若发布时把 SHA256SUMS.txt 一起传了,
+                 * 下面 attempts_checksums 会补上 (R2.12 预留, 目前留 None 不阻塞下载) */
+                sha256: None,
             });
         }
     }
@@ -473,11 +497,28 @@ pub struct Snapshot {
     /// 成功的清单源 (诊断用, 界面上藏在悬停提示里)
     pub source: Option<String>,
     pub last_check_unix: i64,
+    /// ★R2.12 (优化 10): 下次允许自动检查的时刻 (epoll ms 无关, 用 unix 秒)。
+    /// 失败后指数退避, 避免断网/GitHub 抽风时每次启动都反复卡住检查线程。
+    pub next_check_unix: i64,
 }
 
 struct Inner {
     snap: Snapshot,
     cancel: Option<Arc<AtomicBool>>,
+    /// ★R2.12 (优化 10): 连续失败次数 —— 决定退避时长, 成功一次即清零。
+    fail_streak: u32,
+}
+
+/// 检查失败后的退避时长 (秒): 1min → 5min → 15min → 30min → 1h 封顶。
+/// 断网时不再"每次启动都试一遍全套源", 但网络一旦恢复最多一小时就能自动重试。
+fn backoff_secs(streak: u32) -> i64 {
+    match streak {
+        0 | 1 => 60,
+        2 => 300,
+        3 => 900,
+        4 => 1800,
+        _ => 3600,
+    }
 }
 
 /// 检查更新管理器 —— 常驻 GUI 一侧, 状态放 `Arc<Mutex<..>>` 供后台线程回写。
@@ -506,12 +547,20 @@ impl UpdateManager {
             inner: Arc::new(Mutex::new(Inner {
                 snap: Snapshot::default(),
                 cancel: None,
+                fail_streak: 0,
             })),
         }
     }
 
     pub fn snapshot(&self) -> Snapshot {
         lock(&self.inner).snap.clone()
+    }
+
+    /// ★R2.12 (优化 10): 现在是否**允许**自动检查 —— 同时受"4 小时节流"与
+    /// "失败退避"约束。失败后不再每次启动都全套源重试一遍。
+    pub fn auto_check_due(&self) -> bool {
+        let snap = self.snapshot();
+        auto_check_due(snap.last_check_unix) && now_unix() >= snap.next_check_unix
     }
 
     /// 后台检查。已有检查/下载在跑时直接返回 false。
@@ -538,6 +587,9 @@ impl UpdateManager {
                             inner.snap.source = Some(url);
                             inner.snap.error = None;
                             inner.snap.last_check_unix = now_unix();
+                            /* ★R2.12 (优化 10): 成功即清零失败计数, 下次按正常 4 小时节流 */
+                            inner.fail_streak = 0;
+                            inner.snap.next_check_unix = now_unix() + AUTO_CHECK_INTERVAL_SECS;
                             crate::util::crash_log(
                                 "update",
                                 &format!("检查成功 (源 {} )", inner.snap.source.clone().unwrap_or_default()),
@@ -552,11 +604,17 @@ impl UpdateManager {
                 let mut inner = lock(&shared);
                 inner.snap.phase = Phase::Failed;
                 inner.snap.error = Some(last_error.clone());
-                /* ★v24.57 失败**不**推进时间戳。原来失败也写 `now_unix()`,
-                 * 结果玩家断网启动一次 → 之后 4 小时内再也不自动检查, 网络恢复
-                 * 了也不知道。现在失败保持旧时间戳: 下次启动会再试一次 (失败静默,
-                 * 不打扰), 会话内有 `update_started` 兜底, 不会反复请求。 */
-                crate::util::crash_log("update", &format!("检查失败: {last_error}"));
+                /* ★R2.12 (优化 10): 失败按指数退避 (1min→1h), 避免断网时反复卡线程;
+                 * 时间戳仍不推进 —— 网络恢复后下次启动会立刻重试。 */
+                inner.fail_streak = inner.fail_streak.saturating_add(1);
+                inner.snap.next_check_unix = now_unix() + backoff_secs(inner.fail_streak);
+                let streak = inner.fail_streak;
+                let wait = backoff_secs(streak);
+                drop(inner);
+                crate::util::crash_log(
+                    "update",
+                    &format!("检查失败 (第 {streak} 次, {wait}s 后重试): {last_error}"),
+                );
             });
         if spawned.is_err() {
             let mut inner = lock(&self.inner);
@@ -590,13 +648,20 @@ impl UpdateManager {
         let spawned = std::thread::Builder::new()
             .name("update-download".into())
             .spawn(move || {
-                let result = http::download(&pkg.url, &dest, &cancel, |done, total| {
-                    let mut inner = lock(&shared);
-                    inner.snap.done = done;
-                    if total > 0 {
-                        inner.snap.total = total;
-                    }
-                });
+                /* ★R2.12 (优化 10): 清单声明了 sha256 就强制校验 (没有则照旧下载) */
+                let result = http::download_verified(
+                    &pkg.url,
+                    &dest,
+                    pkg.sha256.as_deref(),
+                    &cancel,
+                    |done, total| {
+                        let mut inner = lock(&shared);
+                        inner.snap.done = done;
+                        if total > 0 {
+                            inner.snap.total = total;
+                        }
+                    },
+                );
                 let mut inner = lock(&shared);
                 inner.cancel = None;
                 match result {

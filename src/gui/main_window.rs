@@ -1257,6 +1257,27 @@ impl SorahkGui {
             if let Err(e) = self.app_state.reload_config(self.config.clone()) {
                 eprintln!("Failed to reload config after preset switch: {}", e);
             }
+            /* ★R2.12: 切预设会整份替换 mappings (可能来自手改配置/导入),
+             * 补一次组合键体检并就近提示; 只提示, 不改动用户配置。 */
+            let chord_issues =
+                crate::gui::gamepad_mapping::validate_all_chords(&self.config);
+            for issue in &chord_issues {
+                crate::vibration::vib_log(&format!(
+                    "[chord] preset-check | preset={} | {issue}",
+                    self.config.current_preset
+                ));
+            }
+            if let Some(first) = chord_issues.first() {
+                self.gamepad_warn = Some(format!(
+                    "预设「{}」的组合键有 {} 处需要注意: {}",
+                    self.config.current_preset,
+                    chord_issues.len(),
+                    first
+                ));
+                self.gamepad_warn_until = Some(
+                    std::time::Instant::now() + std::time::Duration::from_secs(8),
+                );
+            }
             if let Some(temp_config) = &mut self.temp_config {
                 temp_config.current_preset = self.config.current_preset.clone();
                 temp_config.presets = self.config.presets.clone();

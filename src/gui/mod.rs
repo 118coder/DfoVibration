@@ -9,7 +9,10 @@ pub mod device_manager_dialog;
 mod error_dialog;
 mod fonts;
 mod audio_page;
-mod gamepad_mapping;
+/* ★R2.12: 组合键纯逻辑 (validate_chord_trigger / validate_all_chords / chord_* )
+ * 要能被 tests/ 下的集成测试直接调用, 这里从私有模块放开为 pub。
+ * 模块内部仍按 mod.rs 的 pub use 导出, 不改变任何运行时行为。 */
+pub mod gamepad_mapping;
 mod keyboard_quick;
 mod hid_activation_dialog;
 mod guide;

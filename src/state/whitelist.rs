@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 
-use crate::util::likely;
 use crate::util;
 
 use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
@@ -27,6 +26,26 @@ pub struct ForegroundProbe {
     pub name: Option<String>,
     /// 拿路径失败的原因 (空 = 正常); 只用于日志/界面提示
     pub note: String,
+}
+
+/// ★R2.12 (优化 8) 前台探测缓存条目: 按窗口句柄命中, 不再按固定 50ms 重查。
+/// `probe = None` 也是一种结果 (取不到前台窗口), 同样缓存, 避免空转重试。
+pub(crate) struct ForegroundCache {
+    /// 缓存对应的前台窗口句柄 (0 = 当时没有前台窗口)
+    pub(crate) hwnd: isize,
+    pub(crate) probe: Option<ForegroundProbe>,
+    /// 上次真正探测的时刻 (2s 兜底用)
+    pub(crate) at: Instant,
+}
+
+impl Default for ForegroundCache {
+    fn default() -> Self {
+        Self {
+            hwnd: -1,
+            probe: None,
+            at: Instant::now(),
+        }
+    }
 }
 
 impl AppState {
@@ -201,6 +220,37 @@ impl AppState {
         Self::whitelist_entry_matches_in(false, entry, full_path)
     }
 
+    /// 前台窗口句柄 (GetForegroundWindow 是微秒级廉价调用, 用来判断"要不要重新探测")。
+    fn foreground_hwnd() -> isize {
+        unsafe { GetForegroundWindow().0 as isize }
+    }
+
+    /// ★R2.12 (优化 8) 带缓存的前台探测 —— 连发白名单与音频白名单**共用同一份判定**。
+    ///
+    /// 原来 `is_process_whitelisted` 每 50ms 就 OpenProcess + QueryFullProcessImageName,
+    /// 高连发时一小时几万次系统调用; 音频震动侧另有一套 `foreground_probe()` 各探一遍,
+    /// 于是出现过「连发放行、震动不放行」的怪事。现在:
+    /// - 只有前台窗口变了 (HWND 不同) 才真正探测;
+    /// - 同一窗口内有 2s 兜底 (窗口标题/权限变化时兜一下);
+    /// - 两份白名单读同一份缓存, 结论必然一致。
+    pub(crate) fn foreground_probe_cached(&self) -> Option<ForegroundProbe> {
+        const BACKSTOP: Duration = Duration::from_secs(2);
+        let hwnd = Self::foreground_hwnd();
+        {
+            let cache = util::read_guard(&self.cached_process_info);
+            if cache.hwnd == hwnd && cache.at.elapsed() < BACKSTOP {
+                return cache.probe.clone();
+            }
+        }
+        let probe = Self::foreground_probe();
+        *util::write_guard(&self.cached_process_info) = ForegroundCache {
+            hwnd,
+            probe: probe.clone(),
+            at: Instant::now(),
+        };
+        probe
+    }
+
     /// Check if current foreground process is in whitelist (empty whitelist = all allowed)
     #[inline]
     pub(crate) fn is_process_whitelisted(&self) -> bool {
@@ -214,35 +264,19 @@ impl AppState {
             return true;
         }
 
-        const CACHE_DURATION_MS: u64 = 50;
-        let now = Instant::now();
-
-        let process_path = {
-            let cache = util::read_guard(&self.cached_process_info);
-            let (cached_path, cached_time) = &*cache;
-
-            if likely(now.duration_since(*cached_time) < Duration::from_millis(CACHE_DURATION_MS)) {
-                // Cache hit: return cached path without write lock
-                cached_path.clone()
-            } else {
-                // Cache miss: need refresh
-                drop(cache);
-                let new_path = Self::get_foreground_process_name();
-                *util::write_guard(&self.cached_process_info) = (new_path.clone(), now);
-
-                new_path
-            }
+        /* ★R2.12 (优化 8): 走缓存, 不再每次注入都开进程查系统 */
+        let Some(info) = self.foreground_probe_cached() else {
+            // 拿不到前台窗口 (桌面切换/锁屏瞬间): 放行, 不要把用户按键吞掉
+            return true;
         };
-
-        // Check if process is in whitelist (任一条目命中即放行)
+        // 先按完整路径比, 拿不到路径 (高权限/受保护进程) 退回文件名比 —— 与音频侧同口径
+        let target = info.path.clone().or_else(|| info.name.clone());
+        let Some(path) = target else {
+            return true;
+        };
         let simple = self.whitelist_simple_mode.load(Ordering::Relaxed);
-        if let Some(path) = process_path {
-            whitelist
-                .iter()
-                .any(|p| Self::whitelist_entry_matches_in(simple, p, Some(&path)))
-        } else {
-            // If we can't get process path, allow by default
-            true
-        }
+        whitelist
+            .iter()
+            .any(|p| Self::whitelist_entry_matches_in(simple, p, Some(&path)))
     }
 }

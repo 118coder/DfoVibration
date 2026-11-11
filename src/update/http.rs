@@ -291,7 +291,22 @@ pub fn download(
     url: &str,
     dest: &Path,
     cancel: &AtomicBool,
-    mut progress: impl FnMut(u64, u64),
+    progress: impl FnMut(u64, u64),
+) -> Result<u64> {
+    download_verified(url, dest, None, cancel, progress)
+}
+
+/// ★R2.12 (优化 10) 下载 + SHA256 校验。
+///
+/// `expected_sha256` 有值时必须匹配, 否则删包报错 —— 将来自动替换 exe 前先过这一关,
+/// 被中间人换包、传输损坏、磁盘写坏都能在"跑起来之前"拦住。
+/// 校验发生在`.part → dest` 改名**之前**, 所以校验失败绝不会留下一个"看起来正常"的坏包。
+pub fn download_verified(
+    url: &str,
+    dest: &Path,
+    expected_sha256: Option<&str>,
+    cancel: &AtomicBool,
+    progress: impl FnMut(u64, u64),
 ) -> Result<u64> {
     let resp = request(url)?;
     /* ★v24.57 记下服务端声明的长度: 80MB 的包走家用宽带, 断流并不罕见,
@@ -316,7 +331,7 @@ pub fn download(
             }
             file.write_all(chunk).context("写入文件失败 (磁盘满/无权限?)")
         },
-        |done, total| progress(done, total),
+        progress,
     );
 
     drop(file);
@@ -325,6 +340,13 @@ pub fn download(
             if declared > 0 && n != declared {
                 let _ = std::fs::remove_file(&part);
                 bail!("下载不完整: 服务端声明 {declared} 字节, 实际只收到 {n} 字节（网络中断，请重试）");
+            }
+            /* ★R2.12 (优化 10): 校验放在改名之前 —— 失败只会留下可删的 .part */
+            if let Some(expected) = expected_sha256 {
+                if let Err(e) = crate::update::sha256::verify_file(&part, expected) {
+                    let _ = std::fs::remove_file(&part);
+                    bail!("下载校验失败, 已删除文件: {e}");
+                }
             }
             std::fs::rename(&part, dest)
                 .with_context(|| format!("无法落盘到 {}", dest.display()))?;

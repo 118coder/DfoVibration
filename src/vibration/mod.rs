@@ -39,6 +39,9 @@ use params::*;
 /* 共享基础设施对 crate 内其它模块的公开面 (保持迁移前的调用点不变) */
 pub use core::now_ms_u64;
 pub use core::vib_log;
+/* ★R2.12 (优化 9): 分级日志对外出口 —— vib_debug / vib_warn / vib_error
+ * 与 vib_log 同一文件, 行首带级别标签; ERROR 另存 crash.log。 */
+pub use core::{vib_debug, vib_error, vib_log_at, vib_warn, LogLevel};
 pub use core::{invalidate_xinput_write_cache, FONT_ATTACK, FONT_EFFECT, FONT_HIT, FONT_HP, FONT_SPECIAL, FONT_STATE};
 
 use core::*;
@@ -256,6 +259,13 @@ pub fn run(state: Arc<AppState>) {
              * (DLL 重启窗口每轮都判 invalid 时不再刷屏; crash.log 是 panic 日志,
              * 保持信噪比) */
             let mut ring_prev_ok = true;
+            /* ★R2.12 (优化 3): 首次挂上共享内存的"第一次读"标记。
+             * 现象: crash.log 几乎每次启动都有一条 VIB_RING_INVALID cap=262144
+             * head=0 tail=262112 —— 那是 DLL 上次退出时留在共享内存里的旧 tail,
+             * 属于正常残留, 不是异常。原来它在第一次读就被当成错误记进 crash.log,
+             * 真出问题时反而埋在一堆假异常里。现在: 挂载后的第一次读静默对齐
+             * (tail=head), 只有运行过程中再次出现非法状态才算真异常。 */
+            let mut ring_first_read = false;
             /* 输出闸门诊断: 翻转才记 [GATE] 行 (防刷屏), 见循环内注释 */
             let mut last_gate_state: Option<(bool, bool, bool)> = None;
             /* 路线诊断: 切换时记一行, 便于日志判读是哪条引擎在跑 */
@@ -367,6 +377,8 @@ pub fn run(state: Arc<AppState>) {
                                 if s.magic == VIB_SHM_MAGIC && s.version == VIB_SHM_VERSION {
                                     shm_handle = Some(h);
                                     shm_view = Some(view);
+                                    /* ★R2.12 (优化 3): 新挂载 → 下一次读按"首读"处理 */
+                                    ring_first_read = true;
                                 } else {
                                     let _ = unsafe { UnmapViewOfFile(view) };
                                     let _ = unsafe { CloseHandle(h) };
@@ -476,6 +488,11 @@ pub fn run(state: Arc<AppState>) {
                             if got > 0 {
                                 state.vibration_events_received.fetch_add(got as u64, Ordering::Relaxed);
                             }
+                        } else if ring_first_read {
+                            /* ★R2.12 (优化 3): 首次挂载对齐 —— DLL 上次退出时留下的旧 tail
+                             * 属正常残留 (实测 head=0 tail=262112), 静默归零即可;
+                             * 记进 crash.log 只会让真正的异常被假警报埋掉。 */
+                            s.ring.tail.store(head, Ordering::Release);
                         } else {
                             // 头尾异常(DLL 重启 head 回绕 / 软件漏读落后超界): 不能一直丢
                             // (会让震动中断), 把 tail 同步到 head 丢弃积压, 下轮立即恢复读取。
@@ -488,7 +505,9 @@ pub fn run(state: Arc<AppState>) {
                             }
                             s.ring.tail.store(head, Ordering::Release);
                         }
-                        ring_prev_ok = ring_ok;
+                        /* 首读对齐后视作已恢复: 下一轮仍非法才算真异常 */
+                        ring_prev_ok = ring_ok || ring_first_read;
+                        ring_first_read = false;
                     } else {
                         let _ = unsafe { UnmapViewOfFile(view) };
                         if let Some(h) = shm_handle.take() {

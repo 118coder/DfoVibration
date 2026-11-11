@@ -218,35 +218,103 @@ pub fn panic_payload_str(payload: &(dyn Any + Send)) -> String {
     }
 }
 
+/// ★R2.12 (优化 7) 已放弃的后台线程 (连续 panic 超过上限, 进程仍存活但该功能已停)。
+/// 界面据此提示「N 个后台功能已停止」并给出重启按钮, 不再只往 crash.log 写一行没人看。
+static STOPPED_THREADS: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+/// 重启入口: 线程名 → 可重新拉起该线程的闭包 (内部共享同一份用户闭包)。
+type Restarter = std::sync::Arc<dyn Fn() + Send + Sync>;
+static THREAD_RESTARTERS: std::sync::Mutex<Vec<(&'static str, Restarter)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// 当前已停止的后台功能名单 (空 = 全部正常)。
+pub fn stopped_threads() -> Vec<&'static str> {
+    lock_guard(&STOPPED_THREADS).clone()
+}
+
+/// 重启一个已放弃的后台线程。返回 true 表示找到了对应功能并已重新拉起。
+pub fn restart_thread(name: &str) -> bool {
+    let restarter = {
+        let regs = lock_guard(&THREAD_RESTARTERS);
+        regs.iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, r)| std::sync::Arc::clone(r))
+    };
+    let Some(r) = restarter else {
+        return false;
+    };
+    lock_guard(&STOPPED_THREADS).retain(|n| *n != name);
+    r();
+    crash_log("SUPERVISOR_RESTART", &format!("按用户请求重启后台线程 {name}"));
+    true
+}
+
 /// 受监督线程: panic 被捕获(日志由 main 里的全局 panic hook 统一记录),
 /// 线程安全退出; 若闭包以 panic 结束则自动重启(最多 MAX 次), 进程永不死。
 ///
 /// 闭包正常返回(Ok)表示该线程职责正常结束, 不重启。
-pub fn spawn_supervised<F>(name: &'static str, mut f: F)
+///
+/// ★R2.12 (优化 7): 放弃重启时不再"静默"—— 记 ERROR 日志 + 登记到
+/// [`stopped_threads`], 界面侧边栏会亮一个「后台功能已停止」提示, 点一下即
+/// [`restart_thread`] 重新拉起, 不用重启整个程序。
+pub fn spawn_supervised<F>(name: &'static str, f: F)
+where
+    F: FnMut() + Send + 'static,
+{
+    let shared = std::sync::Arc::new(std::sync::Mutex::new(f));
+    /* 登记重启入口 (只登记一次: 同名线程重复 spawn 时保留最初的闭包) */
+    {
+        let mut regs = lock_guard(&THREAD_RESTARTERS);
+        if !regs.iter().any(|(n, _)| *n == name) {
+            let body = std::sync::Arc::clone(&shared);
+            regs.push((
+                name,
+                std::sync::Arc::new(move || {
+                    let body = std::sync::Arc::clone(&body);
+                    let _ = std::thread::Builder::new()
+                        .name(name.to_string())
+                        .spawn(move || supervise_loop(name, body));
+                }),
+            ));
+        }
+    }
+    let _ = std::thread::Builder::new()
+        .name(name.to_string())
+        .spawn(move || supervise_loop(name, shared));
+}
+
+/// 受监督线程的执行体 (panic 捕获 + 有限次重启 + 放弃时上报)。
+fn supervise_loop<F>(name: &'static str, body: std::sync::Arc<std::sync::Mutex<F>>)
 where
     F: FnMut() + Send + 'static,
 {
     const MAX_RESTARTS: u32 = 10;
-    let _ = std::thread::Builder::new()
-        .name(name.to_string())
-        .spawn(move || {
-            let mut restarts: u32 = 0;
-            loop {
-                let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut f));
-                if r.is_ok() {
-                    break; // 正常结束, 不再重启
-                }
-                restarts += 1;
-                if restarts > MAX_RESTARTS {
-                    crash_log(
-                        "SUPERVISOR_GIVE_UP",
-                        &format!("{name} 连续 panic {MAX_RESTARTS} 次, 放弃重启(进程保持存活)"),
-                    );
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(300));
+    let mut restarts: u32 = 0;
+    loop {
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut f = lock_guard(&body);
+            (*f)();
+        }));
+        if r.is_ok() {
+            break; // 正常结束, 不再重启
+        }
+        restarts += 1;
+        if restarts > MAX_RESTARTS {
+            crash_log(
+                "SUPERVISOR_GIVE_UP",
+                &format!("{name} 连续 panic {MAX_RESTARTS} 次, 放弃重启(进程保持存活)"),
+            );
+            crate::vibration::vib_error(&format!(
+                "[SUPERVISOR] {name} 连续崩溃 {MAX_RESTARTS} 次已停止 —— 界面可一键重启"
+            ));
+            let mut list = lock_guard(&STOPPED_THREADS);
+            if !list.contains(&name) {
+                list.push(name);
             }
-        });
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
 }
 
 /// 防中毒锁获取: 锁被其它线程 panic 弄脏时仍取出内部数据继续运行(降级而非 panic)。

@@ -16,6 +16,61 @@ use crate::util::{likely, unlikely};
 /// std mpsc 无队列长度查询, 用原子计数代替; 积压超阈值触发合并(见 turbo_worker)。
 static EVENT_BACKLOG: AtomicUsize = AtomicUsize::new(0);
 
+/* ═══════════ ★R2.12 (优化 6) 背压阈值自适应 ═══════════
+ *
+ * 原来写死 512: 慢机器 (单事件处理 2ms) 要攒到 512 条才开始合并 —— 早已过时;
+ * 快机器 (50µs) 反而每 25ms 就合并一次, 白白丢事件。现在按「最近单事件处理耗时」
+ * (EWMA) 反推阈值: 目标 = 积压约等于 30ms 的处理量。
+ *   ewma=20µs  → 1500 (快机器尽量不丢)
+ *   ewma=100µs →  300
+ *   ewma≥235µs →  128 (慢机器尽早合并, 松手立刻响应)
+ * 可用环境变量 SORAHK_BACKLOG_THRESHOLD 强制指定 (排障/压测用)。
+ */
+const BACKLOG_MIN: u32 = 128;
+const BACKLOG_MAX: u32 = 2048;
+/// 目标积压时长 (µs): 阈值 = TARGET / 单事件耗时
+const BACKLOG_TARGET_US: u64 = 30_000;
+static BACKLOG_THRESHOLD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(512);
+/// 单事件处理耗时 EWMA (µs; 0 = 还没采样)
+static HANDLE_US_EWMA: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static BACKLOG_SAMPLES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// 诊断计数: 触发合并次数 / 合并时丢弃的事件数
+static BACKLOG_COALESCES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static BACKLOG_DROPPED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 当前生效的背压阈值 (环境变量优先, 否则自适应值)。
+fn backlog_threshold() -> usize {
+    static FORCED: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let forced = *FORCED.get_or_init(|| {
+        std::env::var("SORAHK_BACKLOG_THRESHOLD")
+            .ok()
+            .and_then(|v| v.trim().parse::<u32>().ok())
+            .map(|v| v.clamp(BACKLOG_MIN, 65_536))
+    });
+    match forced {
+        Some(v) => v as usize,
+        None => BACKLOG_THRESHOLD.load(Ordering::Relaxed) as usize,
+    }
+}
+
+/// 采样一次事件处理耗时并按 EWMA 更新阈值 (每 32 个样本才写一次原子, 热路径零负担)。
+fn note_handle_time(elapsed: Duration) {
+    /* 夹在 [10µs, 5ms]: 长 duration 的完整注入周期 (含 sleep) 不代表吞吐能力,
+     * 夹上界避免一次 80ms 的奔跑双击把 EWMA 永久拖到最低档 */
+    let us = elapsed.as_micros().clamp(10, 5_000) as u32;
+    let prev = HANDLE_US_EWMA.load(Ordering::Relaxed);
+    let next = if prev == 0 { us } else { (prev * 3 + us) / 4 };
+    HANDLE_US_EWMA.store(next, Ordering::Relaxed);
+    if BACKLOG_SAMPLES.fetch_add(1, Ordering::Relaxed) % 32 != 0 {
+        return;
+    }
+    let target = (BACKLOG_TARGET_US / next.max(1) as u64).clamp(
+        BACKLOG_MIN as u64,
+        BACKLOG_MAX as u64,
+    ) as u32;
+    BACKLOG_THRESHOLD.store(target, Ordering::Relaxed);
+}
+
 unsafe impl Send for KeyboardHook {}
 
 // Multi-worker dispatcher supporting both keyboard and mouse
@@ -445,8 +500,22 @@ impl KeyboardHook {
             // 长 duration 的完整注入周期占住) —— 快速清空队列、只保留每个设备
             // 最新的 按下/松开 状态后合并处理; 松开必然保留, 松手立即响应,
             // 从根上消除"无界积压 → 程序卡住/松手后狂按"。
-            if unlikely(EVENT_BACKLOG.load(Ordering::Relaxed) >= 512) {
-                Self::drain_and_coalesce(&state, &mut device_states, &event_rx);
+            // ★R2.12 (优化 6): 阈值不再是写死的 512, 见 backlog_threshold()。
+            if unlikely(EVENT_BACKLOG.load(Ordering::Relaxed) >= backlog_threshold()) {
+                let dropped = Self::drain_and_coalesce(&state, &mut device_states, &event_rx);
+                if dropped > 0 {
+                    let n = BACKLOG_COALESCES.fetch_add(1, Ordering::Relaxed) + 1;
+                    let total = BACKLOG_DROPPED.fetch_add(dropped as u64, Ordering::Relaxed) + dropped as u64;
+                    /* 只在第一次和每 200 次记一条: 紧张时合并会持续发生, 逐条记会自己刷爆日志 */
+                    if n == 1 || n % 200 == 0 {
+                        crate::vibration::vib_warn(&format!(
+                            "[BACKLOG] 第 {n} 次背压合并: 本轮丢弃 {dropped} 条中间事件, 累计 {total} 条 \
+                             (阈值 {} / 单事件约 {}µs)",
+                            backlog_threshold(),
+                            HANDLE_US_EWMA.load(Ordering::Relaxed)
+                        ));
+                    }
+                }
                 continue;
             }
 
@@ -455,7 +524,9 @@ impl KeyboardHook {
             match event_rx.recv_timeout(timeout_duration) {
                 Ok(event) => {
                     EVENT_BACKLOG.fetch_sub(1, Ordering::Relaxed);
+                    let t0 = Instant::now();
                     Self::handle_input_event(&state, &mut device_states, event);
+                    note_handle_time(t0.elapsed());
                 }
                 Err(_) => Self::handle_timeout(&state, &mut device_states),
             }
@@ -476,15 +547,19 @@ impl KeyboardHook {
 
     /// 背压合并(见 turbo_worker 主循环): 快速清空积压队列, 只保留每个设备
     /// 最新的 按下/松开 状态; 移动/滚动事件在背压期间直接丢弃(限流, 不积压)。
+    ///
+    /// 返回本轮**被丢弃的中间事件数** (★R2.12 优化 6: 用于记账, 原来一律静默)。
     #[inline]
     fn drain_and_coalesce(
         state: &Arc<AppState>,
         device_states: &mut HashMap<InputDevice, DevRuntime>,
         event_rx: &Receiver<InputEvent>,
-    ) {
+    ) -> usize {
         let mut latest: HashMap<InputDevice, bool> = HashMap::with_capacity(16);
+        let mut drained = 0usize;
         while let Ok(event) = event_rx.try_recv() {
             EVENT_BACKLOG.fetch_sub(1, Ordering::Relaxed);
+            drained += 1;
             match event {
                 InputEvent::Pressed(device) | InputEvent::RunTap(device) => {
                     latest.insert(device, true);
@@ -494,6 +569,7 @@ impl KeyboardHook {
                 }
             }
         }
+        let kept = latest.len();
         // 松开状态必然保留 → 松手立即停止; 仍按下的重新走正常处理路径
         for (device, pressed) in latest {
             if pressed {
@@ -502,6 +578,7 @@ impl KeyboardHook {
                 Self::handle_input_event(state, device_states, InputEvent::Released(device));
             }
         }
+        drained.saturating_sub(kept)
     }
 
     #[inline]

@@ -60,11 +60,10 @@ impl SorahkGui {
     pub(crate) fn tick_update(&mut self) {
         if !self.update_started {
             self.update_started = true;
-            /* 启动自动检查: 只在开关打开且距上次成功超过 4 小时时跑 (省流量, 也避免
-             * 频繁启动时把 GitHub 的匿名额度烧光)。失败不提示 —— 静默。 */
-            if self.config.update.auto_check
-                && crate::update::auto_check_due(self.config.update.last_check_unix)
-            {
+            /* 启动自动检查: 只在开关打开、距上次成功超过 4 小时、且不在失败退避期时跑
+             * (省流量, 也避免频繁启动时把 GitHub 的匿名额度烧光)。失败不提示 —— 静默。
+             * ★R2.12 (优化 10): 用 manager 自带的 auto_check_due, 断网时按指数退避。 */
+            if self.config.update.auto_check && self.update.auto_check_due() {
                 self.update
                     .check(self.config.update.manifest_url.clone());
             }

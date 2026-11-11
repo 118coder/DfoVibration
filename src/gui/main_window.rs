@@ -1346,6 +1346,35 @@ impl SorahkGui {
                     ("震动 关", th.hint)
                 };
                 th.badge(ui, vtext, vcolor, if vib_on { th.good_soft } else { th.faint });
+
+                /* ★R2.12 (优化 7): 后台线程彻底挂掉必须让用户看得见 ——
+                 * 原来只在 crash.log 写一行, 玩家可能几天后才发现"震动悄悄没了"。 */
+                let stopped = crate::util::stopped_threads();
+                if !stopped.is_empty() {
+                    ui.add_space(theme::SP_XS);
+                    th.badge(
+                        ui,
+                        &format!("{} 个后台功能已停止", stopped.len()),
+                        th.warn,
+                        th.warn_soft,
+                    );
+                    if ui
+                        .add(th.ghost_button("重启该功能"))
+                        .on_hover_text(format!("已停止: {}", stopped.join(", ")))
+                        .clicked()
+                    {
+                        for name in &stopped {
+                            crate::util::restart_thread(name);
+                        }
+                    }
+                }
+
+                /* ★R2.12 (优化 5): 注入保险正在冷却 → 让用户知道"按键没反应"是保护而非卡死 */
+                let (_, _, protecting) = crate::state::injection_guard_stats();
+                if protecting {
+                    ui.add_space(theme::SP_XS);
+                    th.badge(ui, "注入保护中", th.warn, th.warn_soft);
+                }
             });
         });
     }

@@ -5,6 +5,11 @@ name: build-windows
 #
 # ★v24.60 单变体 (用户拍板): 音频震动引擎改为纯算法内嵌 (无 YAMNet/MRX 模型,
 # 无 tract-onnx), 三变体 (embedded/mod/slim) 合并为单 exe, 无需下载任何模型。
+#
+# ★R2.12 (优化 1): 三件事
+#   ① Rust 编译缓存 (cargo 注册表 + target), 冷启动 5~8 分钟 → 增量 1~2 分钟;
+#   ② 产物名不再写死多处: 版本号从 src/update/mod.rs 的 APP_VERSION 单点读取;
+#   ③ release 构建前先跑一遍完整测试 —— 改坏代码在合并前就被挡住, 不用等发版才发现。
 
 on:
   push: # 任意分支触发
@@ -13,6 +18,8 @@ on:
 env:
   RUSTUP_TOOLCHAIN: "1.96.0"
   CARGO_HTTP_TIMEOUT: "120"
+  # 需要强制清空编译缓存时改这个值 (它是缓存 key 的一部分)
+  RUST_CACHE_VERSION: "v1"
 
 jobs:
   build:
@@ -20,8 +27,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 版本号单一来源: APP_VERSION (与「关于」框/更新检查同口径)
+      # 注意: 步骤名里不能出现「冒号+空格」, 否则整个 workflow 解析失败 (startup failure)
+      - name: Resolve version from APP_VERSION
+        shell: pwsh
+        run: |
+          $m = Select-String -Path "src/update/mod.rs" -Pattern 'APP_VERSION:\s*&str\s*=\s*"([^"]+)"'
+          if (-not $m) { throw "src/update/mod.rs 里找不到 APP_VERSION" }
+          $ver = $m.Matches[0].Groups[1].Value
+          "SORAHK_VER=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "SORAHK_EXE=DfoVibration-Sorahk_$ver.exe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "resolved version = $ver"
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ env.RUST_CACHE_VERSION }}
+
       - name: Install pinned toolchain (MSVC host, 与 ci.yml 同配方)
         run: rustup toolchain install 1.96.0
+
+      - name: Run full test suite (构建前挡坏代码)
+        run: cargo test --profile iter --tests --no-fail-fast -- --skip poller_captures_synthesized_keys --skip stuck_key
 
       - name: Build (release)
         run: cargo build --release
@@ -29,15 +56,16 @@ jobs:
       - name: Rename artifact + SHA256
         shell: pwsh
         run: |
-          Rename-Item "target/release/sorahk.exe" "DfoVibration-Sorahk_R2.11.exe"
-          $hash = (Get-FileHash "target/release/DfoVibration-Sorahk_R2.11.exe" -Algorithm SHA256).Hash.ToLower()
-          "$hash  DfoVibration-Sorahk_R2.11.exe" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
+          $name = $env:SORAHK_EXE
+          Rename-Item "target/release/sorahk.exe" $name
+          $hash = (Get-FileHash "target/release/$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
           Get-Content "target/release/SHA256SUMS.txt"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: "DfoVibration-Sorahk_R2.11.exe"
+          name: ${{ env.SORAHK_EXE }}
           path: |
-            target/release/DfoVibration-Sorahk_R2.11.exe
+            target/release/${{ env.SORAHK_EXE }}
             target/release/SHA256SUMS.txt

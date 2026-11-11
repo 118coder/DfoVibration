@@ -8,7 +8,6 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Instant;
 
 use smallvec::SmallVec;
 
@@ -30,6 +29,40 @@ static INJECTION_WINDOW_START: AtomicU64 = AtomicU64::new(0);
 static INJECTION_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
 static INJECTION_BLOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
 
+/* ★R2.12 (优化 5) 注入保险记账 —— 原来触发保护后什么都不记, 用户报
+ * 「突然不连发了 / 按键丢了」只能靠猜。现在: 触发时间、期间被丢弃的注入数、
+ * 恢复时间各写一条日志, 并在界面上给一个"注入保护中"的小胶囊。
+ * 计数器只增不减 (诊断用), 不参与任何功能判断。 */
+static INJECTION_COOLDOWNS: AtomicU64 = AtomicU64::new(0);
+static INJECTION_TOTAL_DROPPED: AtomicU64 = AtomicU64::new(0);
+static INJECTION_WINDOW_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// 最近一次触发保护的时刻 (epoch ms; 0 = 从未触发)。
+static INJECTION_LAST_TRIP: AtomicU64 = AtomicU64::new(0);
+
+/// 本次冷却结束的结算动作 (只做一次: 用 swap 抢所有权, 并发调用不会重复记账)。
+fn settle_injection_cooldown(now: u64) {
+    if INJECTION_BLOCKED_UNTIL.swap(0, Ordering::Relaxed) == 0 {
+        return;
+    }
+    let dropped = INJECTION_WINDOW_DROPPED.swap(0, Ordering::Relaxed);
+    let trip_at = INJECTION_LAST_TRIP.load(Ordering::Relaxed);
+    let total = INJECTION_COOLDOWNS.load(Ordering::Relaxed);
+    crate::vibration::vib_warn(&format!(
+        "[INJECT-GUARD] 保护结束: 本次冷却丢弃 {dropped} 次注入, 累计触发 {total} 次, \
+         本次持续 {}ms (触发时刻 {trip_at})",
+        now.saturating_sub(trip_at)
+    ));
+}
+
+/// 注入保险的累计统计 (触发次数, 累计丢弃, 是否正在保护) —— 界面提示用。
+pub fn injection_guard_stats() -> (u64, u64, bool) {
+    (
+        INJECTION_COOLDOWNS.load(Ordering::Relaxed),
+        INJECTION_TOTAL_DROPPED.load(Ordering::Relaxed),
+        injection_cooldown_active(),
+    )
+}
+
 /// 每次注入前调用; 返回 false 表示本次注入应被丢弃(处于冷却期)。
 /// 当前纪元毫秒(注入保险与冷却查询共用)。
 #[inline]
@@ -44,8 +77,13 @@ fn now_ms() -> u64 {
 pub(crate) fn injection_guard_ok() -> bool {
     let now = now_ms();
     if now < INJECTION_BLOCKED_UNTIL.load(Ordering::Relaxed) {
+        /* ★R2.12 (优化 5): 冷却期丢弃要记账, 否则用户只看到"按键没反应" */
+        INJECTION_WINDOW_DROPPED.fetch_add(1, Ordering::Relaxed);
+        INJECTION_TOTAL_DROPPED.fetch_add(1, Ordering::Relaxed);
         return false;
     }
+    /* 冷却刚结束 (BLOCKED_UNTIL 还没被清算) → 补一条"恢复"记录 */
+    settle_injection_cooldown(now);
 
     let window_start = INJECTION_WINDOW_START.load(Ordering::Relaxed);
     if now - window_start >= INJECTION_WINDOW_MS {
@@ -58,6 +96,14 @@ pub(crate) fn injection_guard_ok() -> bool {
         // 超限 → 进入冷却, 强制暂停注入, 避免淹没系统输入
         INJECTION_BLOCKED_UNTIL.store(now + INJECTION_WINDOW_MS, Ordering::Relaxed);
         INJECTION_WINDOW_COUNT.store(0, Ordering::Relaxed);
+        INJECTION_WINDOW_DROPPED.store(0, Ordering::Relaxed);
+        INJECTION_LAST_TRIP.store(now, Ordering::Relaxed);
+        INJECTION_COOLDOWNS.fetch_add(1, Ordering::Relaxed);
+        /* 只在进入冷却那一刻记一条 (冷却期内的高频丢弃由结算行汇总) */
+        crate::vibration::vib_warn(&format!(
+            "[INJECT-GUARD] 一秒内注入超过 {INJECTION_MAX_PER_WINDOW} 次 → 触发保护, \
+             冷却 {INJECTION_WINDOW_MS}ms (期间注入丢弃、真实按键整体透传)"
+        ));
         return false;
     }
     true
@@ -213,10 +259,15 @@ pub struct AppState {
     pub vib_legacy_client: std::sync::atomic::AtomicBool,
     /// Cached foreground process **full image path** with timestamp
     /// (★白名单路径条目按完整路径匹配, 文件名在匹配时从路径提取)
-    cached_process_info: RwLock<(Option<String>, Instant)>,
+    /// ★R2.12 (优化 8): 前台窗口探测缓存 (按 HWND 命中; 连发与音频白名单共用)
+    cached_process_info: RwLock<crate::state::whitelist::ForegroundCache>,
     /// ★v24.31 映射配置修订号: reload_config 时 +1。worker 里"锁定"的注入键
     /// 在配置变更后强制解锁松开 (映射已改/已删, 再按着就永远悬空 = 卡键)。
     mappings_revision: std::sync::atomic::AtomicU64,
+    /// ★R2.12 (优化 2): 配置代次 —— 每次 reload_config 成功切换后 +1。
+    /// 下游缓存 (XInput 组合位图 / 切换键掩码 / 独占键表) 都只认同一个代次,
+    /// 排查「是不是哪个缓存没跟上新配置」时有据可查, 不用再靠猜。
+    config_epoch: std::sync::atomic::AtomicU64,
     /// ★v24.31 序列宏: 全局暂停 (KeySequenceToggle/Pause/Continue 切换)
     pub sequence_paused: std::sync::atomic::AtomicBool,
     /// ★v24.31 按设备登记的执行中序列 (同一设备上一条没跑完时忽略新触发)
@@ -622,8 +673,11 @@ impl AppState {
             input_mappings,
             worker_pool: OnceLock::new(),
             notification_sender: std::sync::Mutex::new(None),
-            cached_process_info: RwLock::new((None, Instant::now())),
+            cached_process_info: RwLock::new(
+                crate::state::whitelist::ForegroundCache::default(),
+            ),
             mappings_revision: std::sync::atomic::AtomicU64::new(0),
+            config_epoch: std::sync::atomic::AtomicU64::new(1),
             sequence_paused: std::sync::atomic::AtomicBool::new(false),
             sequence_runs: std::sync::Mutex::new(HashMap::new()),
             key_record: std::sync::Mutex::new(None),
@@ -857,7 +911,24 @@ impl AppState {
     ///
     /// Returns an error if the new toggle key is invalid or mappings cannot be created.
     pub fn reload_config(&self, config: AppConfig) -> anyhow::Result<()> {
+        /* ═══ ★R2.12 (优化 2): 两阶段切换 ═══
+         * 阶段 A —— 所有**可能失败**的构建先做完 (不碰任何共享状态):
+         *   原来 `create_input_mappings` / 捕获模式解析写在中段, 一旦返回 Err,
+         *   前面的 store 已经生效, 共享状态会停在「一半新、一半旧」的中间态,
+         *   输入线程正好在那一瞬读就会触发**已经改掉**的映射。
+         * 阶段 B —— 下面的所有 store 都不再失败, 一路切到底。 */
+        let new_input_mappings = Self::create_input_mappings(&config)?;
+        let xinput_capture_mode =
+            crate::config::XInputCaptureMode::from_str(&config.xinput_capture_mode)?;
+        /* 原来这里是 `unwrap()` —— 配置里写错一个字符就 panic。坏值退回当前值。 */
+        let rawinput_capture_mode = CaptureMode::from_str(&config.rawinput_capture_mode)
+            .unwrap_or_else(|_| *util::read_guard(&self.rawinput_capture_mode));
+        let chord_exclusive = Self::build_chord_exclusive(&config);
+        let has_semantic = Self::config_has_semantic_mappings(&config);
+        /* 切换键解析也放在阶段 A (解析失败直接返回, 缓存已在函数内做到"要么全新要么不变") */
         Self::update_switch_key_cache(&self.switch_key_cache, &config.switch_key)?;
+
+        /* ═══ 阶段 B: 整体切换 (全部不可失败) ═══ */
 
         // Update language
         self.language
@@ -885,13 +956,11 @@ impl AppState {
             .store(config.combo_key_gap_ms, Ordering::Relaxed);
 
         // Update capture modes (防中毒锁: 锁被 panic 弄脏时继续运行)
-        *util::write_guard(&self.rawinput_capture_mode) =
-            CaptureMode::from_str(&config.rawinput_capture_mode).unwrap();
-        *util::write_guard(&self.xinput_capture_mode) =
-            crate::config::XInputCaptureMode::from_str(&config.xinput_capture_mode)?;
+        /* ★R2.12: 值已在阶段 A 解析好, 这里只做 store —— 不会再中途失败或 panic */
+        *util::write_guard(&self.rawinput_capture_mode) = rawinput_capture_mode;
+        *util::write_guard(&self.xinput_capture_mode) = xinput_capture_mode;
 
         // Update mappings (lock-free concurrent HashMap)
-        let new_input_mappings = Self::create_input_mappings(&config)?;
         self.input_mappings.clear_sync();
         for (k, v) in new_input_mappings {
             let _ = self.input_mappings.insert_sync(k, v);
@@ -900,10 +969,10 @@ impl AppState {
         /* ★v21.7 方案A: 是否存在"语义 HID" 触发键 (..._H<n> / ..._A<n>_<dir>);
          * 有才在 RawInput 热路径调用 HidP_GetUsages 做语义翻译, 否则零开销。 */
         self.semantic_hid_mappings
-            .store(Self::config_has_semantic_mappings(&config), Ordering::Relaxed);
+            .store(has_semantic, Ordering::Relaxed);
 
         /* ★v24.49 独占成员键表随配置重载重建 (XInput 侧下帧据此重算位图) */
-        *util::write_guard(&self.chord_exclusive) = Self::build_chord_exclusive(&config);
+        *util::write_guard(&self.chord_exclusive) = chord_exclusive;
 
         // Update cached data structures
         self.cached_turbo_other.clear_sync();
@@ -971,9 +1040,9 @@ impl AppState {
         self.whitelist_simple_mode
             .store(config.whitelist_simple_mode, Ordering::Relaxed);
 
-        // Clear process name cache
+        // Clear process name cache (★R2.12: hwnd 置 -1 强制下次重新探测)
         if let Ok(mut cache) = self.cached_process_info.write() {
-            *cache = (None, Instant::now());
+            *cache = crate::state::whitelist::ForegroundCache::default();
         }
         // ★v24.31: 映射变更 → 修订号 +1, worker 据此强制解锁旧锁定条目 (防卡键)
         self.mappings_revision
@@ -991,7 +1060,22 @@ impl AppState {
         // Signal XInput to invalidate device-level caches
         self.xinput_cache_invalid.store(true, Ordering::Release);
 
+        /* ★R2.12 (优化 2): 切换完成 —— 代次 +1 (Release: 保证上面的 store 都已落地)。
+         * 排查时看日志里的 [CONFIG] 行就知道"新配置什么时候真正生效"。 */
+        let epoch = self.config_epoch.fetch_add(1, Ordering::Release) + 1;
+        crate::vibration::vib_log(&format!(
+            "[CONFIG] 配置已切换: 代次 -> {epoch}, 映射 {} 条, 切换键={}",
+            config.mappings.len(),
+            config.switch_key
+        ));
+
         Ok(())
+    }
+
+    /// 当前配置代次 (每次成功 reload +1)。诊断/测试用。
+    #[inline]
+    pub fn config_epoch(&self) -> u64 {
+        self.config_epoch.load(Ordering::Acquire)
     }
 
     /// Sets the worker pool for event dispatching.

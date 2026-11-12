@@ -28,6 +28,7 @@ use super::mapping::{
     self, classify_content, map_value_gamma, smooth_signal, EngineParams, MODE_MUSIC, MODE_QUIET,
     MODE_VOCAL,
 };
+use super::smart::{SmartEnhancer, SmartInput, SmartParams};
 
 /// int16 尺度换算: 归一化 RMS × 32768 = xbox6 标定域的 RMS。
 pub const XSCALE: f32 = 32768.0;
@@ -124,6 +125,15 @@ pub struct FrameOut {
     pub prev_r: f32,
     /// 自动校准完成 → 建议门槛值 (仅在完成的那一 tick 为 Some)
     pub calibrated: Option<u32>,
+    // ── ★AI 智能增强 (B 模式) 遥测 ──
+    /// 增强层是否生效 (A 模式恒 false)
+    pub smart_active: bool,
+    /// 距离感 0..1 (1=近, 0=远)
+    pub smart_proximity: f32,
+    /// 音高 0..1 (0=低沉, 1=尖锐)
+    pub smart_pitch: f32,
+    /// 估算震动持续时间 ms (近短远长)
+    pub smart_duration_ms: f32,
 }
 
 /// 频谱分析器 (单线程使用; 引擎线程独占)。
@@ -151,6 +161,8 @@ pub struct Analyzer {
     /* ── 自动校准 ── */
     calib_active: bool,
     last_process: u64,
+    /* ── ★AI 智能增强 (B 模式; A 模式完全旁路) ── */
+    smart: SmartEnhancer,
 }
 
 impl Analyzer {
@@ -177,6 +189,7 @@ impl Analyzer {
             vib_r: 0.0,
             calib_active: false,
             last_process: 0,
+            smart: SmartEnhancer::default(),
         }
     }
 
@@ -203,6 +216,8 @@ impl Analyzer {
             // 总 RMS: 时域直接算 (不加重叠窗畸变, 与 xbox6 口径一致)
             let sq: f32 = frame.iter().map(|s| s * s).sum();
             self.total_rms = (sq / FFT_SIZE as f32).sqrt() * XSCALE;
+            /* ★AI 智能增强: 同频更新近期能量环形窗 (A 模式也记, 切到 B 无需预热) */
+            self.smart.push_frame(self.total_rms);
 
             let mut cplx: Vec<Complex<f32>> = frame
                 .iter()
@@ -397,6 +412,38 @@ impl Analyzer {
             tr = (tr + tex * TEXTURE_R).clamp(0.0, 1.0);
         }
 
+        /* ── ★AI 智能增强 (B 模式): 复用本帧频带能量, 不重算 FFT ──
+         * A 模式 / 强度 0 / 静音 / 异常 → active=false → 下面整块跳过,
+         * tl/tr/attack/release 保持经典值, 输出与改动前逐字节一致。 */
+        let s_high = self.high_rms;
+        let s_transient = self.transient_avg;
+        let smart_out = self.smart.process(
+            &SmartInput {
+                total,
+                bass,
+                high: s_high,
+                noise_floor: nf,
+                map_max,
+                transient: s_transient,
+                threshold: thr,
+            },
+            &SmartParams {
+                enabled: p.smart_enabled,
+                strength_pct: p.smart_strength,
+                duration_pct: p.smart_duration,
+            },
+        );
+        if smart_out.active {
+            /* click 是乘性脉冲: 基础输出为 0 (不该震) 时不能凭空冒出震动。
+             * ★云端 CI 实测修正: 加性写法让远场从 0.000 变成 0.052。 */
+            tl = (tl * smart_out.gain * smart_out.left_bias * (1.0 + smart_out.click))
+                .clamp(0.0, 1.0);
+            tr = (tr * smart_out.gain * smart_out.right_bias * (1.0 + smart_out.click * 0.35))
+                .clamp(0.0, 1.0);
+            attack = (attack * smart_out.attack_scale).clamp(0.001, 1.0);
+            release = (release * smart_out.release_scale).clamp(0.001, 1.0);
+        }
+
         // 攻/放平滑 + 死区 (xbox6); prev_* 供引擎做"起振"跳变检测
         let (prev_l, prev_r) = (self.vib_l, self.vib_r);
         self.vib_l = smooth_signal(self.vib_l, tl, attack, release);
@@ -422,6 +469,10 @@ impl Analyzer {
             prev_l,
             prev_r,
             calibrated,
+            smart_active: smart_out.active,
+            smart_proximity: smart_out.proximity,
+            smart_pitch: smart_out.pitch,
+            smart_duration_ms: smart_out.duration_ms,
         }
     }
 }
@@ -461,6 +512,9 @@ mod tests {
             vocal_low_hz: p.vocal_low_hz,
             vocal_high_hz: p.vocal_high_hz,
             calibrate_until_ms: 0,
+            smart_enabled: false,
+            smart_strength: 70,
+            smart_duration: 70,
         }
     }
 
@@ -526,6 +580,68 @@ mod tests {
         let (l, r) = last_max(&outs, 40);
         assert!(l > 0.30, "低频音应驱动左马达, 实际 l={l}");
         assert!(l > r * 3.0, "左马达应远强于右马达: l={l} r={r}");
+    }
+
+    /// ★AI 智能增强验收红线: A 模式与「强度 0」逐帧输出完全相同,
+    /// 且 A 模式全程 smart_active=false (增强层完全旁路, 旧行为逐字节不变)。
+    #[test]
+    fn a_mode_is_identical_to_zero_strength() {
+        let sig = sine(100.0, 0.3, 1.5, 48000.0);
+        let mut pa = default_params();
+        pa.auto_profile = false;
+        pa.smart_enabled = false;
+        let mut pz = default_params();
+        pz.auto_profile = false;
+        pz.smart_enabled = true;
+        pz.smart_strength = 0;
+        let mut a = Analyzer::new(48000.0);
+        let mut z = Analyzer::new(48000.0);
+        let (mut na, mut nz) = (1000u64, 1000u64);
+        let oa = run(&mut a, &pa, &sig, &mut na);
+        let oz = run(&mut z, &pz, &sig, &mut nz);
+        assert_eq!(oa.len(), oz.len());
+        for (x, y) in oa.iter().zip(oz.iter()) {
+            assert!(!x.smart_active, "A 模式增强层必须全程旁路");
+            assert_eq!(x.level_l, y.level_l, "A 模式左马达与强度0必须逐帧相同");
+            assert_eq!(x.level_r, y.level_r, "A 模式右马达与强度0必须逐帧相同");
+        }
+    }
+
+    /// ★B 模式确实拉开「近(响) / 远(轻)」的力度差, 而不只是换个数字。
+    #[test]
+    fn smart_mode_amplifies_distance_contrast() {
+        let near = sine(100.0, 0.35, 1.5, 48000.0);
+        let far = sine(100.0, 0.03, 1.5, 48000.0);
+        let mk = |smart: bool| {
+            let mut p = default_params();
+            p.auto_profile = false;
+            /* 本测试只验「智能层对远近的相对改写」, 关掉门槛/自适应/人声带门控,
+             * 保证 100Hz 近/远两档都稳定有基础输出, 不被内容分类或噪声底吞成 0。 */
+            p.adaptive_threshold = false;
+            p.mask_threshold = 0;
+            p.vocal_only = false;
+            p.smart_enabled = smart;
+            p.smart_strength = 100;
+            p.smart_duration = 100;
+            p
+        };
+        let feed = |sig: &[f32], p: &EngineParams| {
+            let mut an = Analyzer::new(48000.0);
+            let mut now = 1000u64;
+            let outs = run(&mut an, p, sig, &mut now);
+            last_max(&outs, 40).0
+        };
+        let a_near = feed(&near, &mk(false));
+        let a_far = feed(&far, &mk(false));
+        let b_near = feed(&near, &mk(true));
+        let b_far = feed(&far, &mk(true));
+        /* 近场在 A 模式已接近满幅 (clamp 到 1), 用「差值变大」会被天花板吃掉,
+         * 因此分别断言两条单调性: 远场必须被削弱, 近场不能变弱。 */
+        assert!(a_far > 0.0, "测试前提: 远场在 A 模式应有基础输出, 实得 {a_far}");
+        assert!(b_far < a_far,
+            "远场在 B 模式应更轻: A {a_far:.3} vs B {b_far:.3}");
+        assert!(b_near >= a_near - 1e-6,
+            "近场在 B 模式不应变弱: A {a_near:.3} vs B {b_near:.3}");
     }
 
     /// 映射隔离档: 高频音 → 右马达主导。

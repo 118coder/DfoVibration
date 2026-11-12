@@ -1241,10 +1241,9 @@ impl SorahkGui {
                     let is_selected = self.config.current_preset == preset.name;
                     if ui.selectable_label(is_selected, &preset.name).clicked() {
                         self.config.current_preset = preset.name.clone();
-                        /* 空预设不覆盖 (防止把当前映射清空); 非空才加载 */
-                        if !preset.mappings.is_empty() {
-                            self.config.mappings = preset.mappings.clone();
-                        }
+                        /* ★空预设合法: 预设里没有任何键位/映射时, 切换后当前映射就清空,
+                         * 作为"长期不触发任何连发映射"的正式状态使用 (保存/加载/热重载全链路已安全)。 */
+                        self.config.mappings = preset.mappings.clone();
                     }
                 }
             });

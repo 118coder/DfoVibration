@@ -318,10 +318,8 @@ impl SorahkGui {
         }
         if let Some(pr) = self.config.presets.iter().find(|p| p.name == name) {
             self.config.current_preset = pr.name.clone();
-            /* 空预设不覆盖 (防止把当前映射清空) */
-            if !pr.mappings.is_empty() {
-                self.config.mappings = pr.mappings.clone();
-            }
+            /* ★空预设合法: 热键/手柄切换同样允许切到"零映射"预设并长期保持。 */
+            self.config.mappings = pr.mappings.clone();
             self.page_preset_delete_arm = false;
             let _ = self.config.save_to_file("Config.toml");
             if let Err(e) = self.app_state.reload_config(self.config.clone()) {

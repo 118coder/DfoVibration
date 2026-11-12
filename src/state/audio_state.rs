@@ -66,6 +66,15 @@ pub struct AudioTelemetry {
     pub wl_degraded: bool,
     /// 最近一次进程信息获取失败原因 (空 = 正常)
     pub wl_error: String,
+    // ── ★AI 智能增强 (B 模式) 实时反馈 ──
+    /// 增强层是否生效 (A 模式恒 false)
+    pub smart_active: bool,
+    /// 距离感 0..1 (1=近, 0=远)
+    pub smart_proximity: f32,
+    /// 音高 0..1 (0=低沉, 1=尖锐)
+    pub smart_pitch: f32,
+    /// 估算的震动持续时间 ms (近短远长)
+    pub smart_duration_ms: f32,
 }
 
 /// 音频震动运行态 (AppState 持有)。
@@ -110,6 +119,13 @@ pub struct AudioHapState {
     pub whitelist_source_macro: AtomicBool,
     /// 进程环回是否含子进程
     pub whitelist_include_tree: AtomicBool,
+    // ── ★AI 智能增强 (B 模式) 参数镜像 ──
+    /// false=A 经典 / true=B AI 智能 (唯一权威开关)
+    pub smart_enabled: AtomicBool,
+    /// 增强强度 % 0..=100 (0 = 等同 A 模式)
+    pub smart_strength: AtomicU32,
+    /// 持续时间/收尾影响 % 0..=100
+    pub smart_duration: AtomicU32,
     /// 马达自检脉冲截止时刻 (now_ms_u64 口径, 0 = 无)
     pub self_check_until: AtomicU64,
     // ── 输出 (引擎写, 震动线程合流读; 关闭/暂停/静默时恒 0) ──
@@ -154,6 +170,9 @@ impl Default for AudioHapState {
             whitelist_mode_process: AtomicBool::new(true),
             whitelist_source_macro: AtomicBool::new(true),
             whitelist_include_tree: AtomicBool::new(true),
+            smart_enabled: AtomicBool::new(false),
+            smart_strength: AtomicU32::new(70),
+            smart_duration: AtomicU32::new(70),
             self_check_until: AtomicU64::new(0),
             out_l: AtomicU16::new(0),
             out_r: AtomicU16::new(0),
@@ -187,6 +206,8 @@ impl AudioHapState {
         if let Ok(mut t) = self.telemetry.try_lock() {
             t.level_l = 0.0;
             t.level_r = 0.0;
+            t.smart_active = false;
+            t.smart_duration_ms = 0.0;
         }
     }
 
@@ -228,6 +249,9 @@ impl AudioHapState {
             .store(!c.whitelist_source.eq_ignore_ascii_case("custom"), rel);
         self.whitelist_include_tree
             .store(c.whitelist_include_tree, rel);
+        self.smart_enabled.store(c.smart_enabled, rel);
+        self.smart_strength.store(c.smart_strength_pct.clamp(0, 100), rel);
+        self.smart_duration.store(c.smart_duration_pct.clamp(0, 100), rel);
         if !c.enabled {
             self.set_idle(AUDIO_STATUS_OFF);
         }

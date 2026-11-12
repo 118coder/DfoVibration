@@ -59,6 +59,12 @@ pub struct EngineParams {
     pub vocal_high_hz: u32,
     /// 自动屏蔽校准截止时刻 (now_ms 口径; 0 = 不在校准中)。
     pub calibrate_until_ms: u64,
+    /// ★AI 智能增强: false=A 经典 (旁路), true=B AI 智能。
+    pub smart_enabled: bool,
+    /// 智能增强强度 % (0..=100, 0 = 等同 A 模式)。
+    pub smart_strength: u32,
+    /// 智能增强对持续时间/收尾的影响 % (0..=100)。
+    pub smart_duration: u32,
 }
 
 impl EngineParams {
@@ -86,6 +92,9 @@ impl EngineParams {
             vocal_low_hz: ah.vocal_low_hz.load(Relaxed),
             vocal_high_hz: ah.vocal_high_hz.load(Relaxed),
             calibrate_until_ms: ah.calibrate_until.load(Relaxed),
+            smart_enabled: ah.smart_enabled.load(Relaxed),
+            smart_strength: ah.smart_strength.load(Relaxed),
+            smart_duration: ah.smart_duration.load(Relaxed),
         }
     }
 }

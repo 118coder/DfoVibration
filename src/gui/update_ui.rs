@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use eframe::egui;
 
 use crate::gui::SorahkGui;
-use crate::update::{APP_VERSION, Channel, Phase, Snapshot};
+use crate::update::{APP_VERSION, Channel, Phase, Snapshot, same_version};
 
 const TOAST_W: f32 = 340.0;
 const TOAST_FADE_IN: f32 = 0.30;
@@ -77,10 +77,11 @@ impl SorahkGui {
             let _ = self.config.save_to_file("Config.toml");
         }
 
-        /* 发现更新的浮窗: 同一版本每个会话只弹一次, 且尊重"忽略此版本" */
+        /* 发现更新的浮窗: 同一版本每个会话只弹一次, 且尊重"忽略此版本"
+         * (★R2.12: 版本比较走 same_version, `R2.11` / `vR2.11` / `2.11` 视为同一版本) */
         if let Some(rel) = &snap.latest
             && crate::update::is_newer(&rel.version, APP_VERSION)
-            && rel.version != self.config.update.skipped_version
+            && !same_version(&rel.version, &self.config.update.skipped_version)
             && self.update_toast_ver.as_deref() != Some(rel.version.as_str())
         {
             self.update_toast_ver = Some(rel.version.clone());
@@ -113,7 +114,7 @@ impl SorahkGui {
             self.update_toast_at = None;
             return;
         };
-        if rel.version == self.config.update.skipped_version
+        if same_version(&rel.version, &self.config.update.skipped_version)
             || self.update_state.phase == Phase::Downloading
         {
             self.update_toast_at = None;

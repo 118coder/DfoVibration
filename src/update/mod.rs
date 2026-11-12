@@ -15,6 +15,7 @@
 pub mod http;
 pub mod sha256;
 
+use std::cmp::Ordering as CmpOrdering;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -29,8 +30,10 @@ use serde_json::Value;
 /// 从本常量读取版本号生成产物名 (`DfoVibration-Sorahk_<APP_VERSION>.exe`),
 /// 不再需要同步改 workflow 里写死的文件名。
 /// 语义: ★R2.1 起版本系切换为 **R X.Y** (R2.0 稳定线的延续; 旧 24.x 线停止发版),
-/// 与 tag `R2.1` 去掉 R 后逐段数值比较。跨系比较规则见 [`is_newer`]。
-pub const APP_VERSION: &str = "R2.11";
+/// tag 去掉 `R` 后比较: 主版本按整数、次版本按小数位 (见 [`cmp_versions`])。
+/// 次版本位数不设上限 —— `R2.11` / `R2.111` / `R2.1111` / `R2.1112` 都是合法档位,
+/// 而 `R2.2` 永远晚于 `R2.11` 这类两位编号。
+pub const APP_VERSION: &str = "R2.12";
 
 /// 仓库 (清单源与下载地址都指向它)。
 pub const REPO: &str = "118coder/DfoVibration";
@@ -40,28 +43,62 @@ pub const AUTO_CHECK_INTERVAL_SECS: i64 = 4 * 3600;
 
 /* ═════════════════════ 版本号 ═════════════════════ */
 
-/// 把版本号切成数值段 (`R2.1` / `v24.55` / `2.1-beta` 都能吃; 前导 v/V/r/R 一律剥掉)。
-fn version_parts(v: &str) -> Vec<u64> {
-    let r_series = is_r_series(v);
+/// 把版本号切成「数字串」段 (`R2.1` / `v24.55` / `2.1-beta` 都能吃; 前导 v/V/r/R 剥掉)。
+///
+/// 段内保留原始数字串而不是落成整数: 次版本位数不设上限, `R2.1111` / `R2.1112`
+/// 这类四位次版本号, 甚至更长的编号都能原样参与比较, 天然没有 `u64` 溢出与截断问题。
+fn version_parts(v: &str) -> Vec<String> {
     v.trim()
         .trim_start_matches(['v', 'V', 'r', 'R'])
         .split(['.', '-', '_', '+'])
-        .enumerate()
-        .map(|(i, seg)| {
+        .map(|seg| {
             let digits: String = seg.chars().take_while(|c| c.is_ascii_digit()).collect();
-            let n = digits.parse::<u64>().unwrap_or(0);
-            /* ★R2.12: R 系 minor 段按「两位十进制」比较, 修掉 R2.11 之后发 R2.2
-             * 会被判成旧版、老用户收不到更新提示的问题。
-             *   R2.0→[2,0] < R2.1→[2,10] < R2.11→[2,11] < R2.12→[2,12] < R2.2→[2,20]
-             * 只有 1 位的 minor 才 ×10 (R2.11 / R2.12 已是两位, 原样比较),
-             * 旧 24.x 数字系与跨系规则完全不受影响。 */
-            if r_series && i == 1 && digits.len() == 1 {
-                n * 10
+            if digits.is_empty() {
+                "0".to_string()
             } else {
-                n
+                digits
             }
         })
         .collect()
+}
+
+/// 无符号十进制数字串比较 (`011` 与 `11` 相等)。
+fn cmp_num(x: &str, y: &str) -> CmpOrdering {
+    let (x, y) = (x.trim_start_matches('0'), y.trim_start_matches('0'));
+    match x.len().cmp(&y.len()) {
+        CmpOrdering::Equal => x.cmp(y),
+        o => o,
+    }
+}
+
+/// 次版本「小数位」比较: 右侧补零到等长后按字符串比。
+///
+/// 也就是把 `.` 后面的数字当成小数: `11`(=.11) < `2`(=.20), `1111`(.1111)
+/// 介于两者之间。这正是 R 系真正想要的代际顺序, 也对任意位数成立。
+fn cmp_frac(x: &str, y: &str) -> CmpOrdering {
+    let n = x.len().max(y.len());
+    let mut a = String::from(x);
+    let mut b = String::from(y);
+    a.push_str(&"0".repeat(n - x.len()));
+    b.push_str(&"0".repeat(n - y.len()));
+    a.cmp(&b)
+}
+
+/// 逐段比较 (缺段补 `0`)。`frac_minor` 为真时第 2 段按小数位比, 其余段按整数比。
+fn compare_parts(a: &[String], b: &[String], frac_minor: bool) -> CmpOrdering {
+    for i in 0..a.len().max(b.len()) {
+        let x = a.get(i).map(String::as_str).unwrap_or("0");
+        let y = b.get(i).map(String::as_str).unwrap_or("0");
+        let o = if frac_minor && i == 1 {
+            cmp_frac(x, y)
+        } else {
+            cmp_num(x, y)
+        };
+        if o != CmpOrdering::Equal {
+            return o;
+        }
+    }
+    CmpOrdering::Equal
 }
 
 /// 版本串是否属于 R 系 (`R2.1` / `r2.1`; 前导 v/V 先剥掉再判)。
@@ -71,27 +108,41 @@ fn is_r_series(v: &str) -> bool {
         .starts_with(['r', 'R'])
 }
 
+/// 两个版本号的完整排序 (`a` 相对 `b`)。
+///
+/// 规则 (★R2.12 重写, 修 R2.11 交接 §4 记的「重版本号被判成旧版」隐患):
+/// 1. **R 系内部**: 主版本按整数比, **次版本按小数位比** ——
+///    `R2.0` `.0` < `R2.1` `.10` < `R2.11` `.11` < `R2.111` `.111` <
+///    `R2.1111` `.1111` < `R2.1112` `.1112` < `R2.2` `.20`。
+///    次版本位数不设上限, 所以 `R2.1111` / `R2.1112` 这种四位级编号能被正确识别;
+///    同时 `R2.2` 永远比 `R2.11` / `R2.12` 新一代, 未来真发 R2.2 时老用户能收到提示。
+/// 2. **R 系 vs 旧 24.x 数字系**: 主版本号不同 → R 系恒为新 (24.x 线已停发);
+///    主版本号相同 (例如清单里漏写 R 前缀的 `2.11`) → 老实按数字段比,
+///    免得一个手滑少写 `R` 就变成永远提示更新。
+/// 3. 缺段补 0 (`R2` == `R2.0`), 段数更多时继续按整数比 (`R2.11.1` > `R2.11`)。
+pub fn cmp_versions(a: &str, b: &str) -> CmpOrdering {
+    let (ra, rb) = (is_r_series(a), is_r_series(b));
+    let (pa, pb) = (version_parts(a), version_parts(b));
+    let ord = compare_parts(&pa, &pb, ra || rb);
+    if ra == rb {
+        return ord;
+    }
+    if cmp_num(&pa[0], &pb[0]) == CmpOrdering::Equal {
+        return ord;
+    }
+    if ra { CmpOrdering::Greater } else { CmpOrdering::Less }
+}
+
 /// `latest` 是否比 `current` 新。
 ///
-/// ★R2.1 版本系切换的跨系规则: `R` 系标签与旧 `24.x` 数字系比较时 **R 系恒为新**
-/// (24.x 线已停止发版, R2.x 是唯一现役线)。同系内逐段数值比较, 缺段补 0 ——
-/// 所以 R2.0 稳定版用户能正常收到 R2.1 的更新提示。
+/// ★R2.1 版本系切换的跨系规则在 [`cmp_versions`] 里统一处理。
 pub fn is_newer(latest: &str, current: &str) -> bool {
-    match (is_r_series(latest), is_r_series(current)) {
-        (true, false) => return true,
-        (false, true) => return false,
-        _ => {}
-    }
-    let a = version_parts(latest);
-    let b = version_parts(current);
-    for i in 0..a.len().max(b.len()) {
-        let x = *a.get(i).unwrap_or(&0);
-        let y = *b.get(i).unwrap_or(&0);
-        if x != y {
-            return x > y;
-        }
-    }
-    false
+    cmp_versions(latest, current) == CmpOrdering::Greater
+}
+
+/// 两个版本串是否指同一个版本 (写法差异 `R2.11` / `vR2.11` / `2.11` 视为相同)。
+pub fn same_version(a: &str, b: &str) -> bool {
+    cmp_versions(a, b) == CmpOrdering::Equal
 }
 
 #[cfg(test)]
@@ -118,7 +169,7 @@ mod version_tests {
         assert!(!is_newer("24.62", "R2.1"), "旧系标签永远不算新");
     }
 
-    /// ★R2.12: 短 minor (R2.2) 必须比两位 minor (R2.11/R2.12) 更新 ——
+    /// ★R2.12: 次版本按小数位比较 —— `R2.2` 是新一代, 永远比 `R2.11` / `R2.12` 新。
     /// 修 R2.11 交接 §4 记录的「按段数值比较 11>2 会把 R2.2 判成旧版」。
     #[test]
     fn r_series_short_minor_is_a_newer_generation() {
@@ -127,6 +178,41 @@ mod version_tests {
         assert!(!is_newer("R2.11", "R2.2"));
         assert!(is_newer("R2.11", "R2.1"));
         assert!(is_newer("R2.12", "R2.11"));
+        assert!(is_newer("R3.0", "R2.1111"), "跨主版本照旧按整数比");
+    }
+
+    /// ★R2.12: 次版本位数不设上限 —— `R2.111` / `R2.1111` / `R2.1112`
+    /// 这些多位数档位必须能被识别, 且顺序与「小数位」一致:
+    /// `.11` < `.111` < `.1111` < `.1112` < `.12` < `.2`。
+    #[test]
+    fn r_series_multi_digit_minor_levels() {
+        assert!(is_newer("R2.111", "R2.11"));
+        assert!(is_newer("R2.1111", "R2.111"));
+        assert!(is_newer("R2.1112", "R2.1111"));
+        assert!(!is_newer("R2.1111", "R2.1112"));
+        assert!(is_newer("R2.1112", "R2.11"));
+        assert!(is_newer("R2.12", "R2.1112"), "R2.12 (.12) 晚于 .1112");
+        assert!(is_newer("R2.2", "R2.12"));
+        // 小数位口径下 .1112 < .2, 所以 R2.2 仍是最新一代, 不会因四位编号被压住
+        assert!(is_newer("R2.2", "R2.1112"));
+        assert!(!is_newer("R2.1112", "R2.2"));
+        // 超过 u64 的编号也不会溢出/截断
+        assert!(is_newer("R2.99999999999999999999", "R2.9999999999999999999"));
+        assert!(!is_newer("R2.9999999999999999999", "R2.99999999999999999999"));
+    }
+
+    /// 补零与写法差异视为同一版本 (`R2.11` == `R2.110` == `vR2.11` == `2.11`)。
+    #[test]
+    fn same_version_ignores_padding_and_prefix() {
+        assert!(same_version("R2.11", "vR2.11"));
+        assert!(same_version("R2.11", "2.11"), "漏写 R 前缀不该被当成候选更新");
+        assert!(same_version("R2.11", "R2.110"));
+        assert!(same_version("R2", "R2.0"));
+        assert!(!same_version("R2.12", "R2.11"));
+        assert!(!same_version("R2.1112", "R2.1111"));
+        // 主版本相同但次版本不同 → 仍按数字段老实比, 不靠"R 系恒新"抢跑
+        assert!(is_newer("R2.12", "2.11"));
+        assert!(!is_newer("2.11", "R2.12"));
     }
 
     #[test]

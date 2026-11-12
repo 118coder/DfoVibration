@@ -61,6 +61,77 @@ macro_rules! audio_check {
 }
 
 impl SorahkGui {
+    /// ★ AI 智能增强卡片: A 经典 / B 智能 一键切换 + 两条滑条 + 实时远近高低反馈。
+    /// 纯算法, 无模型。A 模式 (smart_enabled=false) 输出与旧版逐字节一致。
+    fn audio_smart_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        tele: &Option<AudioTelemetry>,
+    ) -> bool {
+        let mut dirty = false;
+        let on = self.config.audio_haptics.smart_enabled;
+        th.card(ui, Some("AI 智能增强（远近 · 高低感知）"), |ui| {
+            ui.label(th.hint_text(
+                "纯算法判断声音的远近与高低：近的声音更猛更脆、收得快；远的声音更轻、拖尾更长。不装模型、不联网。",
+            ));
+            ui.add_space(SP_S);
+            ui.horizontal(|ui| {
+                let a = ui.selectable_label(!on, "A 经典模式（原手感，逐字节不变）");
+                if a.clicked() && on {
+                    self.config.audio_haptics.smart_enabled = false;
+                    self.app_state.audio_hap.smart_enabled.store(false, Ordering::Relaxed);
+                    dirty = true;
+                }
+                let b = ui.selectable_label(on, "B AI 智能模式（远近高低自适应）");
+                if b.clicked() && !on {
+                    self.config.audio_haptics.smart_enabled = true;
+                    self.app_state.audio_hap.smart_enabled.store(true, Ordering::Relaxed);
+                    dirty = true;
+                }
+            });
+            ui.add_space(SP_XS);
+            dirty |= audio_check!(
+                self, ui, th, smart_enabled, smart_enabled,
+                "AI 智能增强开关（与上方 A/B 等价）",
+                "关 = A 经典；开 = B 智能",
+                "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。"
+            );
+            split_cols(ui, 2, SP_L, |ui, i| {
+                if i == 0 {
+                    dirty |= audio_slider!(
+                        self, ui, th, smart_strength_pct, smart_strength, 0..=100u32, 5.0, "%",
+                        ic::LIGHTNING, "智能增强强度",
+                        "调 0 = 自动回到 A 手感；调大差异更明显",
+                        "智能层和经典手感的混合比例。调到 0 就等于完全关掉智能增强（和 A 模式一模一样），想对比效果就拖到 0 再拖回来。"
+                    );
+                } else {
+                    dirty |= audio_slider!(
+                        self, ui, th, smart_duration_pct, smart_duration, 0..=100u32, 5.0, "%",
+                        ic::WIND, "持续时间影响",
+                        "调大：近音更短促、远音余韵更长",
+                        "控制智能层对震动持续时间的改写力度。调 0 = 只改强度和左右马达分配，不改收尾快慢。"
+                    );
+                }
+            });
+            if let Some(t) = tele {
+                if t.smart_active {
+                    use crate::audio_haptics::smart::{distance_label, pitch_label};
+                    let line = format!(
+                        "实时判定：距离 {}（{:.2}） · 音高 {}（{:.2}） · 预计持续 {:.0} ms · 左/右马达 {:.0}% / {:.0}%",
+                        distance_label(t.smart_proximity), t.smart_proximity,
+                        pitch_label(t.smart_pitch), t.smart_pitch,
+                        t.smart_duration_ms, t.level_l * 100.0, t.level_r * 100.0
+                    );
+                    ui.label(th.hint_text(line));
+                } else {
+                    ui.label(th.hint_text("当前 A 经典模式 / 静音中 —— 智能层未参与输出。"));
+                }
+            }
+        });
+        dirty
+    }
+
     /// 内置预设 → 自定义预设条目 (拷贝 21 个引擎字段)。
     fn builtin_preset_entry(p: &mapping::Preset) -> crate::config::AudioPresetConfig {
         crate::config::AudioPresetConfig {
@@ -187,6 +258,8 @@ impl SorahkGui {
         let mut dirty = false;
         // ① 开不开
         dirty |= self.audio_hero(ui, &th, &tele, status, enabled);
+        // ①.5 AI 智能增强 (A 经典 / B 智能) + 实时远近高低反馈
+        dirty |= self.audio_smart_card(ui, &th, &tele);
         dirty |= self.audio_calib_strip(ui, &th);
         // ② 听谁的声音（白名单）: 决定"这个功能对哪个游戏生效", 排在预设之前
         dirty |= self.audio_whitelist_card(ui, &th, &tele);

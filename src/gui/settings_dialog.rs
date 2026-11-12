@@ -916,6 +916,7 @@ impl SorahkGui {
                                                     let is_selected = temp_config.current_preset == preset.name;
                                                     if ui.selectable_label(is_selected, &preset.name).clicked() {
                                                         temp_config.current_preset = preset.name.clone();
+                                                        /* ★空预设合法: 与顶栏/连发页/热键切换保持同一语义 (零映射照常生效)。 */
                                                         temp_config.mappings = preset.mappings.clone();
                                                         self.preset_rename_target.clear();
                                                         self.preset_rename_input.clear();

@@ -1524,6 +1524,16 @@ pub struct AudioHapticsConfig {
     /// process 模式是否连目标进程的子进程音频一起采集
     #[serde(default = "default_ah_whitelist_tree")]
     pub whitelist_include_tree: bool,
+    /// ★AI 智能增强总开关 = A/B 模式 (false=A 经典 / true=B AI 智能)。
+    /// 默认关 → 输出与旧版逐字节一致; 所有新字段 serde default, 旧 Config.toml 不改也能开。
+    #[serde(default)]
+    pub smart_enabled: bool,
+    /// 智能增强强度 % (0..=100); 0 = 自动等同 A 模式, 一键无损对比/回退。
+    #[serde(default = "default_ah_smart_strength")]
+    pub smart_strength_pct: u32,
+    /// 智能增强对"持续时间/收尾"的影响程度 % (0..=100)。
+    #[serde(default = "default_ah_smart_duration")]
+    pub smart_duration_pct: u32,
 }
 
 impl Default for AudioHapticsConfig {
@@ -1562,6 +1572,9 @@ impl Default for AudioHapticsConfig {
             whitelist_processes: Vec::new(),
             whitelist_mode: default_ah_whitelist_mode(),
             whitelist_include_tree: default_ah_whitelist_tree(),
+            smart_enabled: false,
+            smart_strength_pct: default_ah_smart_strength(),
+            smart_duration_pct: default_ah_smart_duration(),
         }
     }
 }
@@ -1570,6 +1583,8 @@ fn default_ah_preset() -> String { "人声清晰".to_string() }
 fn default_ah_whitelist_source() -> String { "macro".to_string() }
 fn default_ah_whitelist_mode() -> String { "process".to_string() }
 fn default_ah_whitelist_tree() -> bool { true }
+fn default_ah_smart_strength() -> u32 { 70 }
+fn default_ah_smart_duration() -> u32 { 70 }
 /* serde default 函数与 Default::default() 同值 (旧 Config.toml 缺字段时逐项兜底) */
 fn default_ah_master() -> u32 { 72 }
 fn default_ah_low() -> u32 { 100 }

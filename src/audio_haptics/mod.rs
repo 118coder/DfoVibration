@@ -26,6 +26,7 @@
 pub mod dsp;
 pub mod mapping;
 pub mod resample;
+pub mod smart;
 
 use std::collections::VecDeque;
 use std::sync::atomic::Ordering;
@@ -704,6 +705,10 @@ fn finish_tick(
         t.noise_floor = out.noise_floor;
         t.transient = out.transient;
         t.threshold_eff = out.threshold_eff;
+        t.smart_active = out.smart_active;
+        t.smart_proximity = out.smart_proximity;
+        t.smart_pitch = out.smart_pitch;
+        t.smart_duration_ms = out.smart_duration_ms;
         if hit {
             t.last_onset_ms = now;
         }

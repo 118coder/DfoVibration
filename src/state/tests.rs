@@ -1697,3 +1697,138 @@
         let dev_a = AppState::input_name_to_device("A").expect("A 可解析");
         assert!(map.contains_key(&dev_a), "有效映射应被加载");
     }
+
+/* ═══════════ ★R2.13 按下/抬起拦截配对 (hook_blocked_down) ═══════════
+ *
+ * 连发根因回归: 按下落在注入冷却/IME/白名单/暂停窗口 (透传给系统, OS 记住键
+ * 已按下), 抬起落在窗口外 → 旧实现按"配置里有映射"拦截真实抬起 → OS 永远收
+ * 不到抬起 → 系统自动重复永不停止 → MMMMM 连发打进任何前台程序。
+ * 修复后 keyup 拦截只看"这次按下我们拦截过没有" (hook_blocked_down 配对集),
+ * 且按住期的重复 keydown 绝不改写登记状态。 */
+
+/// 测试用事件采集器: 记录 dispatch 的全部事件 (代替真实 worker pool)。
+struct CapturePool(std::sync::Mutex<Vec<InputEvent>>);
+
+impl crate::state::EventDispatcher for CapturePool {
+    fn dispatch(&self, event: InputEvent) {
+        self.0.lock().unwrap().push(event);
+    }
+    fn clear_cache(&self) {}
+}
+
+/// 构造一条 M→M 非连发映射 (触发键即目标键, DNF 连发典型配置)。
+fn r213_key_mapping(trigger: &str) -> KeyMapping {
+    KeyMapping {
+        sequence_text: String::new(),
+        release_targets: smallvec::SmallVec::new(),
+        trigger_key: trigger.to_string(),
+        target_keys: smallvec::SmallVec::from_vec(vec![trigger.to_string()]),
+        interval: Some(10),
+        event_duration: Some(5),
+        turbo_enabled: false,
+        move_speed: 5,
+        double_tap_enabled: false,
+        double_tap_gap_ms: default_double_tap_gap_ms(),
+        run_enabled: false,
+        run_threshold: 80,
+        run_recheck: true,
+        lock_enabled: false,
+        note: String::new(),
+    }
+}
+
+const R213_WM_KEYDOWN: u32 = 0x0100;
+const R213_WM_KEYUP: u32 = 0x0101;
+const R213_VK_M: u32 = 0x4D;
+
+/// ★R2.13 核心回归: keyup 拦截必须与 keydown 拦截配对。
+#[test]
+fn test_keyup_block_pairs_with_keydown_block() {
+    let mut config = AppConfig::default();
+    config.mappings = vec![r213_key_mapping("M")];
+    let state = Arc::new(AppState::new(config).unwrap());
+    state.set_worker_pool(Arc::new(CapturePool(std::sync::Mutex::new(Vec::new()))));
+
+    // ── 场景1 (连发根因): 按下被闸门透传 (暂停), 抬起落在闸门外 → keyup 必须放行
+    state.set_paused(true);
+    let blocked_down = state.handle_key_event(R213_WM_KEYDOWN, R213_VK_M);
+    assert!(!blocked_down, "暂停期按下必须透传 (游戏侧已收到按下)");
+    assert!(
+        !state.hook_blocked_down.contains_sync(&R213_VK_M),
+        "透传按下不得登记配对集"
+    );
+    state.set_paused(false);
+    let blocked_up = state.handle_key_event(R213_WM_KEYUP, R213_VK_M);
+    assert!(
+        !blocked_up,
+        "★核心: 按下透传过的抬起不得拦截 (旧实现拦截 → OS 键悬空 → MMMMM 连发)"
+    );
+    assert!(
+        !state.hook_blocked_down.contains_sync(&R213_VK_M),
+        "抬起后登记必须清除"
+    );
+
+    // ── 场景2: 按下被拦截+派发, 抬起必须同步拦截 (吞键配对, 与旧行为一致)
+    let blocked_down2 = state.handle_key_event(R213_WM_KEYDOWN, R213_VK_M);
+    assert!(blocked_down2, "映射键按下应拦截 (pool 已装)");
+    assert!(
+        state.hook_blocked_down.contains_sync(&R213_VK_M),
+        "拦截按下应登记配对集"
+    );
+    let blocked_up2 = state.handle_key_event(R213_WM_KEYUP, R213_VK_M);
+    assert!(blocked_up2, "拦截过的按下, 抬起必须同步拦截");
+    assert!(
+        !state.hook_blocked_down.contains_sync(&R213_VK_M),
+        "抬起后登记清除"
+    );
+
+    // ── 场景3: 按住期重复 keydown 不改写登记状态 ——
+    // 原始按下透传 (暂停中), 恢复后重复按下被拦也不得登记 → 抬起放行
+    state.set_paused(true);
+    let blocked_down3 = state.handle_key_event(R213_WM_KEYDOWN, R213_VK_M);
+    assert!(!blocked_down3, "原始按下: 暂停期透传");
+    state.set_paused(false);
+    let blocked_repeat = state.handle_key_event(R213_WM_KEYDOWN, R213_VK_M);
+    assert!(blocked_repeat, "按住期重复按下: 恢复后走正常拦截路径 (旧行为)");
+    assert!(
+        !state.hook_blocked_down.contains_sync(&R213_VK_M),
+        "重复 keydown 不得改写登记 (原始按下是透传的)"
+    );
+    let blocked_up3 = state.handle_key_event(R213_WM_KEYUP, R213_VK_M);
+    assert!(!blocked_up3, "透传按下的抬起必须放行 (OS 键状态一致)");
+}
+
+/// ★R2.13 回归: 切换键只在按下沿 toggle —— 按住期的自动重复 keydown 不得
+/// 反复翻转暂停 (旧实现每 33ms toggle 一次, 按住 = 30 次/秒狂翻)。
+#[test]
+fn test_switch_key_toggles_once_per_press() {
+    let mut config = AppConfig::default();
+    config.switch_key = "DELETE".to_string();
+    let state = Arc::new(AppState::new(config).unwrap());
+    const R213_VK_DELETE: u32 = 0x2E;
+
+    assert!(!state.is_paused());
+
+    // 首次按下: toggle → 暂停, 键被吞
+    assert!(
+        state.handle_key_event(R213_WM_KEYDOWN, R213_VK_DELETE),
+        "切换键按下应被吞"
+    );
+    assert!(state.is_paused(), "首次按下应进入暂停");
+
+    // 按住期自动重复 keydown ×5: 不得翻转暂停 (旧实现 6 次偶数回到 false)
+    for _ in 0..5 {
+        assert!(state.handle_key_event(R213_WM_KEYDOWN, R213_VK_DELETE));
+    }
+    assert!(
+        state.is_paused(),
+        "★核心: 重复 keydown 不得翻转暂停状态"
+    );
+
+    // 抬起 (闸门内 = 暂停中, 透传; OS 键状态本就 up, 无害)
+    assert!(!state.handle_key_event(R213_WM_KEYUP, R213_VK_DELETE));
+
+    // 再按一次 → toggle 回非暂停 (按下沿重新可用)
+    assert!(state.handle_key_event(R213_WM_KEYDOWN, R213_VK_DELETE));
+    assert!(!state.is_paused(), "第二次按下应解除暂停");
+}

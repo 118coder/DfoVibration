@@ -147,6 +147,13 @@ pub(crate) fn is_ime_composing() -> bool {
 }
 
 /// 真正的 IMM 查询(见 is_ime_composing 的节流)。
+/// ⚠★R2.13 已知限制: ImmGetContext 对**别的线程创建的窗口**恒返回 NULL
+/// (IME 上下文线程亲和, 见 Microsoft Learn Q&A "ImmGetContext returns error 0
+/// when calling across threads")。本函数拿 GetForegroundWindow() 的句柄查询,
+/// 而前台窗口几乎总属于别的线程/进程 → 生产环境下恒 false, 本闸门实际不生效。
+/// 保留调用点的原因: ① 调用本身廉价 (失败即返回, 不阻塞钩子线程);
+/// ② 跨进程 IME 组合检测需要 TSF (ITfUIElementMgr) 或 AttachThreadInput,
+/// 是独立的大改动, 未纳入本次。若未来修复, 各调用点语义已就位。
 fn is_ime_composing_impl() -> bool {
     unsafe {
         use windows::Win32::UI::Input::Ime::{
@@ -249,7 +256,10 @@ pub struct AppState {
     /// Notification event sender
     notification_sender: std::sync::Mutex<Option<Sender<NotificationEvent>>>,
     /// Process whitelist (empty means all processes enabled)
-    process_whitelist: Mutex<Vec<String>>,
+    /// ★R2.13 性能: Arc 化 —— 热路径 (键盘钩子/连发 worker/鼠标移动 worker, 合计
+    /// 最高 ~1200 次/秒) 只 clone Arc 引用计数, 不再每次锁内克隆整个 Vec<String>
+    /// (10 条完整路径 = 10 次堆分配/次); 只有写入 (配置 reload) 才重建 Arc。
+    process_whitelist: RwLock<Arc<Vec<String>>>,
     /// 白名单总开关 (false = 全部放行, 列表保留)
     whitelist_enabled: std::sync::atomic::AtomicBool,
     /// ★v24.40 白名单简易模式 (true = 条目只按文件名比对)
@@ -283,6 +293,16 @@ pub struct AppState {
     pub capture_prefers_max_inputs: std::sync::atomic::AtomicBool,
     /// Currently pressed keys for combo detection
     pressed_keys: scc::HashSet<u32>,
+    /// ★R2.13 按下/抬起拦截配对集: 记录"本次按下我们拦截过 (未透传给系统)"的 VK。
+    /// keyup 只有命中本集合才拦截真实抬起 —— 根治 MMMMM 连发:
+    /// 旧实现按"配置里有映射"就拦抬起, 当按下落在注入冷却/IME/白名单窗口
+    /// (按下透传、OS 记住键已按下) 而抬起落在窗口外时, 真实抬起被吞 →
+    /// 系统 keydown 自动重复永不停止 → 连发打进任何前台程序 (含非白名单)。
+    /// 钩子线程独占写入 (worker 不碰), 与 pressed_keys 生命周期一致。
+    hook_blocked_down: scc::HashSet<u32>,
+    /// ★R2.13 性能: 是否存在组合键 (KeyCombo) 映射。false 时 keydown 热路径
+    /// 直接跳过 pressed_keys 全量快照 + 组合匹配 (绝大多数用户无组合键配置)。
+    has_combo_index: AtomicBool,
     /// Active combo triggers (multiple combos can be active simultaneously)
     /// Maps combo device to the set of modifier keys that were suppressed
     active_combo_triggers: scc::HashMap<InputDevice, SmallVec<[u32; 8]>>,
@@ -594,6 +614,7 @@ impl AppState {
             std::array::from_fn(|_| AtomicBool::new(true));
         let cached_turbo_other = scc::HashMap::new();
         let cached_combo_index: scc::HashMap<u32, Vec<InputDevice>> = scc::HashMap::new();
+        let has_combo_index = AtomicBool::new(false);
         let cached_xinput_combos: scc::HashMap<DeviceType, Vec<Vec<u32>>> = scc::HashMap::new();
 
         for mapping in config.mappings.iter() {
@@ -613,6 +634,7 @@ impl AppState {
                             combos.push(device.clone());
                             let _ = cached_combo_index.upsert_sync(last_key, combos);
                         }
+                        has_combo_index.store(true, Ordering::Relaxed);
                         let _ =
                             cached_turbo_other.insert_sync(device.clone(), mapping.turbo_enabled);
                     }
@@ -665,7 +687,7 @@ impl AppState {
             input_timeout: AtomicU64::new(config.input_timeout.clamp(1, 2000)),
             combo_key_gap_ms: std::sync::atomic::AtomicU64::new(config.combo_key_gap_ms),
             worker_count: AtomicU64::new(0),
-            process_whitelist: Mutex::new(config.process_whitelist.clone()),
+            process_whitelist: RwLock::new(Arc::new(config.process_whitelist.clone())),
             whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
             whitelist_simple_mode: std::sync::atomic::AtomicBool::new(config.whitelist_simple_mode),
             vib_legacy_client: std::sync::atomic::AtomicBool::new(config.vib_legacy_client),
@@ -684,6 +706,8 @@ impl AppState {
             key_record_active: std::sync::atomic::AtomicBool::new(false),
             capture_prefers_max_inputs: std::sync::atomic::AtomicBool::new(false),
             pressed_keys: scc::HashSet::new(),
+            hook_blocked_down: scc::HashSet::new(),
+            has_combo_index,
             active_combo_triggers: scc::HashMap::new(),
             cached_turbo_keyboard,
             cached_turbo_other,
@@ -978,6 +1002,8 @@ impl AppState {
         self.cached_turbo_other.clear_sync();
         self.cached_combo_index.clear_sync();
         self.cached_xinput_combos.clear_sync();
+        /* ★R2.13: 组合键存在性标志随重载重建 (清空后按新配置重置) */
+        self.has_combo_index.store(false, Ordering::Relaxed);
 
         // Reset keyboard turbo cache to default
         for i in 0..256 {
@@ -1003,6 +1029,7 @@ impl AppState {
 
                             let _ = self.cached_combo_index.upsert_sync(last_key, combos);
                         }
+                        self.has_combo_index.store(true, Ordering::Relaxed);
                         let _ = self
                             .cached_turbo_other
                             .insert_sync(device, mapping.turbo_enabled);
@@ -1032,8 +1059,9 @@ impl AppState {
         }
 
         // Update process whitelist
-        if let Ok(mut whitelist) = self.process_whitelist.lock() {
-            *whitelist = config.process_whitelist.clone();
+        // ★R2.13: Arc 整体替换 —— 读侧 (钩子/worker 热路径) 无锁期 clone 引用即可
+        if let Ok(mut whitelist) = self.process_whitelist.write() {
+            *whitelist = Arc::new(config.process_whitelist.clone());
         }
         self.whitelist_enabled
             .store(config.whitelist_enabled, Ordering::Relaxed);
@@ -1050,6 +1078,9 @@ impl AppState {
 
         // Clear pressed keys and active combos (lock-free concurrent structures)
         self.pressed_keys.clear_sync();
+        // ★R2.13: 按下/抬起拦截配对集同步清空 —— 否则清屏瞬间旧"已拦截"记录
+        // 残留, 下一次透传按下的抬起会被误拦 (OS 键状态悬空 = 连发)
+        self.hook_blocked_down.clear_sync();
         self.active_combo_triggers.clear_sync();
 
         // Clear worker pool caches (mouse action cache, etc.)

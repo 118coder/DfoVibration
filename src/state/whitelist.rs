@@ -134,8 +134,9 @@ impl AppState {
     }
 
     /// ★v24.52 音频白名单复用连发白名单: 只读快照 (绝不修改连发状态)。
+    /// 快照需要独立 Vec (音频线程持有期间不随配置变化) —— 低频路径 (500ms 一次), 克隆无妨。
     pub(crate) fn process_whitelist_snapshot(&self) -> Vec<String> {
-        util::lock_guard(&self.process_whitelist).clone()
+        util::read_guard(&self.process_whitelist).as_ref().clone()
     }
 
     /// Get the process name of the foreground window
@@ -258,8 +259,10 @@ impl AppState {
         if !self.whitelist_enabled.load(Ordering::Relaxed) {
             return true;
         }
-        // 防中毒: 锁内只做轻量 clone, 绝不持锁调用 WinAPI(OpenProcess 等)
-        let whitelist = util::lock_guard(&self.process_whitelist).clone();
+        // 防中毒 + 零分配: 只 clone Arc 引用计数 (热路径 ~1200 次/秒, 旧实现每次
+        // 锁内克隆整个 Vec<String> = 10 次堆分配/次, 且与鼠标移动 worker 的 1kHz
+        // 轮询在同一个 Mutex 上互抢 —— 键盘钩子线程偶发等锁)。
+        let whitelist = Arc::clone(&util::read_guard(&self.process_whitelist));
         if whitelist.is_empty() {
             return true;
         }

@@ -496,6 +496,30 @@ impl KeyboardHook {
                 continue;
             }
 
+            /* ★R2.13 白名单外/IME 组合中 = 与暂停同等语义: 补发释放 + 清空条目。
+             * 根因: 连发/锁定条目原来跨前台切换存活 ——
+             * ① 锁定条目注入的按下键在切到非白名单程序后仍处于 OS"按下"态
+             *    (simulate_* 有白名单检查不再补注入, 但那个悬空键的系统级
+             *    自动重复会持续打进任何前台程序 → 打字时 MMMMM 连发);
+             * ② 连发条目在白名单外空转白耗 worker 轮询。
+             * simulate_release 无保险 (弹起恒放行), 白名单外也能把悬空键放掉。
+             * 回到白名单后由下一次物理按下沿重建条目 (行为变化: 锁定不再跨
+             * 前台保持 —— 这正是修复目标, 锁定键不该在别的程序里捣乱)。 */
+            if unlikely(!state.is_process_whitelisted() || crate::state::is_ime_composing()) {
+                if !device_states.is_empty() {
+                    for (_, rt) in device_states.drain() {
+                        if rt.is_sequence {
+                            continue;
+                        }
+                        if !rt.turbo || rt.locked {
+                            state.simulate_release(&rt.action);
+                        }
+                    }
+                }
+                thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+
             // 背压合并: 队列积压超阈值时, 逐条处理只会越追越慢(worker 可能正被
             // 长 duration 的完整注入周期占住) —— 快速清空队列、只保留每个设备
             // 最新的 按下/松开 状态后合并处理; 松开必然保留, 松手立即响应,

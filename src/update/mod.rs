@@ -33,7 +33,7 @@ use serde_json::Value;
 /// tag 去掉 `R` 后比较: 主版本按整数、次版本按小数位 (见 [`cmp_versions`])。
 /// 次版本位数不设上限 —— `R2.11` / `R2.111` / `R2.1111` / `R2.1112` 都是合法档位,
 /// 而 `R2.2` 永远晚于 `R2.11` 这类两位编号。
-pub const APP_VERSION: &str = "R2.12";
+pub const APP_VERSION: &str = "R2.13";
 
 /// 仓库 (清单源与下载地址都指向它)。
 pub const REPO: &str = "118coder/DfoVibration";

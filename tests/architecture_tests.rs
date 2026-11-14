@@ -178,7 +178,7 @@ const EXPECTED_APP_KEYS: &[&str] = &[
     "minimal_vib_preset_job", "presets", "process_whitelist",
     "rawinput_capture_mode", "show_notifications", "show_tray_icon",
     "switch_key", "universal_macros", "update", "vib_edition_asked", "vib_legacy_client",
-    "whitelist_enabled", "whitelist_simple_mode", "worker_count",
+    "web_ui", "whitelist_enabled", "whitelist_simple_mode", "worker_count",
     "xinput_capture_mode",
 ];
 

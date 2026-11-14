@@ -1687,6 +1687,10 @@ pub struct AppConfig {    /// Display tray icon
     /// 与极简模式互斥, 后切换的模式生效; 用户切过就记住, 退出后下次仍进同一模式
     #[serde(default = "default_classic_mode")]
     pub classic_mode: bool,
+    /// 启动时用浏览器里的新控制台（本地 127.0.0.1 服务），而不是 egui 窗口。
+    /// 默认关：升级不改老用户的启动方式；在设置页打开后下次启动生效。
+    #[serde(default)]
+    pub web_ui: bool,
     /// 极简模式震动预设来源 (false=通用 / true=全职业)
     #[serde(default)]
     pub minimal_vib_preset_job: bool,
@@ -2055,6 +2059,7 @@ impl Default for AppConfig {
             window_rect_classic: None,
             minimal_mode: false,
             classic_mode: default_classic_mode(),
+            web_ui: false,
             minimal_vib_preset_job: false,
             dfo_player: default_dfo_player(),
             vib_legacy_client: false,

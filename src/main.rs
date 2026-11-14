@@ -24,6 +24,7 @@ mod tray;
 mod update;
 mod util;
 mod vibration;
+mod webui;
 mod xinput;
 
 use std::sync::Arc;
@@ -187,6 +188,25 @@ fn main() -> Result<()> {
                 }
             }
         });
+    }
+
+    /* Web 控制台模式（`--web` 或 `SORAHK_WEBUI=1`）：不启 egui 窗口，
+     * 钩子 / 连发 / 震动 / 托盘照旧跑在原生侧，界面交给浏览器。
+     * 选这条路径时配置由 webui 模块持有，不会和 GUI 各拿一份打架。 */
+    if webui::requested(&argv) || config.web_ui {
+        return match webui::WebUi::start(app_state.clone(), config) {
+            Ok(ui) => {
+                println!("[webui] 控制台已启动: {}", ui.url());
+                ui.open_browser();
+                ui.wait();
+                ui.shutdown();
+                Ok(())
+            }
+            Err(e) => {
+                let msg = format!("Web 控制台启动失败 (127.0.0.1 上没拿到端口): {e}");
+                show_error(&msg)
+            }
+        };
     }
 
     let gui_result = SorahkGui::run(app_state.clone(), config);

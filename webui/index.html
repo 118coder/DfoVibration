@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="sorahk-token" content="__SORAHK_TOKEN__" />
+    <title>Sorahk 控制台</title>
+    <link rel="stylesheet" href="/assets/endfield.css" />
+    <link rel="stylesheet" href="/assets/app.css" />
+  </head>
+  <body class="ef ef-contours" data-route="overview" data-mode="full">
+    <div class="stage" id="stage">
+      <div class="ef-tri" aria-hidden="true"><i></i><i></i><i></i></div>
+
+      <!-- 顶栏：品牌 / 运行态 / 常驻操作 -->
+      <header class="ef-cmdbar topbar">
+        <a class="brand" href="#overview" aria-label="回到概览">
+          <span class="seal" aria-hidden="true">S</span>
+          <span class="brand-text">SORAHK<small>DFO · VIBRATION</small></span>
+        </a>
+        <span class="top-divider" aria-hidden="true"></span>
+        <span class="ef-eyebrow top-kicker">CONTROL / 01</span>
+        <div class="top-status">
+          <span class="runstat" id="runstat" role="status"><i aria-hidden="true"></i><b>读取中</b></span>
+          <span class="ef-field" id="cmd-ver">R—</span>
+        </div>
+        <div class="util">
+          <button class="ico-btn" type="button" id="btn-theme" title="切换深色 / 浅色" aria-label="切换深色与浅色">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4.6" />
+              <path d="M12 2.4v2.2M12 19.4v2.2M2.4 12h2.2M19.4 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6" />
+            </svg>
+          </button>
+          <button class="ico-btn quit" type="button" id="btn-quit" title="退出程序（停止键盘鼠标钩子）" aria-label="退出程序">
+            <svg class="ico" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 3.5v7.2" /><path d="M7.3 6.2a7.4 7.4 0 1 0 9.4 0" />
+            </svg>
+            <span>退出</span>
+          </button>
+        </div>
+      </header>
+
+      <!-- 左侧常驻导航 -->
+      <nav class="rail" aria-label="分区" id="nav"></nav>
+
+      <div class="main">
+        <div class="view">
+          <!-- 概览：整屏仪表台 -->
+          <div class="board" id="board">
+            <div class="col col-l">
+              <section class="ef-panel dash" aria-labelledby="h-runtime">
+                <h2 id="h-runtime"><span class="ef-pair"><span class="ef-eyebrow">Runtime</span><span>运行</span></span><a href="#gamepad">全部</a></h2>
+                <div class="ef-figs" id="figs-runtime"></div>
+                <ul class="ef-ledger tight" id="ledger-run"></ul>
+              </section>
+              <section class="ef-panel dash" aria-labelledby="h-input">
+                <h2 id="h-input"><span class="ef-pair"><span class="ef-eyebrow">Input</span><span>输入</span></span></h2>
+                <ul class="ef-ledger tight" id="ledger-input"></ul>
+              </section>
+            </div>
+
+            <figure class="hub">
+              <svg class="ef-dial" id="dial" role="group" aria-label="分区圆盘"></svg>
+            </figure>
+
+            <div class="col col-r">
+              <section class="ef-panel dash" aria-labelledby="h-wl">
+                <h2 id="h-wl"><span class="ef-pair"><span class="ef-eyebrow">Whitelist</span><span>白名单</span></span><a href="#whitelist">管理</a></h2>
+                <div class="ef-figs" id="figs-wl"></div>
+                <ul class="ef-ledger tight" id="ledger-wl"></ul>
+              </section>
+              <section class="ef-panel dash" aria-labelledby="h-hap">
+                <h2 id="h-hap"><span class="ef-pair"><span class="ef-eyebrow">Haptics</span><span>震动</span></span><a href="#vibration">调校</a></h2>
+                <ul class="ef-ledger tight" id="ledger-hap"></ul>
+                <div class="motor-bars" id="motor-bars" aria-hidden="true">
+                  <span><i data-motor="l"></i></span><span><i data-motor="r"></i></span>
+                </div>
+              </section>
+            </div>
+
+            <div class="board-bottom">
+              <section class="ef-panel dash">
+                <h2>映射速览 <a class="ef-btn small" href="#gamepad">全部</a></h2>
+                <div class="scroll" id="tbl-overview"></div>
+              </section>
+              <section class="ef-panel dash">
+                <h2>最近日志 <a class="ef-btn small" href="#logs">全部</a></h2>
+                <ul class="log-list scroll" id="log-overview"></ul>
+              </section>
+              <section class="ef-panel dash">
+                <h2>快捷操作</h2>
+                <div class="quick-list" id="quick-overview"></div>
+              </section>
+            </div>
+          </div>
+
+          <!-- 其余页面：占满主区 -->
+          <section class="work" id="work" aria-live="polite"></section>
+        </div>
+
+        <!-- 底部常驻操作条：不用翻页就能做的事 -->
+        <div class="cmdbar">
+          <div class="cmd-group">
+            <span class="ef-eyebrow">CMD</span>
+            <button class="cmd-btn signal" type="button" id="btn-pause" title="暂停 / 恢复全部映射">暂停 / 恢复</button>
+            <button class="cmd-btn" type="button" data-act="toggle-vibration">震动</button>
+            <button class="cmd-btn" type="button" data-mini-audio>音频</button>
+            <button class="cmd-btn" type="button" data-act="save">保存</button>
+            <button class="cmd-btn" type="button" data-act="show-guide">引导</button>
+          </div>
+          <div class="cmd-group">
+            <span class="ef-field">预设</span>
+            <select id="quick-preset" data-preset-select aria-label="快速切换预设"></select>
+            <div class="mode-switch" role="group" aria-label="界面模式">
+              <button type="button" data-mode="full" title="完整控制台">完整</button>
+              <button type="button" data-mode="minimal" title="极简模式">极简</button>
+              <button type="button" data-mode="turbo" title="纯连发模式">连发</button>
+            </div>
+          </div>
+          <div class="cmd-live">
+            <span class="ef-field" id="foot-field">本地界面 · 只监听 127.0.0.1</span>
+            <span class="ef-field" id="foot-upd">更新 · 未检查</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast" role="status" aria-live="polite"></div>
+      <div class="guide" id="guide" hidden></div>
+    </div>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>

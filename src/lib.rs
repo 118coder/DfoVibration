@@ -24,6 +24,8 @@ pub mod state;
 pub mod update;
 pub mod util;
 pub mod vibration;
+/// 本地 Web 控制台 (Rust 后端 + 浏览器前端)。
+pub mod webui;
 pub mod xinput;
 
 // Re-export types for test modules

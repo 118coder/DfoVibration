@@ -102,6 +102,9 @@ fn gui_dependency_allowlist() {
         "update",                              // ★v24.55 检查更新浮窗/设置页 (遗留补录)
         "auto_inject",                         // host_dir_dll 等查询
         "input_manager",                       // 设备管理操作 (request_xinput_reset 等 3 处)
+        // ★2026-11-15 纯 Rust 重构: ui_api 是 UI 无关的契约层 (命令/快照/映射表),
+        // 不含任何系统接线; GUI 只通过它读状态、发命令, 换 UI 时后端不动。
+        "ui_api",
     ];
     let mut files = Vec::new();
     collect_rs(&src_dir().join("gui"), &mut files);

@@ -121,95 +121,95 @@ impl Theme {
         egui::FontFamily::Name("Bold".into())
     }
 
-    /// 暗色: 中性石墨三阶 + 靛蓝强调 (v5, 用户反馈深色发糊后重做)。
+    /// 暗色: 石墨骨架 + 黄标强调 (终末地 v6, 与新外壳 EfPalette 同口径)。
     pub fn dark() -> Self {
         Self {
             dark: true,
-            bg: egui::Color32::from_rgb(12, 15, 21),        // #0C0F15 石墨夜空
-            surface: egui::Color32::from_rgb(19, 23, 32),   // #131720 侧栏/顶栏
-            card: egui::Color32::from_rgb(27, 32, 43),      // #1B202B (raised)
-            card_alt: egui::Color32::from_rgb(34, 40, 53),  // #222835 嵌套面板
-            faint: egui::Color32::from_rgb(45, 52, 69),     // #2D3445 (悬停层)
-            extreme: egui::Color32::from_rgb(7, 9, 13),     // #07090D 输入框井
-            stroke: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 26),        // 白 10% 分隔/描边
-            stroke_strong: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 56), // 白 22% 悬停/浮层
-            accent: egui::Color32::from_rgb(129, 140, 248),    // #818CF8 靛蓝 (card 上 6.0:1)
-            accent_hover: egui::Color32::from_rgb(165, 180, 252), // #A5B4FC
-            accent_soft: egui::Color32::from_rgba_unmultiplied(129, 140, 248, 46), // subtle bg
-            accent_text: egui::Color32::from_rgb(165, 180, 252), // #A5B4FC (card 上 9.0:1)
-            title: egui::Color32::from_rgb(245, 247, 250),  // #F5F7FA
-            heading: egui::Color32::from_rgb(228, 232, 239), // #E4E8EF
-            text: egui::Color32::from_rgb(198, 204, 216),   // #C6CCD8 (card 上 10.1:1)
-            text_weak: egui::Color32::from_rgb(155, 163, 178), // #9BA3B2
-            hint: egui::Color32::from_rgb(140, 148, 164),   // #8C94A4 (card 上 5.4:1 / 嵌套 4.8:1)
-            good: egui::Color32::from_rgb(52, 211, 153),    // emerald-400
-            good_soft: egui::Color32::from_rgba_unmultiplied(52, 211, 153, 28),
-            bad: egui::Color32::from_rgb(251, 113, 133),    // rose-400 (中性底上更柔)
-            bad_soft: egui::Color32::from_rgba_unmultiplied(251, 113, 133, 28),
-            warn: egui::Color32::from_rgb(251, 191, 36),    // amber-400
-            warn_soft: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 28),
-            info: egui::Color32::from_rgb(56, 189, 248),    // sky-400
-            trigger_fg: egui::Color32::from_rgb(252, 211, 77),  // amber-300
-            trigger_bg: egui::Color32::from_rgba_unmultiplied(252, 211, 77, 26),
-            target_fg: egui::Color32::from_rgb(125, 211, 252),  // sky-300
-            target_bg: egui::Color32::from_rgba_unmultiplied(125, 211, 252, 24),
-            gamepad_fg: egui::Color32::from_rgb(196, 181, 253),              // #C4B5FD 紫
-            gamepad_bg: egui::Color32::from_rgba_unmultiplied(139, 92, 246, 20),
-            mouse_fg: egui::Color32::from_rgb(253, 186, 116),                // orange-300
-            mouse_bg: egui::Color32::from_rgba_unmultiplied(251, 146, 60, 18),
-            btn_primary: egui::Color32::from_rgb(79, 85, 232), // #4F55E8 (白字 5.5:1, 与亮色主题同色)
-            btn_secondary: egui::Color32::from_rgb(45, 52, 69), // faint
-            btn_secondary_text: egui::Color32::from_rgb(214, 219, 230),
-            btn_danger: egui::Color32::from_rgb(225, 29, 72), // #E11D48 (白字 4.7:1)
-            on_emphasis: egui::Color32::from_rgb(13, 16, 22), // #0D1016 浅底上的近黑文字
-            motor_l: egui::Color32::from_rgb(251, 146, 60),   // orange-400
-            motor_r: egui::Color32::from_rgb(248, 113, 113),  // red-400
+            bg: egui::Color32::from_rgb(20, 22, 26),        // #14161A 石墨夜
+            surface: egui::Color32::from_rgb(27, 30, 36),   // #1B1E24 顶栏
+            card: egui::Color32::from_rgb(35, 39, 48),      // #232730 卡片
+            card_alt: egui::Color32::from_rgb(44, 49, 59),  // #2C313B 嵌套
+            faint: egui::Color32::from_rgb(54, 60, 71),     // #363C47 悬停
+            extreme: egui::Color32::from_rgb(16, 18, 22),   // #101216 输入框井
+            stroke: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 32),
+            stroke_strong: egui::Color32::from_rgba_unmultiplied(255, 255, 255, 60),
+            accent: egui::Color32::from_rgb(232, 178, 58),     // #E8B23A 黄标
+            accent_hover: egui::Color32::from_rgb(242, 201, 101),
+            accent_soft: egui::Color32::from_rgba_unmultiplied(232, 178, 58, 46),
+            accent_text: egui::Color32::from_rgb(242, 201, 101),
+            title: egui::Color32::from_rgb(237, 237, 232),
+            heading: egui::Color32::from_rgb(220, 220, 214),
+            text: egui::Color32::from_rgb(199, 201, 199),
+            text_weak: egui::Color32::from_rgb(154, 160, 170),
+            hint: egui::Color32::from_rgb(144, 152, 162),
+            good: egui::Color32::from_rgb(91, 140, 123),
+            good_soft: egui::Color32::from_rgba_unmultiplied(91, 140, 123, 30),
+            bad: egui::Color32::from_rgb(208, 90, 74),
+            bad_soft: egui::Color32::from_rgba_unmultiplied(208, 90, 74, 30),
+            warn: egui::Color32::from_rgb(232, 178, 58),
+            warn_soft: egui::Color32::from_rgba_unmultiplied(232, 178, 58, 28),
+            info: egui::Color32::from_rgb(110, 157, 176),
+            trigger_fg: egui::Color32::from_rgb(242, 201, 101),
+            trigger_bg: egui::Color32::from_rgba_unmultiplied(232, 178, 58, 26),
+            target_fg: egui::Color32::from_rgb(130, 186, 200),
+            target_bg: egui::Color32::from_rgba_unmultiplied(110, 157, 176, 24),
+            gamepad_fg: egui::Color32::from_rgb(214, 190, 130),
+            gamepad_bg: egui::Color32::from_rgba_unmultiplied(232, 178, 58, 20),
+            mouse_fg: egui::Color32::from_rgb(216, 150, 108),
+            mouse_bg: egui::Color32::from_rgba_unmultiplied(216, 150, 108, 18),
+            btn_primary: egui::Color32::from_rgb(198, 143, 24), // 深黄棕
+            btn_secondary: egui::Color32::from_rgb(44, 49, 59),
+            btn_secondary_text: egui::Color32::from_rgb(214, 216, 214),
+            btn_danger: egui::Color32::from_rgb(192, 75, 60),
+            on_emphasis: egui::Color32::from_rgb(13, 16, 22),
+            motor_l: egui::Color32::from_rgb(216, 150, 108),
+            motor_r: egui::Color32::from_rgb(208, 90, 74),
         }
     }
 
-    /// 亮色: 蓝白基调 (用户偏好) + 靛蓝强调 (深档保证对比)。
+    /// 亮色: 纸白骨架 + 墨线 + 黄标 (终末地 v6)。
     pub fn light() -> Self {
         Self {
             dark: false,
-            bg: egui::Color32::from_rgb(244, 245, 247),      // #F4F5F7
-            surface: egui::Color32::from_rgb(236, 238, 241), // #ECEEF1
-            card: egui::Color32::from_rgb(255, 255, 255),
-            card_alt: egui::Color32::from_rgb(246, 247, 249),
-            faint: egui::Color32::from_rgb(231, 233, 238),   // #E7E9EE
+            bg: egui::Color32::from_rgb(233, 230, 222),      // #E9E6DE 纸边
+            surface: egui::Color32::from_rgb(245, 243, 236), // #F5F3EC 顶栏
+            card: egui::Color32::from_rgb(255, 254, 250),    // #FFFEFA 卡片
+            card_alt: egui::Color32::from_rgb(240, 237, 228),
+            faint: egui::Color32::from_rgb(228, 224, 214),
             extreme: egui::Color32::from_rgb(255, 255, 255),
-            stroke: egui::Color32::from_rgb(226, 228, 231),   // #E2E4E7
-            stroke_strong: egui::Color32::from_rgb(208, 213, 224), // #D0D5E0 hover 边
-            accent: egui::Color32::from_rgb(79, 85, 232),    // #4F55E8 电光靛蓝 (白底 5.2:1)
-            accent_hover: egui::Color32::from_rgb(91, 98, 242), // #5B62F2
-            accent_soft: egui::Color32::from_rgba_unmultiplied(79, 85, 232, 26),
-            accent_text: egui::Color32::from_rgb(63, 69, 208), // #3F45D0 (白底 6.4:1)
-            title: egui::Color32::from_rgb(16, 19, 28),      // #10131C
-            heading: egui::Color32::from_rgb(35, 40, 58),    // #23283A
-            text: egui::Color32::from_rgb(62, 68, 83),       // #3E4453
-            text_weak: egui::Color32::from_rgb(98, 106, 124), // #626A7C
-            hint: egui::Color32::from_rgb(107, 115, 134),    // #6B7386 (白底 4.7:1)
-            good: egui::Color32::from_rgb(22, 163, 74),      // green-600
-            good_soft: egui::Color32::from_rgba_unmultiplied(22, 163, 74, 22),
-            bad: egui::Color32::from_rgb(225, 29, 72),       // rose-600
-            bad_soft: egui::Color32::from_rgba_unmultiplied(225, 29, 72, 20),
-            warn: egui::Color32::from_rgb(217, 119, 6),      // amber-600
-            warn_soft: egui::Color32::from_rgba_unmultiplied(217, 119, 6, 22),
-            info: egui::Color32::from_rgb(2, 132, 199),      // sky-600
-            trigger_fg: egui::Color32::from_rgb(180, 83, 9),   // amber-700
-            trigger_bg: egui::Color32::from_rgba_unmultiplied(251, 191, 36, 42),
-            target_fg: egui::Color32::from_rgb(3, 105, 161),   // sky-700
-            target_bg: egui::Color32::from_rgba_unmultiplied(56, 189, 248, 40),
-            gamepad_fg: egui::Color32::from_rgb(63, 69, 208),               // #3F45D0 靛蓝
-            gamepad_bg: egui::Color32::from_rgba_unmultiplied(79, 85, 232, 14),
-            mouse_fg: egui::Color32::from_rgb(194, 65, 12),                 // orange-700
-            mouse_bg: egui::Color32::from_rgba_unmultiplied(234, 88, 12, 14),
-            btn_primary: egui::Color32::from_rgb(79, 85, 232), // #4F55E8 (白字 5.2:1)
-            btn_secondary: egui::Color32::from_rgb(231, 233, 238),
-            btn_secondary_text: egui::Color32::from_rgb(74, 80, 96),
-            btn_danger: egui::Color32::from_rgb(225, 29, 72),
-            on_emphasis: egui::Color32::WHITE, // 亮色: 浅底上继续用白字 (与既有观感一致)
-            motor_l: egui::Color32::from_rgb(234, 88, 12),    // orange-600
-            motor_r: egui::Color32::from_rgb(220, 38, 38),    // red-600
+            stroke: egui::Color32::from_rgb(201, 198, 189),   // #C9C6BD 墨线
+            stroke_strong: egui::Color32::from_rgb(169, 165, 154),
+            accent: egui::Color32::from_rgb(216, 155, 30),   // #D89B1E 黄标
+            accent_hover: egui::Color32::from_rgb(232, 178, 58),
+            accent_soft: egui::Color32::from_rgba_unmultiplied(216, 155, 30, 26),
+            accent_text: egui::Color32::from_rgb(138, 95, 10),
+            title: egui::Color32::from_rgb(27, 28, 30),      // #1B1C1E 墨
+            heading: egui::Color32::from_rgb(42, 44, 48),
+            text: egui::Color32::from_rgb(60, 62, 66),
+            text_weak: egui::Color32::from_rgb(106, 107, 106),
+            hint: egui::Color32::from_rgb(108, 109, 107),
+            good: egui::Color32::from_rgb(47, 107, 79),
+            good_soft: egui::Color32::from_rgba_unmultiplied(47, 107, 79, 22),
+            bad: egui::Color32::from_rgb(180, 67, 54),
+            bad_soft: egui::Color32::from_rgba_unmultiplied(180, 67, 54, 20),
+            warn: egui::Color32::from_rgb(183, 122, 14),
+            warn_soft: egui::Color32::from_rgba_unmultiplied(216, 155, 30, 22),
+            info: egui::Color32::from_rgb(60, 110, 122),
+            trigger_fg: egui::Color32::from_rgb(138, 95, 10),
+            trigger_bg: egui::Color32::from_rgba_unmultiplied(216, 155, 30, 42),
+            target_fg: egui::Color32::from_rgb(42, 96, 112),
+            target_bg: egui::Color32::from_rgba_unmultiplied(60, 110, 122, 40),
+            gamepad_fg: egui::Color32::from_rgb(124, 92, 26),
+            gamepad_bg: egui::Color32::from_rgba_unmultiplied(216, 155, 30, 14),
+            mouse_fg: egui::Color32::from_rgb(158, 82, 28),
+            mouse_bg: egui::Color32::from_rgba_unmultiplied(216, 150, 108, 14),
+            btn_primary: egui::Color32::from_rgb(154, 106, 12), // #9A6A0C 深黄棕 (白字)
+            btn_secondary: egui::Color32::from_rgb(228, 224, 214),
+            btn_secondary_text: egui::Color32::from_rgb(60, 62, 66),
+            btn_danger: egui::Color32::from_rgb(180, 67, 54),
+            on_emphasis: egui::Color32::WHITE,
+            motor_l: egui::Color32::from_rgb(190, 108, 40),
+            motor_r: egui::Color32::from_rgb(180, 67, 54),
         }
     }
 

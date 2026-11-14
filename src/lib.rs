@@ -27,6 +27,8 @@ pub mod vibration;
 /// 本地 Web 控制台 (Rust 后端 + 浏览器前端)。
 pub mod webui;
 pub mod xinput;
+/// UI 无关的应用契约层（API + 映射模式）；egui 与网页端共用。
+pub mod ui_api;
 
 // Re-export types for test modules
 pub use config::{AppConfig, KeyMapping};

@@ -26,6 +26,8 @@ mod mouse_scroll_dialog;
 mod settings_dialog;
 mod classic_mode;
 mod theme;
+/// 终末地风格的新外壳（纯 Rust / egui 渲染器）。
+pub mod endfield;
 /// ★v24.55 检查更新界面 (右下淡入淡出浮窗 + 更新面板)
 mod update_ui;
 pub mod types;
@@ -342,6 +344,15 @@ pub struct SorahkGui {
     pub(crate) update_toast_at: Option<std::time::Instant>,
     /// 已为哪个版本弹过浮窗 (同版本每会话只弹一次, 免得反复打扰)
     pub(crate) update_toast_ver: Option<String>,
+    /* ═══════ 新外壳（ui_api 映射表驱动） ═══════ */
+    /// 是否使用终末地外壳；SORAHK_UI=legacy 可切回旧渲染器。
+    pub(crate) ef_shell: bool,
+    /// 当前分区（与 ui_api::SCHEMA.pages 的 id 对应）。
+    pub(crate) ef_route: crate::gui::endfield::EfRoute,
+    /// 当前界面模式（完整 / 极简 / 纯连发）。
+    pub(crate) ef_mode: crate::ui_api::UiMode,
+    /// 命令结果 / 模式切换的轻量提示。
+    pub(crate) ef_toast: Option<(String, std::time::Instant)>,
 }
 
 impl SorahkGui {
@@ -521,6 +532,10 @@ impl SorahkGui {
             show_update_dialog: false,
             update_toast_at: None,
             update_toast_ver: None,
+            ef_shell: std::env::var("SORAHK_UI").ok().as_deref() != Some("legacy"),
+            ef_route: crate::gui::endfield::EfRoute::Overview,
+            ef_mode: crate::ui_api::UiMode::Full,
+            ef_toast: None,
         }
     }
 
@@ -660,8 +675,8 @@ impl SorahkGui {
         let icon = crate::gui::utils::create_icon();
 
         let mut viewport = egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 760.0])
-            .with_min_inner_size([980.0, 680.0])
+            .with_inner_size([1600.0, 900.0])
+            .with_min_inner_size([1280.0, 720.0])
             .with_resizable(true)
             .with_title("DfoVibration-V3 连发与映射工具")
             .with_icon(icon)
@@ -738,8 +753,17 @@ impl SorahkGui {
     }
 
     /// 设置当前页面 (无头导出时逐页切换)。
+    /// 新外壳用 `ef_route`，这里同步过去，保证无头截图与真机看到同一套分区。
     pub fn set_page(&mut self, page: Page) {
         self.active_page = page;
+        self.ef_route = match page {
+            Page::Gamepad => crate::gui::endfield::EfRoute::Gamepad,
+            Page::Turbo => crate::gui::endfield::EfRoute::Turbo,
+            Page::Whitelist => crate::gui::endfield::EfRoute::Whitelist,
+            Page::Vibration => crate::gui::endfield::EfRoute::Vibration,
+            Page::JobPresets => crate::gui::endfield::EfRoute::JobPresets,
+            Page::AudioHaptics => crate::gui::endfield::EfRoute::Audio,
+        };
     }
 
     /// 打开/关闭指定弹窗, 供截图覆盖"每个弹窗"。

@@ -26,6 +26,7 @@ mod util;
 mod vibration;
 mod webui;
 mod xinput;
+mod ui_api;
 
 use std::sync::Arc;
 use std::thread;
@@ -190,10 +191,10 @@ fn main() -> Result<()> {
         });
     }
 
-    /* Web 控制台模式（`--web` 或 `SORAHK_WEBUI=1`）：不启 egui 窗口，
-     * 钩子 / 连发 / 震动 / 托盘照旧跑在原生侧，界面交给浏览器。
-     * 选这条路径时配置由 webui 模块持有，不会和 GUI 各拿一份打架。 */
-    if webui::requested(&argv) || config.web_ui {
+    /* 网页控制台是**可选的第二渲染器**：只有显式 `--web` / `SORAHK_WEBUI=1` 才走。
+     * 默认界面是纯 Rust 的 egui 原生窗口（终末地外壳），启动不依赖浏览器。
+     * config.web_ui 不再自动切换，避免老配置把用户带回浏览器。 */
+    if webui::requested(&argv) {
         return match webui::WebUi::start(app_state.clone(), config) {
             Ok(ui) => {
                 println!("[webui] 控制台已启动: {}", ui.url());

@@ -15,6 +15,8 @@ mod assets;
 mod http;
 
 use std::io::Write;
+#[cfg(windows)]
+use std::path::{Path, PathBuf};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -33,23 +35,15 @@ const STREAM_MS: u64 = 500;
 /// 一次最多回多少行日志。
 const LOG_LINES_MAX: usize = 500;
 
-/// 是否走 Web 控制台。
+/// 是否走网页渲染器（可选）。默认界面是纯 Rust/egui 原生窗口。
 ///
-/// 优先级：`--gui`（临时切回原版窗口）> `--web` > 专用 exe 文件名含 `WebUI`
-/// > 环境变量 `SORAHK_WEBUI=1` > 配置 `web_ui`。
-/// 专用包双击即可进新版控制台，不必记参数；老用户仍靠配置开关决定启动方式。
+/// 只有显式 `--web` 或 `SORAHK_WEBUI=1` 才切到网页；`--gui` 优先级最高。
+/// `config.web_ui` 不再自动切换，避免老配置把用户带回浏览器。
 pub fn requested(argv: &[String]) -> bool {
     if argv.iter().any(|a| a == "--gui") {
         return false;
     }
     if argv.iter().any(|a| a == "--web") {
-        return true;
-    }
-    let dedicated_exe = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-        .is_some_and(|name| name.contains("webui"));
-    if dedicated_exe {
         return true;
     }
     matches!(
@@ -125,10 +119,25 @@ impl WebUi {
     }
 
     /// 让浏览器把控制台打开。失败不影响服务本身（用户可手动复制地址）。
+    ///
+    /// 不能用 `cmd /C start <URL>`：没给 http/https 绑定默认应用的 Windows 会弹
+    /// 「选择一个应用以打开此 http 链接」，界面就卡在这一步。改成直接找浏览器
+    /// 可执行文件、把地址当参数传进去，绕开协议关联。
     pub fn open_browser(&self) {
         let url = self.url();
         #[cfg(windows)]
         {
+            if let Some(custom) = std::env::var_os("SORAHK_BROWSER") {
+                if spawn_browser(Path::new(&custom), &url) {
+                    return;
+                }
+            }
+            for exe in browser_candidates() {
+                if exe.is_file() && spawn_browser(&exe, &url) {
+                    return;
+                }
+            }
+            // 兜底：实在找不到浏览器才交回系统关联。
             let _ = std::process::Command::new("cmd")
                 .args(["/C", "start", "", &url])
                 .spawn();
@@ -269,6 +278,11 @@ impl Handler {
     }
 
     fn action(&self, act: &str) -> http::Response {
+        // 命令来自 ui_api 契约层；egui 与网页端用同一套 id，换 UI 不用改后端。
+        let Some(cmd) = crate::ui_api::UiCommand::parse(act) else {
+            return http::Response::error(400, &format!("不认识的动作：{act}"));
+        };
+        let act = cmd.id();
         let state = &self.inner.state;
         match act {
             "toggle-pause" => {
@@ -579,6 +593,49 @@ fn phase_name(p: Phase) -> &'static str {
         Phase::Downloaded => "Downloaded",
         Phase::Failed => "Failed",
     }
+}
+
+/// 直接把地址传给浏览器进程，不走 ShellExecute 的 http 协议关联。
+/// `SORAHK_WEBUI_APP=1` 时 Chromium 系开无地址栏的独立窗口，观感更接近独立程序。
+#[cfg(windows)]
+fn spawn_browser(exe: &Path, url: &str) -> bool {
+    let mut cmd = std::process::Command::new(exe);
+    let name = exe
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let chromium = name.contains("chrome") || name.contains("msedge") || name.contains("edge");
+    let app_mode = matches!(
+        std::env::var("SORAHK_WEBUI_APP").ok().as_deref(),
+        Some("1") | Some("true") | Some("yes")
+    );
+    cmd.arg(if chromium && app_mode {
+        format!("--app={url}")
+    } else {
+        url.to_string()
+    });
+    cmd.spawn().is_ok()
+}
+
+/// 常见浏览器安装位置；`SORAHK_BROWSER` 可以显式指定，优先级最高。
+#[cfg(windows)]
+fn browser_candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for var in [
+        "PROGRAMFILES(X86)",
+        "PROGRAMFILES",
+        "PROGRAMW6432",
+        "LOCALAPPDATA",
+    ] {
+        let Ok(base) = std::env::var(var) else { continue };
+        let root = PathBuf::from(base);
+        out.push(root.join(r"Microsoft\Edge\Application\msedge.exe"));
+        out.push(root.join(r"Google\Chrome\Application\chrome.exe"));
+        out.push(root.join(r"CentBrowser\Application\chrome.exe"));
+        out.push(root.join(r"Mozilla Firefox\firefox.exe"));
+    }
+    out
 }
 
 fn make_token() -> String {

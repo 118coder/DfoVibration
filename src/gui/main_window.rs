@@ -943,6 +943,14 @@ impl SorahkGui {
             return;
         }
 
+        /* 新版终末地外壳（默认）：16:9 窗口 / 上导航 / 中央圆盘 / 图标化顶栏。
+         * 旧外壳保留为第二个渲染器（SORAHK_UI=legacy），两者共用 ui_api 命令层；
+         * 以后再换 UI 只需替换这里调用的渲染器，后端不动。 */
+        if self.ef_shell {
+            crate::gui::endfield::render(self, ctx, frame_state);
+            return;
+        }
+
         /* 顶栏: 品牌 + 预设 + 图标按钮组 */
         egui::TopBottomPanel::top("top_bar")
             .frame(

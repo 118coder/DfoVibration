@@ -33,9 +33,23 @@ const STREAM_MS: u64 = 500;
 /// 一次最多回多少行日志。
 const LOG_LINES_MAX: usize = 500;
 
-/// 是否走 Web 控制台：环境变量 `SORAHK_WEBUI=1` 或命令行 `--web`。
+/// 是否走 Web 控制台。
+///
+/// 优先级：`--gui`（临时切回原版窗口）> `--web` > 专用 exe 文件名含 `WebUI`
+/// > 环境变量 `SORAHK_WEBUI=1` > 配置 `web_ui`。
+/// 专用包双击即可进新版控制台，不必记参数；老用户仍靠配置开关决定启动方式。
 pub fn requested(argv: &[String]) -> bool {
+    if argv.iter().any(|a| a == "--gui") {
+        return false;
+    }
     if argv.iter().any(|a| a == "--web") {
+        return true;
+    }
+    let dedicated_exe = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        .is_some_and(|name| name.contains("webui"));
+    if dedicated_exe {
         return true;
     }
     matches!(

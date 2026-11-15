@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio_haptics;
+/// ★R2.14 前后端分离: 后端服务门面 (与 lib.rs 同步声明)
+mod backend;
 mod config;
 mod gui;
 mod hid_layout;
@@ -22,6 +24,8 @@ mod state;
 mod tray;
 /// ★v24.55 检查更新 (与 lib.rs 同步声明)
 mod update;
+/// ★R2.14 前后端分离: UI↔后端 契约层 (与 lib.rs 同步声明)
+mod ui_api;
 mod util;
 mod vibration;
 mod xinput;

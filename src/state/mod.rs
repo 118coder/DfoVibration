@@ -178,7 +178,8 @@ static GLOBAL_STATE: OnceLock<Arc<AppState>> = OnceLock::new();
 
 
 // ── 按职责拆分的子模块 (2026-09-27 架构重构 B; 各文件头部注明原 state.rs 行号区间) ──
-mod key_names;
+/// ★R2.14: 放开 pub —— ui_api/backend 契约层需要 key_kind (纯键名分类)。
+pub mod key_names;
 mod mappings;
 mod events;
 mod whitelist;

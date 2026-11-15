@@ -91,33 +91,9 @@ pub fn string_to_vk(key_name: &str) -> Option<u32> {
 
 
 /// 键名设备类型 (连发映射键帽配色: 紫=手柄 / 橙=鼠标 / 键盘=中性)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyKind {
-    /// 手柄输入 (GAMEPAD_ 前缀, 快速捕获产物)
-    Gamepad,
-    /// 鼠标: 移动八向 MOUSE_* / 滚动 SCROLL_* / 按键 LBUTTON·RBUTTON·MBUTTON·XBUTTON1·XBUTTON2
-    Mouse,
-    /// 其余 = 键盘键 (保持中性键帽)
-    Keyboard,
-}
-
-/// 按键名分类设备类型 (大小写不敏感; 组合键整体传入时按前缀判定)。
-pub fn key_kind(key_name: &str) -> KeyKind {
-    let u = key_name.trim().to_ascii_uppercase();
-    if u.starts_with("GAMEPAD") {
-        return KeyKind::Gamepad;
-    }
-    if u.starts_with("MOUSE_")
-        || u.starts_with("SCROLL_")
-        || matches!(
-            u.as_str(),
-            "LBUTTON" | "RBUTTON" | "MBUTTON" | "XBUTTON1" | "XBUTTON2"
-        )
-    {
-        return KeyKind::Mouse;
-    }
-    KeyKind::Keyboard
-}
+/// ★R2.14 前后端分离: 实现移入 `state::key_names` (后端预设绑定重建也需要分类，
+/// 后端不得依赖 gui)。此处 re-export 保持既有 `crate::gui::utils::key_kind` 调用点不变。
+pub use crate::state::key_names::{KeyKind, key_kind};
 
 
 /// Loads embedded application icon.

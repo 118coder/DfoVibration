@@ -658,3 +658,37 @@ static SCANCODE_MAP: LazyLock<HashMap<u32, u16>> = LazyLock::new(|| {
     .collect()
 });
 
+
+// ═══════════════════════════════════════════════════════════════════════
+// ★R2.14 按键名分类 (前后端分离: 从 gui/utils.rs 移入 —— 后端保存调度/预设绑定
+// 重建也需要判断"手柄类键名"，后端不得依赖 gui，故归位到键名域)
+// ═══════════════════════════════════════════════════════════════════════
+
+/// 按键名粗分类 (gui/utils.rs 原有语义原样移入)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyKind {
+    /// 手柄输入 (GAMEPAD_ 前缀, 快速捕获产物)
+    Gamepad,
+    /// 鼠标: 移动八向 MOUSE_* / 滚动 SCROLL_* / 按键 LBUTTON·RBUTTON·MBUTTON·XBUTTON1·XBUTTON2
+    Mouse,
+    /// 其余 = 键盘键 (保持中性键帽)
+    Keyboard,
+}
+
+/// 按键名分类设备类型 (大小写不敏感; 组合键整体传入时按前缀判定)。
+pub fn key_kind(key_name: &str) -> KeyKind {
+    let u = key_name.trim().to_ascii_uppercase();
+    if u.starts_with("GAMEPAD") {
+        return KeyKind::Gamepad;
+    }
+    if u.starts_with("MOUSE_")
+        || u.starts_with("SCROLL_")
+        || matches!(
+            u.as_str(),
+            "LBUTTON" | "RBUTTON" | "MBUTTON" | "XBUTTON1" | "XBUTTON2"
+        )
+    {
+        return KeyKind::Mouse;
+    }
+    KeyKind::Keyboard
+}

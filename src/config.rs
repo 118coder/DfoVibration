@@ -1845,7 +1845,8 @@ pub struct UniversalMacro {
 }
 
 /// Key mapping configuration for trigger-target pairs.
-#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+/// ★R2.14: 补 Default derive (backend 契约/测试构造用; 纯属性添加, serde 不变)。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
 pub struct KeyMapping {
     /// Trigger key name
     pub trigger_key: String,

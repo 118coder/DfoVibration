@@ -1,68 +1,70 @@
 //! 震动/职业参数导入导出 (JobVibration.toml 快照 + 剪贴板/文件导出) —— 原 vibration_page.rs 290-398, 2026-09-27 架构重构 C1 归位。
+//!
+//! ★R2.14: 数据来源改为 backend (引擎镜像走快照, config 字段走 with_config 短借)。
 
 use crate::gui::SorahkGui;
 
 
 impl SorahkGui {
     /// 保存当前职业参数快照到 JobVibration.toml (应用/滑块修改时调用)
-    pub(in crate::gui) fn save_job_vibration_state(app_state: &crate::state::AppState, base_job: &str, class_name: &str) {
-        use std::sync::atomic::Ordering;
-        let params: Vec<u32> = (0..60)
-            .map(|i| app_state.vibration_params[i].load(Ordering::Relaxed))
-            .collect();
+    ///
+    /// ★R2.14: 引擎读数 (60 槽/等级/时长) 取自 backend 运行态快照;
+    /// JobVibration.toml 的读写编排仍归 GUI (职业会话状态自管)。
+    pub(in crate::gui) fn save_job_vibration_state(&self, base_job: &str, class_name: &str) {
+        let snap = self.backend.snapshot();
         crate::job_presets::save_job_vibration(&crate::job_presets::JobVibrationConfig {
             base_job: base_job.to_string(),
             class_name: class_name.to_string(),
             applied: true,
-            params,
-            rank_duration: app_state.vibration_rank_duration.load(Ordering::Relaxed),
-            rank_level_gain: app_state.vibration_rank_level_gain.load(Ordering::Relaxed),
+            params: snap.vibration.params.clone(),
+            rank_duration: snap.vibration.rank_duration,
+            rank_level_gain: snap.vibration.rank_level_gain,
         });
     }
 
 
     /// 导出通用震动设定 (当前生效参数 + 评分 + 高级算法) 为 TOML 字符串
-    pub(in crate::gui) fn export_vibration_settings(app_state: &crate::state::AppState, config: &crate::config::AppConfig) -> String {
+    ///
+    /// ★R2.14: 数组取自运行态快照 (引擎镜像), 标量取自 config (权威)。
+    /// 显式传 `&Backend` (闭包内避免整份 self 捕获)。
+    pub(in crate::gui) fn export_vibration_settings(backend: &crate::backend::Backend) -> String {
         use std::fmt::Write;
-        use std::sync::atomic::Ordering;
+        let snap = backend.snapshot();
+        let (vib, legacy) = backend.with_config(|c| (c.vibration.clone(), c.vib_legacy_client));
         let mut s = String::new();
         s.push_str("# ═══════════════════════════════════════════════════════\n");
         s.push_str("#  Sorahk 通用震动设定导出\n");
         s.push_str("# ═══════════════════════════════════════════════════════\n");
         /* ★v24.14: 注明路线与对应设定文件 (文件名也带同样的标记) */
-        let route = if config.vib_legacy_client {
+        let route = if legacy {
             crate::config::VIBRATION_FILE_ACT
         } else {
             crate::config::VIBRATION_FILE
         };
         s.push_str(&format!(
             "#  客户端路线: {}\n#  对应设定文件: {}\n\n",
-            if config.vib_legacy_client { "S1 ACT (老方案)" } else { "S4+ 新版 (现行方案)" },
+            if legacy { "S1 ACT (老方案)" } else { "S4+ 新版 (现行方案)" },
             route,
         ));
-        s.push_str(&format!("independent_test = {}\n", config.vibration.independent_test));
-        s.push_str(&format!("move_independent = {}\n", config.vibration.move_independent));
-        s.push_str(&format!("out_smooth = {}\n", config.vibration.out_smooth));
-        s.push_str(&format!("throttle_window_ms = {}\n", config.vibration.throttle_window_ms));
-        s.push_str(&format!("throttle_max_hits = {}\n", config.vibration.throttle_max_hits));
-        s.push_str(&format!("throttle_dense_ratio = {}\n", config.vibration.throttle_dense_ratio));
-        s.push_str(&format!("random_gain = {}\n", config.vibration.random_gain));
-        s.push_str(&format!("motor_l_gain = {}\n", config.vibration.motor_l_gain));
-        s.push_str(&format!("motor_r_gain = {}\n", config.vibration.motor_r_gain));
-        s.push_str(&format!("rank_level_gain = {}\n", app_state.vibration_rank_level_gain.load(Ordering::Relaxed)));
-        s.push_str(&format!("rank_duration = {}\n", app_state.vibration_rank_duration.load(Ordering::Relaxed)));
-        let _ = writeln!(s, "\nparams = [{}]", (0..60)
-            .map(|i| app_state.vibration_params[i].load(Ordering::Relaxed).to_string())
-            .collect::<Vec<_>>().join(", "));
-        let _ = writeln!(s, "item_lr = [{}]", (0..26)
-            .map(|i| app_state.vibration_item_lr[i].load(Ordering::Relaxed).to_string())
-            .collect::<Vec<_>>().join(", "));
-        let _ = writeln!(s, "rank_lr = [{}]", (0..30)
-            .map(|i| app_state.vibration_rank_lr[i].load(Ordering::Relaxed).to_string())
-            .collect::<Vec<_>>().join(", "));
-        let _ = writeln!(s, "rank_type_gain = [{}]", (0..15)
-            .map(|i| app_state.vibration_rank_type_gain[i].load(Ordering::Relaxed).to_string())
-            .collect::<Vec<_>>().join(", "));
+        s.push_str(&format!("independent_test = {}\n", vib.independent_test));
+        s.push_str(&format!("move_independent = {}\n", vib.move_independent));
+        s.push_str(&format!("out_smooth = {}\n", vib.out_smooth));
+        s.push_str(&format!("throttle_window_ms = {}\n", vib.throttle_window_ms));
+        s.push_str(&format!("throttle_max_hits = {}\n", vib.throttle_max_hits));
+        s.push_str(&format!("throttle_dense_ratio = {}\n", vib.throttle_dense_ratio));
+        s.push_str(&format!("random_gain = {}\n", vib.random_gain));
+        s.push_str(&format!("motor_l_gain = {}\n", vib.motor_l_gain));
+        s.push_str(&format!("motor_r_gain = {}\n", vib.motor_r_gain));
+        s.push_str(&format!("rank_level_gain = {}\n", snap.vibration.rank_level_gain));
+        s.push_str(&format!("rank_duration = {}\n", snap.vibration.rank_duration));
+        let _ = writeln!(s, "\nparams = [{}]", snap.vibration.params.iter()
+            .map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+        let _ = writeln!(s, "item_lr = [{}]", vib.item_lr.iter()
+            .map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+        let _ = writeln!(s, "rank_lr = [{}]", vib.rank_lr.iter()
+            .map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
+        let _ = writeln!(s, "rank_type_gain = [{}]", vib.rank_type_gain.iter()
+            .map(|v| v.to_string()).collect::<Vec<_>>().join(", "));
         s
     }
 

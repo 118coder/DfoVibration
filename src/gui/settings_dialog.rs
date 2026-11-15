@@ -8,7 +8,7 @@ use crate::state::CaptureMode;
 use crate::gui::theme::Theme;
 use eframe::egui;
 use smallvec::SmallVec;
-use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+
 
 use std::str::FromStr;
 
@@ -129,7 +129,7 @@ impl SorahkGui {
             let mut captured_input: Option<String> = None;
 
             // Check keyboard input first
-            let current_pressed = Self::poll_all_pressed_keys();
+            let current_pressed = crate::backend::BackendService::poll_pressed_keys_static();
 
             // Filter out keys that were already pressed when capture started (noise baseline)
             current_pressed
@@ -180,7 +180,7 @@ impl SorahkGui {
                 );
 
                 if should_check_raw_input
-                    && let Some(device) = self.app_state.try_recv_raw_input_capture()
+                    && let Some(device) = self.backend.poll_pad_capture()
                 {
                     captured_input = Some(device.to_string());
                 }
@@ -228,7 +228,7 @@ impl SorahkGui {
                 // Exit capture mode and clear capture state
                 self.key_capture_mode = KeyCaptureMode::None;
                 self.capture_pressed_keys.clear();
-                self.app_state.set_raw_input_capture_mode(false);
+                self.backend.set_pad_capture(false);
                 self.just_captured_input = false;
             } else {
                 // In capture mode but no input captured yet - clear the flag after first frame
@@ -310,41 +310,40 @@ impl SorahkGui {
         // Handle save/cancel outside the window closure
         if should_save {
             if let Some(mut temp_config) = self.temp_config.take() {
+                /* ★R2.14: 帧首取运行时最新配置 (backend 权威), 用于回灌与差分 */
+                let live = self.backend.with_config(|c| c.clone());
                 // 弹窗非模态: 打开期间主窗口可能改过映射/预设/震动参数 (改即落盘)。
                 // Save 只提交弹窗自己拥有的字段, 其余保持运行时最新值 ——
                 // 旧实现整份回灌 temp_config, 会把弹窗打开后发生的修改静默回滚。
-                temp_config.mappings = self.config.mappings.clone();
-                temp_config.presets = self.config.presets.clone();
-                temp_config.current_preset = self.config.current_preset.clone();
-                temp_config.vibration = self.config.vibration.clone();
-                temp_config.vibration_presets = self.config.vibration_presets.clone();
+                temp_config.mappings = live.mappings.clone();
+                temp_config.presets = live.presets.clone();
+                temp_config.current_preset = live.current_preset.clone();
+                temp_config.vibration = live.vibration.clone();
+                temp_config.vibration_presets = live.vibration_presets.clone();
                 /* ★v24.42 (缺陷 2): 白名单三件套也从运行时最新值回灌 —— 本区现在直接
-                 * 编辑 self.config 并即时落盘, 若不在 Save 时回灌, temp_config 里的旧
+                 * 编辑权威配置并即时落盘, 若不在 Save 时回灌, temp_config 里的旧
                  * 名单会把刚增删的那些条目写回 (回滚)。此处与 mappings/presets 同一
                  * 口径: Save 只提交弹窗自己拥有的字段。 */
-                temp_config.process_whitelist = self.config.process_whitelist.clone();
-                /* ★v24.55: 检查更新区同样是"直接改 self.config 即时落盘", 不回灌会被
+                temp_config.process_whitelist = live.process_whitelist.clone();
+                /* ★v24.55: 检查更新区同样是"直接改权威配置即时落盘", 不回灌会被
                  * 弹窗打开那一刻的旧值覆盖 (表现为开关/清单地址白改)。 */
-                temp_config.update = self.config.update.clone();
-                /* ★v24.59 (缺陷): 音频页同样是"直接改 self.config 即时落盘",
-                 * 不回灌会被弹窗打开那一刻的旧值覆盖 —— 表现为"刚拖的
-                 * 打击对比度/三类马达滑条, 关掉设置后又弹回去了"。
-                 * 弹窗是非模态的, 这条路径玩家真的会走到。 */
-                temp_config.audio_haptics = self.config.audio_haptics.clone();
-                temp_config.whitelist_enabled = self.config.whitelist_enabled;
-                temp_config.whitelist_simple_mode = self.config.whitelist_simple_mode;
-                temp_config.hid_baselines = self.config.hid_baselines.clone();
-                temp_config.device_api_preferences = self.config.device_api_preferences.clone();
-                temp_config.guide_seen = self.config.guide_seen;
-                temp_config.vib_edition_asked = self.config.vib_edition_asked;
-                temp_config.window_rect_normal = self.config.window_rect_normal;
-                temp_config.window_rect_minimal = self.config.window_rect_minimal;
-                temp_config.minimal_mode = self.config.minimal_mode;
-                temp_config.minimal_vib_preset_job = self.config.minimal_vib_preset_job;
+                temp_config.update = live.update.clone();
+                /* ★v24.59 (缺陷): 音频页同上, 不回灌会把刚拖的滑条写回旧值。 */
+                temp_config.audio_haptics = live.audio_haptics.clone();
+                temp_config.whitelist_enabled = live.whitelist_enabled;
+                temp_config.whitelist_simple_mode = live.whitelist_simple_mode;
+                temp_config.hid_baselines = live.hid_baselines.clone();
+                temp_config.device_api_preferences = live.device_api_preferences.clone();
+                temp_config.guide_seen = live.guide_seen;
+                temp_config.vib_edition_asked = live.vib_edition_asked;
+                temp_config.window_rect_normal = live.window_rect_normal;
+                temp_config.window_rect_minimal = live.window_rect_minimal;
+                temp_config.minimal_mode = live.minimal_mode;
+                temp_config.minimal_vib_preset_job = live.minimal_vib_preset_job;
                 /* ★v24.18: 经典模式也要同步 —— 设置弹窗是非模态的, 打开期间用户可能点了「典」,
                  * 漏掉这两行会把模式回滚成开弹窗那一刻的值 (表现为"模式没记住") */
-                temp_config.classic_mode = self.config.classic_mode;
-                temp_config.window_rect_classic = self.config.window_rect_classic;
+                temp_config.classic_mode = live.classic_mode;
+                temp_config.window_rect_classic = live.window_rect_classic;
 
                 // Update preset mappings if a preset is currently active
                 if !temp_config.current_preset.is_empty() {
@@ -356,83 +355,76 @@ impl SorahkGui {
                 }
 
                 // ★客户端版本切换到 S1: 预设列表出现「ACT1 特供」(玩家自选)
-                // Check if always_on_top changed
-                let always_on_top_changed = temp_config.always_on_top != self.config.always_on_top;
-                // Check if dark_mode changed
-                let dark_mode_changed = temp_config.dark_mode != self.config.dark_mode;
-                // Check if language changed
-                let language_changed = temp_config.language != self.config.language;
-                /* ★v24.13: 客户端路线是否切换 (S1/S4 两套震动参数需要互换) —— 须在覆盖 config 前取旧值 */
-                let edition_from = self.config.vib_legacy_client;
+                let always_on_top_changed = temp_config.always_on_top != live.always_on_top;
+                let dark_mode_changed = temp_config.dark_mode != live.dark_mode;
+                let language_changed = temp_config.language != live.language;
+                /* ★v24.13: 客户端路线是否切换 (S1/S4 两套震动参数需要互换) —— 须在覆盖权威配置前取旧值 */
+                let edition_from = live.vib_legacy_client;
                 let edition_to = temp_config.vib_legacy_client;
                 /* ★v24.18: 玩家类型是否切换 (DFO 玩家 ↔ 仅用连发) —— 决定震动默认开/关 */
-                let player_from = self.config.dfo_player;
+                let player_from = live.dfo_player;
+                let now_dfo = temp_config.dfo_player;
 
                 // Save to file
-                /* ★v24.14: 这里**只写 Config.toml** —— 此刻 temp_config.vib_legacy_client 已是新路线,
-                 * 而 temp_config.vibration 还是旧路线那套; 若走 save_to_file 会把旧参数写进新路线的
-                 * 震动文件, 覆盖掉新路线原有的那套。震动文件由下面的 switch_vibration_edition 负责。 */
-                if temp_config.save_config_only("Config.toml").is_ok() {
-                    // Update GUI's config
-                    self.config = temp_config.clone();
-
+                /* ★v24.14: 这里**只写 Config.toml** (Commit::SaveConfigOnly) —— 此刻
+                 * temp_config.vib_legacy_client 已是新路线, 而 temp_config.vibration 还是
+                 * 旧路线那套; 若连震动文件一起写会把旧参数写进新路线的震动文件。
+                 * ★R2.14: 整份 temp 提交进 backend 权威 (serde-skip 字段已随 live 回灌)。 */
+                if self
+                    .backend
+                    .update_config(crate::ui_api::Commit::SaveConfigOnly, |c| {
+                        *c = temp_config.clone();
+                    })
+                    .is_ok()
+                {
                     /* ★v24.13: 切换客户端路线 → 换整套震动参数 (全量同步运行态, 并落盘路线文件)。
-                     * ★v24.14: 必须在第一次 reload_config **之前**做完 —— 此刻 self.config 是
+                     * ★v24.14: 必须在第一次 reload **之前**做完 —— 此刻权威配置是
                      * "新路线标记 + 旧路线参数"的错配组合, 直接灌进运行态会让引擎用新路线的语义
                      * 跑旧路线的参数; switch 内部会按路线读文件再自己 reload 一次。 */
                     if edition_from != edition_to {
                         self.switch_vibration_edition(edition_from, edition_to);
                     } else {
-                        // Reload configuration into AppState (takes effect immediately)
-                        let _ = self.app_state.reload_config(temp_config.clone());
+                        // Reload configuration into runtime (takes effect immediately)
+                        let _ = self.backend.reload_runtime();
                     }
 
                     // DFO 震动关闭时震动页不可达: 当前页落在其上则回手柄映射
-                    if !self.config.dfo_player {
-                        /* ★v24.10: 「仅用连发」时震动一并默认关闭 (与首次选择口径一致) */
-                        self.app_state
-                            .vibration_enabled
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
-                        if self.config.vibration.enabled {
-                            self.config.vibration.enabled = false;
-                            let _ = self.config.save_to_file("Config.toml");
-                            let _ = self.app_state.reload_config(self.config.clone());
-                        }
+                    if !now_dfo {
+                        /* ★v24.10: 「仅用连发」时震动一并默认关闭 (与首次选择口径一致;
+                         * dispatch = config + 运行态镜像 + 落盘) */
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(false));
                         if matches!(
                             self.active_page,
                             crate::gui::types::Page::Vibration | crate::gui::types::Page::JobPresets
                         ) {
                             self.active_page = crate::gui::types::Page::Gamepad;
                         }
-                    } else if player_from != self.config.dfo_player {
+                    } else if player_from != now_dfo {
                         /* ★v24.18: 切回「DFO 玩家」→ 震动默认开 (与首次选择口径一致)。
                          * 只在**玩家类型真的发生切换**时改, 免得用户手动关掉震动后一保存又被打回开。 */
-                        self.app_state
-                            .vibration_enabled
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        if !self.config.vibration.enabled {
-                            self.config.vibration.enabled = true;
-                            let _ = self.config.save_to_file("Config.toml");
-                            let _ = self.app_state.reload_config(self.config.clone());
-                        }
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(true));
                     }
 
                     // Re-parse switch key after configuration update
-                    self.parsed_switch_key = Self::parse_switch_key(&self.config.switch_key);
+                    let switch_key =
+                        self.backend.with_config(|c| c.switch_key.clone());
+                    self.parsed_switch_key = Self::parse_switch_key(&switch_key);
 
                     // Apply theme change immediately
                     if dark_mode_changed {
-                        self.dark_mode = self.config.dark_mode;
+                        self.dark_mode = temp_config.dark_mode;
                     }
 
                     if language_changed {
-                        self.update_translations(self.config.language);
-                        crate::gui::fonts::load_fonts(ctx, self.config.language);
+                        self.update_translations(temp_config.language);
+                        crate::gui::fonts::load_fonts(ctx, temp_config.language);
                     }
 
                     // Apply always_on_top change immediately
                     if always_on_top_changed {
-                        if self.config.always_on_top {
+                        if temp_config.always_on_top {
                             ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                                 egui::WindowLevel::AlwaysOnTop,
                             ));
@@ -451,14 +443,14 @@ impl SorahkGui {
             self.duplicate_process_error = None;
             self.preset_rename_target.clear();
             self.preset_rename_input.clear();
-            self.app_state.set_raw_input_capture_mode(false);
+            self.backend.set_pad_capture(false);
 
             // Restore previous paused state after exiting settings
             if let Some(was_paused) = self.was_paused_before_settings.take()
                 && !was_paused
             {
                 // Resume key repeat without notification (silent resume)
-                self.app_state.set_paused(false);
+                self.backend.set_paused(false);
             }
         }
 
@@ -468,7 +460,7 @@ impl SorahkGui {
             self.key_capture_mode = KeyCaptureMode::None;
             self.duplicate_mapping_error = None;
             self.duplicate_process_error = None;
-            self.app_state.set_raw_input_capture_mode(false);
+            self.backend.set_pad_capture(false);
             // Clear input fields
             self.new_mapping_trigger.clear();
             self.new_mapping_target.clear();
@@ -484,7 +476,7 @@ impl SorahkGui {
                 && !was_paused
             {
                 // Resume key repeat without notification (silent resume)
-                self.app_state.set_paused(false);
+                self.backend.set_paused(false);
             }
         }
     }
@@ -492,146 +484,7 @@ impl SorahkGui {
     /* ★v22.0: 手柄页捕获/确认逻辑已整体迁入 `gui/gamepad_mapping.rs::handle_gamepad_flow`
      * (由 GpFlow 状态机驱动; 取消只回退一层, 不再退出识别)。此处不再保留手柄专属捕获代码。 */
 
-    /// Polls all currently pressed keys using Windows API
-    /// Returns a set of VK codes
-    #[inline]
-    pub(super) fn poll_all_pressed_keys() -> std::collections::HashSet<u32> {
-        let mut pressed_keys = std::collections::HashSet::new();
-
-        unsafe {
-            // Modifiers
-            let modifiers = [
-                0xA0, 0xA1, // LSHIFT, RSHIFT
-                0xA2, 0xA3, // LCTRL, RCTRL
-                0xA4, 0xA5, // LALT, RALT
-                0x5B, 0x5C, // LWIN, RWIN
-            ];
-            for &vk in &modifiers {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-
-            // A-Z (0x41-0x5A)
-            for vk in 0x41..=0x5A {
-                if GetAsyncKeyState(vk) < 0 {
-                    pressed_keys.insert(vk as u32);
-                }
-            }
-
-            // 0-9 (0x30-0x39)
-            for vk in 0x30..=0x39 {
-                if GetAsyncKeyState(vk) < 0 {
-                    pressed_keys.insert(vk as u32);
-                }
-            }
-
-            // Numpad 0-9 (0x60-0x69)
-            for vk in 0x60..=0x69 {
-                if GetAsyncKeyState(vk) < 0 {
-                    pressed_keys.insert(vk as u32);
-                }
-            }
-
-            // F1-F24 (0x70-0x87)
-            for vk in 0x70..=0x87 {
-                if GetAsyncKeyState(vk) < 0 {
-                    pressed_keys.insert(vk as u32);
-                }
-            }
-
-            // Navigation and editing keys
-            let navigation = [
-                0x20, // SPACE
-                0x0D, // ENTER
-                0x09, // TAB
-                0x1B, // ESC
-                0x08, // BACKSPACE
-                0x2E, // DELETE
-                0x2D, // INSERT
-                0x24, // HOME
-                0x23, // END
-                0x21, // PAGEUP
-                0x22, // PAGEDOWN
-                0x26, // UP
-                0x28, // DOWN
-                0x25, // LEFT
-                0x27, // RIGHT
-            ];
-            for &vk in &navigation {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-
-            // Lock and special keys
-            let lock_keys = [
-                0x14, // CAPSLOCK
-                0x90, // NUMLOCK
-                0x91, // SCROLL LOCK
-                0x13, // PAUSE
-                0x2C, // PRINT SCREEN
-            ];
-            for &vk in &lock_keys {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-
-            // Numpad operators
-            let numpad_ops = [
-                0x6A, // MULTIPLY
-                0x6B, // ADD
-                0x6C, // SEPARATOR
-                0x6D, // SUBTRACT
-                0x6E, // DECIMAL
-                0x6F, // DIVIDE
-            ];
-            for &vk in &numpad_ops {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-
-            // OEM keys (punctuation and symbols)
-            let oem_keys = [
-                0xBA, // OEM_1 (;:)
-                0xBB, // OEM_PLUS (=+)
-                0xBC, // OEM_COMMA (,<)
-                0xBD, // OEM_MINUS (-_)
-                0xBE, // OEM_PERIOD (.>)
-                0xBF, // OEM_2 (/?)
-                0xC0, // OEM_3 (`~)
-                0xDB, // OEM_4 ([{)
-                0xDC, // OEM_5 (\|)
-                0xDD, // OEM_6 (]})
-                0xDE, // OEM_7 ('")
-                0xDF, // OEM_8
-                0xE2, // OEM_102 (<>)
-            ];
-            for &vk in &oem_keys {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-
-            // Mouse buttons
-            let mouse_buttons = [
-                0x01, // LBUTTON
-                0x02, // RBUTTON
-                0x04, // MBUTTON
-                0x05, // XBUTTON1
-                0x06, // XBUTTON2
-            ];
-            for &vk in &mouse_buttons {
-                if GetAsyncKeyState(vk as i32) < 0 {
-                    pressed_keys.insert(vk);
-                }
-            }
-        }
-
-        pressed_keys
-    }
+    /* ★R2.14: 本地 poll_all_pressed_keys 已移至 backend::BackendService::poll_pressed_keys_static */
 
     /// Formats a set of VK codes into a key combination string
     #[inline]
@@ -864,8 +717,8 @@ impl SorahkGui {
                                                 KeyCaptureMode::ToggleKey;
                                             self.capture_pressed_keys.clear();
                                             self.capture_initial_pressed =
-                                                Self::poll_all_pressed_keys();
-                                            self.app_state.set_raw_input_capture_mode(true);
+                                                crate::backend::BackendService::poll_pressed_keys_static();
+                                            self.backend.set_pad_capture(true);
                                             // Set flag to skip mouse capture on this frame
                                             self.just_captured_input = true;
                                         }
@@ -1490,9 +1343,8 @@ impl SorahkGui {
                                                             KeyCaptureMode::MappingTrigger(idx);
                                                         self.capture_pressed_keys.clear();
                                                         self.capture_initial_pressed =
-                                                            Self::poll_all_pressed_keys();
-                                                        self.app_state
-                                                            .set_raw_input_capture_mode(true);
+                                                            crate::backend::BackendService::poll_pressed_keys_static();
+                                                        self.backend.set_pad_capture(true);
                                                         // Set flag to skip mouse capture on this frame
                                                         self.just_captured_input = true;
                                                     }
@@ -1555,7 +1407,7 @@ impl SorahkGui {
                                                             KeyCaptureMode::MappingTarget(idx);
                                                         self.capture_pressed_keys.clear();
                                                         self.capture_initial_pressed =
-                                                            Self::poll_all_pressed_keys();
+                                                            crate::backend::BackendService::poll_pressed_keys_static();
                                                     }
                                                     ui.add_space(8.0);
 
@@ -1576,7 +1428,7 @@ impl SorahkGui {
                                                             KeyCaptureMode::MappingTarget(idx);
                                                         self.capture_pressed_keys.clear();
                                                         self.capture_initial_pressed =
-                                                            Self::poll_all_pressed_keys();
+                                                            crate::backend::BackendService::poll_pressed_keys_static();
                                                     }
                                                     // Button 1.5: Clear all target keys
                                                     let clear_btn = egui::Button::new(
@@ -1979,8 +1831,8 @@ impl SorahkGui {
                                                         KeyCaptureMode::NewMappingTrigger;
                                                     self.capture_pressed_keys.clear();
                                                     self.capture_initial_pressed =
-                                                        Self::poll_all_pressed_keys();
-                                                    self.app_state.set_raw_input_capture_mode(true);
+                                                        crate::backend::BackendService::poll_pressed_keys_static();
+                                                    self.backend.set_pad_capture(true);
                                                     // Set flag to skip mouse capture on this frame
                                                     self.just_captured_input = true;
                                                     // Clear error when user starts to modify trigger
@@ -2048,7 +1900,7 @@ impl SorahkGui {
                                                         KeyCaptureMode::NewMappingTarget;
                                                     self.capture_pressed_keys.clear();
                                                     self.capture_initial_pressed =
-                                                        Self::poll_all_pressed_keys();
+                                                        crate::backend::BackendService::poll_pressed_keys_static();
                                                 }
                                                 ui.add_space(8.0);
 
@@ -2067,7 +1919,7 @@ impl SorahkGui {
                                                 {
                                                     self.key_capture_mode = KeyCaptureMode::NewMappingTarget;
                                                     self.capture_pressed_keys.clear();
-                                                    self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                                                    self.capture_initial_pressed = crate::backend::BackendService::poll_pressed_keys_static();
                                                     self.just_captured_input = true;
                                                 }
                                                 // Button 1.5: Clear all target keys
@@ -2483,9 +2335,10 @@ impl SorahkGui {
                                      * 显示同一份名单、同样的行结构 (文件名粗体 + 路径小字)。 */
                                     let th = Theme::new(self.dark_mode);
                                     let mut to_remove: Option<usize> = None;
-                                    for (idx, process) in
-                                        self.config.process_whitelist.iter().enumerate()
-                                    {
+                                    /* ★R2.14: 名单从 backend 读 */
+                                    let whitelist =
+                                        self.backend.with_config(|c| c.process_whitelist.clone());
+                                    for (idx, process) in whitelist.iter().enumerate() {
                                         ui.horizontal(|ui| {
                                             ui.vertical(|ui| {
                                                 /* 路径条目: 文件名粗体 + 小字路径;
@@ -2534,12 +2387,15 @@ impl SorahkGui {
                                     }
 
                                     if let Some(idx) = to_remove {
-                                        self.config.process_whitelist.remove(idx);
-                                        /* ★v24.42: 即时落盘 + 热重载 (与白名单页同一出口) */
-                                        let _ = self.config.save_to_file("Config.toml");
-                                        let _ = self
-                                            .app_state
-                                            .reload_config(self.config.clone());
+                                        /* ★v24.42 / ★R2.14: 移除 + 即时落盘 + 热重载走 backend */
+                                        let _ = self.backend.update_config(
+                                            crate::ui_api::Commit::Reload,
+                                            |c| {
+                                                if idx < c.process_whitelist.len() {
+                                                    c.process_whitelist.remove(idx);
+                                                }
+                                            },
+                                        );
                                     }
 
                                     ui.add_space(6.0);
@@ -2567,12 +2423,12 @@ impl SorahkGui {
                                             let process_name = self.new_process_name.trim().to_owned();
                                             if !process_name.is_empty() {
                                                 // Check for duplicate process (整串忽略大小写)
-                                                if self
-                                                    .config
-                                                    .process_whitelist
-                                                    .iter()
-                                                    .any(|x| x.eq_ignore_ascii_case(&process_name))
-                                                {
+                                                let dup = self.backend.with_config(|c| {
+                                                    c.process_whitelist
+                                                        .iter()
+                                                        .any(|x| x.eq_ignore_ascii_case(&process_name))
+                                                });
+                                                if dup {
                                                     self.duplicate_process_error = Some(
                                                         t.duplicate_process_error()
                                                             .to_string(),
@@ -2580,13 +2436,9 @@ impl SorahkGui {
                                                 } else {
                                                     // Clear any previous error
                                                     self.duplicate_process_error = None;
-                                                    self.config.process_whitelist.push(process_name);
                                                     self.new_process_name.clear();
-                                                    /* ★v24.42: 即时落盘 + 热重载 (同一份名单) */
-                                                    let _ = self.config.save_to_file("Config.toml");
-                                                    let _ = self
-                                                        .app_state
-                                                        .reload_config(self.config.clone());
+                                                    /* ★v24.42 / ★R2.14: 追加 + 即时落盘 + 热重载走 backend */
+                                                    let _ = self.backend.whitelist_add(&process_name);
                                                 }
                                             }
                                         }
@@ -2615,12 +2467,12 @@ impl SorahkGui {
                                                  * 同名不同版本的 exe 可各登记一条, 按路径精确匹配。 */
                                                 let entry = path.to_string_lossy().to_string();
                                                 // Check for duplicate process (整串忽略大小写)
-                                                if self
-                                                    .config
-                                                    .process_whitelist
-                                                    .iter()
-                                                    .any(|x| x.eq_ignore_ascii_case(&entry))
-                                                {
+                                                let dup = self.backend.with_config(|c| {
+                                                    c.process_whitelist
+                                                        .iter()
+                                                        .any(|x| x.eq_ignore_ascii_case(&entry))
+                                                });
+                                                if dup {
                                                     self.duplicate_process_error = Some(
                                                         t.duplicate_process_error()
                                                             .to_string(),
@@ -2628,12 +2480,8 @@ impl SorahkGui {
                                                 } else {
                                                     // Clear any previous error
                                                     self.duplicate_process_error = None;
-                                                    self.config.process_whitelist.push(entry);
-                                                    /* ★v24.42: 即时落盘 + 热重载 (同一份名单) */
-                                                    let _ = self.config.save_to_file("Config.toml");
-                                                    let _ = self
-                                                        .app_state
-                                                        .reload_config(self.config.clone());
+                                                    /* ★v24.42 / ★R2.14: 追加 + 即时落盘 + 热重载走 backend */
+                                                    let _ = self.backend.whitelist_add(&entry);
                                                 }
                                             }
                                         }

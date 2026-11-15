@@ -45,7 +45,8 @@ pub enum NotificationEvent {
 }
 
 /// Input device type for unified input handling.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// ★R2.14: 补 serde derive —— ui_api 契约层需要序列化 (纯属性添加, 无行为变化)。
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum InputDevice {
     /// Keyboard input with virtual key code
     Keyboard(u32),
@@ -244,7 +245,8 @@ impl std::fmt::Display for InputDevice {
 }
 
 /// Device type classification for generic input devices.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// ★R2.14: 补 serde derive (ui_api 契约需要; 纯属性添加)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DeviceType {
     /// HID gamepad (Xbox, PlayStation, etc.)
     Gamepad(u16),
@@ -320,7 +322,8 @@ impl CaptureMode {
 }
 
 /// Mouse button types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// ★R2.14: 补 serde derive (ui_api 契约需要; 纯属性添加)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum MouseButton {
     Left,
     Right,
@@ -459,7 +462,8 @@ pub struct InputMappingInfo {
 ///
 /// 由 RawInput 语义通道 (HidP) 每帧发布; GUI 只读。方向位用位掩码:
 /// `ls`/`rs`: bit0=左 bit1=右 bit2=上 bit3=下; `dpad`: 1..8 顺时针从"上"起, 0=中。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// ★R2.14: 补 serde derive (ui_api 契约需要; 纯属性添加)。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LiveHidState {
     pub vid: u16,
     pub pid: u16,
@@ -480,7 +484,8 @@ pub struct LiveHidState {
 ///
 /// 键盘切换键仍由 GUI 侧 `GetAsyncKeyState` 轮询 (见 gui/main_window.rs), 这里只承载
 /// **手柄**类绑定 (XInput 组合 / 原始 HID 设备), 因为它们的状态只有输入线程实时掌握。
-#[derive(Debug, Clone)]
+/// ★R2.14: 补 serde derive (ui_api 契约需要; 纯属性添加)。
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct PresetSwitchBinding {
     /// 目标预设名 (切换时按名查找)
     pub preset_name: String,

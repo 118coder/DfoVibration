@@ -15,13 +15,11 @@
 //! 脏标 (主循环 1s 去抖写 Config.toml); 引擎遥测 (`telemetry`) → 频谱/电平/判定显示。
 
 use std::ops::RangeInclusive;
-use std::sync::atomic::Ordering;
-use std::time::Instant;
 
 use eframe::egui;
 use egui_phosphor::variants::regular as ic;
 
-use crate::audio_haptics::mapping::{self, PRESETS};
+use crate::audio_haptics::mapping;
 use crate::gui::theme::{SP_L, SP_M, SP_S, SP_XS, Theme};
 use crate::gui::{widgets, SorahkGui};
 use crate::update::APP_VERSION;
@@ -31,30 +29,29 @@ use crate::state::audio_state::{
 };
 
 /// 滑条行: 名字/数值写在上一行, 滑轨满宽占下一行, 最后一句人话说明。
-/// 返回是否被拖动 (调用方据此写 config + 原子量 + 打脏标)。
+/// 返回是否被拖动 (★R2.14: 写入走 backend.update_audio_config —— config →
+/// apply_config 镜像 → 去抖落盘 单一写路径; 读用帧首 gather 的 audio 快照)。
 macro_rules! audio_slider {
-    ($self:ident, $ui:ident, $th:ident, $field:ident, $atom:ident,
+    ($self:ident, $ui:ident, $th:ident, $audio:ident, $field:ident,
      $range:expr, $step:expr, $suffix:expr, $icon:expr, $label:expr, $hint:expr, $tip:expr) => {{
-        let mut v = $self.config.audio_haptics.$field;
+        let mut v = $audio.$field;
         let changed = slider_row(
             $ui, $th, $icon, $label, $hint, $tip, &mut v, $range, $step, $suffix,
         );
         if changed {
-            $self.config.audio_haptics.$field = v;
-            $self.app_state.audio_hap.$atom.store(v, Ordering::Relaxed);
+            $self.backend.update_audio_config(|a| a.$field = v);
         }
         changed
     }};
 }
 
-/// 带一句人话说明的复选框行。
+/// 带一句人话说明的复选框行 (★R2.14 写入走 backend)。
 macro_rules! audio_check {
-    ($self:ident, $ui:ident, $th:ident, $field:ident, $atom:ident, $label:expr, $hint:expr, $tip:expr) => {{
-        let mut v = $self.config.audio_haptics.$field;
+    ($self:ident, $ui:ident, $th:ident, $audio:ident, $field:ident, $label:expr, $hint:expr, $tip:expr) => {{
+        let mut v = $audio.$field;
         let changed = check_row($ui, $th, &mut v, $label, $hint, $tip);
         if changed {
-            $self.config.audio_haptics.$field = v;
-            $self.app_state.audio_hap.$atom.store(v, Ordering::Relaxed);
+            $self.backend.update_audio_config(|a| a.$field = v);
         }
         changed
     }};
@@ -67,10 +64,11 @@ impl SorahkGui {
         &mut self,
         ui: &mut egui::Ui,
         th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
         tele: &Option<AudioTelemetry>,
     ) -> bool {
         let mut dirty = false;
-        let on = self.config.audio_haptics.smart_enabled;
+        let on = audio.smart_enabled;
         th.card(ui, Some("AI 智能增强（远近 · 高低感知）"), |ui| {
             ui.label(th.hint_text(
                 "纯算法判断声音的远近与高低：近的声音更猛更脆、收得快；远的声音更轻、拖尾更长。不装模型、不联网。",
@@ -79,35 +77,30 @@ impl SorahkGui {
             ui.horizontal(|ui| {
                 let a = ui.selectable_label(!on, "A 经典模式（原手感，逐字节不变）");
                 if a.clicked() && on {
-                    self.config.audio_haptics.smart_enabled = false;
-                    self.app_state.audio_hap.smart_enabled.store(false, Ordering::Relaxed);
+                    self.backend.update_audio_config(|a| a.smart_enabled = false);
                     dirty = true;
                 }
                 let b = ui.selectable_label(on, "B AI 智能模式（远近高低自适应）");
                 if b.clicked() && !on {
-                    self.config.audio_haptics.smart_enabled = true;
-                    self.app_state.audio_hap.smart_enabled.store(true, Ordering::Relaxed);
+                    self.backend.update_audio_config(|a| a.smart_enabled = true);
                     dirty = true;
                 }
             });
             ui.add_space(SP_XS);
-            dirty |= audio_check!(
-                self, ui, th, smart_enabled, smart_enabled,
+            dirty |= audio_check!(self, ui, th, audio, smart_enabled,
                 "AI 智能增强开关（与上方 A/B 等价）",
                 "关 = A 经典；开 = B 智能",
                 "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。"
             );
             split_cols(ui, 2, SP_L, |ui, i| {
                 if i == 0 {
-                    dirty |= audio_slider!(
-                        self, ui, th, smart_strength_pct, smart_strength, 0..=100u32, 5.0, "%",
+                    dirty |= audio_slider!(self, ui, th, audio, smart_strength_pct, 0..=100u32, 5.0, "%",
                         ic::LIGHTNING, "智能增强强度",
                         "调 0 = 自动回到 A 手感；调大差异更明显",
                         "智能层和经典手感的混合比例。调到 0 就等于完全关掉智能增强（和 A 模式一模一样），想对比效果就拖到 0 再拖回来。"
                     );
                 } else {
-                    dirty |= audio_slider!(
-                        self, ui, th, smart_duration_pct, smart_duration, 0..=100u32, 5.0, "%",
+                    dirty |= audio_slider!(self, ui, th, audio, smart_duration_pct, 0..=100u32, 5.0, "%",
                         ic::WIND, "持续时间影响",
                         "调大：近音更短促、远音余韵更长",
                         "控制智能层对震动持续时间的改写力度。调 0 = 只改强度和左右马达分配，不改收尾快慢。"
@@ -132,37 +125,9 @@ impl SorahkGui {
         dirty
     }
 
-    /// 内置预设 → 自定义预设条目 (拷贝 21 个引擎字段)。
-    fn builtin_preset_entry(p: &mapping::Preset) -> crate::config::AudioPresetConfig {
-        crate::config::AudioPresetConfig {
-            name: p.name.to_string(),
-            user_modified: false,
-            master_gain_pct: p.master_gain_pct,
-            low_gain_pct: p.low_gain_pct,
-            high_gain_pct: p.high_gain_pct,
-            punch_pct: p.punch_pct,
-            mask_threshold: p.mask_threshold,
-            adaptive_threshold: p.adaptive_threshold,
-            auto_profile: p.auto_profile,
-            music_mask_pct: p.music_mask_pct,
-            quiet_mask: p.quiet_mask,
-            rhythm_pct: p.rhythm_pct,
-            texture_pct: p.texture_pct,
-            attack_pct: p.attack_pct,
-            release_pct: p.release_pct,
-            dead_zone_pct: p.dead_zone_pct,
-            map_max: p.map_max,
-            dual_motor: p.dual_motor,
-            vocal_only: p.vocal_only,
-            bass_high_hz: p.bass_high_hz,
-            vocal_low_hz: p.vocal_low_hz,
-            vocal_high_hz: p.vocal_high_hz,
-        }
-    }
-
-    /// 当前 config 里的引擎参数 → 自定义预设条目 (「保存为」快照用)。
-    fn snapshot_config_entry(&self, name: &str) -> crate::config::AudioPresetConfig {
-        let c = &self.config.audio_haptics;
+    /// 当前引擎参数 → 自定义预设条目 (「保存为」快照用; ★R2.14 读帧首 gather)。
+    fn snapshot_config_entry(audio: &crate::config::AudioHapticsConfig, name: &str) -> crate::config::AudioPresetConfig {
+        let c = audio;
         crate::config::AudioPresetConfig {
             name: name.to_string(),
             user_modified: true,
@@ -190,100 +155,56 @@ impl SorahkGui {
     }
 
     /// 把预设条目写进 config 引擎字段 (不改 enabled / 白名单), 即时生效 + 落盘。
+    /// ★R2.14: 走 backend.apply_audio_preset_entry (config → 镜像 → 立即落盘)。
     fn apply_preset_entry(&mut self, e: &crate::config::AudioPresetConfig) {
-        let c = &mut self.config.audio_haptics;
-        c.preset = e.name.clone();
-        c.master_gain_pct = e.master_gain_pct;
-        c.low_gain_pct = e.low_gain_pct;
-        c.high_gain_pct = e.high_gain_pct;
-        c.punch_pct = e.punch_pct;
-        c.mask_threshold = e.mask_threshold;
-        c.adaptive_threshold = e.adaptive_threshold;
-        c.auto_profile = e.auto_profile;
-        c.music_mask_pct = e.music_mask_pct;
-        c.quiet_mask = e.quiet_mask;
-        c.rhythm_pct = e.rhythm_pct;
-        c.texture_pct = e.texture_pct;
-        c.attack_pct = e.attack_pct;
-        c.release_pct = e.release_pct;
-        c.dead_zone_pct = e.dead_zone_pct;
-        c.map_max = e.map_max;
-        c.dual_motor = e.dual_motor;
-        c.vocal_only = e.vocal_only;
-        c.bass_high_hz = e.bass_high_hz;
-        c.vocal_low_hz = e.vocal_low_hz;
-        c.vocal_high_hz = e.vocal_high_hz;
-        self.app_state.audio_hap.apply_config(c);
-        let _ = self.config.save_to_file("Config.toml");
+        if let Err(err) = self.backend.apply_audio_preset_entry(e) {
+            self.audio_export_msg = Some(format!("预设应用失败：{err}"));
+        }
     }
 
     /// ★v24.61 应用预设: **同名自定义优先**, 否则内置 (对齐震动区
-    /// pick_preset_for_apply 语义 —— 用户覆盖过同名预设就用用户的)。
+    /// pick_preset_for_apply 语义)。★R2.14: 收敛到 backend 单一实现。
     fn apply_audio_preset(&mut self, name: &str) -> bool {
-        if let Some(e) = self
-            .config
-            .audio_haptics
-            .presets
-            .iter()
-            .find(|p| p.name == name)
-            .cloned()
-        {
-            self.apply_preset_entry(&e);
-            return true;
-        }
-        match mapping::preset_by_name(name) {
-            Some(p) => {
-                let e = Self::builtin_preset_entry(p);
-                self.apply_preset_entry(&e);
-                true
-            }
-            None => false,
-        }
+        matches!(self.backend.apply_audio_preset_by_name(name), Ok(true))
     }
 
     /* ══════════════════════════════ 页面主体 ══════════════════════════════ */
 
     pub(super) fn render_audio_haptics_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let th = self.theme();
-        let enabled = self.config.audio_haptics.enabled;
-        let status = self.app_state.audio_hap.status.load(Ordering::Relaxed);
-        let tele: Option<AudioTelemetry> = self
-            .app_state
-            .audio_hap
-            .telemetry
-            .try_lock()
-            .ok()
-            .map(|t| t.clone());
+        /* ★R2.14 帧首 gather: config 子结构 clone + 遥测/状态/校准各取一次,
+         * 之后整帧渲染只读局部、随时发 backend 命令 (写即镜像 + 去抖落盘)。 */
+        let audio = self.backend.with_config(|c| c.audio_haptics.clone());
+        let enabled = audio.enabled;
+        let status = self.backend.audio_status_code();
+        let calib = self.backend.snapshot().audio.calib_result;
+        let tele: Option<AudioTelemetry> = self.backend.audio_telemetry();
 
-        let mut dirty = false;
         // ① 开不开
-        dirty |= self.audio_hero(ui, &th, &tele, status, enabled);
+        self.audio_hero(ui, &th, &tele, status, enabled);
         // ①.5 AI 智能增强 (A 经典 / B 智能) + 实时远近高低反馈
-        dirty |= self.audio_smart_card(ui, &th, &tele);
-        dirty |= self.audio_calib_strip(ui, &th);
+        self.audio_smart_card(ui, &th, &audio, &tele);
+        self.audio_calib_strip(ui, &th, calib);
         // ② 听谁的声音（白名单）: 决定"这个功能对哪个游戏生效", 排在预设之前
-        dirty |= self.audio_whitelist_card(ui, &th, &tele);
+        self.audio_whitelist_card(ui, &th, &audio, &tele);
         // ③ 什么场景
-        dirty |= self.audio_presets_card(ui, &th);
+        self.audio_presets_card(ui, &th, &audio);
         // ④ 预设管理 (我的预设 / 备份分享) 紧跟宫格, 并排两块
         split_cols(ui, 2, SP_L, |ui, i| {
             if i == 0 {
-                dirty |= self.audio_user_presets_card(ui, &th);
+                self.audio_user_presets_card(ui, &th, &audio);
             } else {
-                dirty |= self.audio_backup_card(ui, &th);
+                self.audio_backup_card(ui, &th, &audio);
             }
         });
         // ⑤ 现在震得怎么样
-        self.audio_monitor_card(ui, &th, &tele, enabled);
+        self.audio_monitor_card(ui, &th, &tele, enabled, &audio);
         // ⑥ 细调 → ⑦ 屏蔽 → ⑧ 高级 → ⑨ 说明
-        dirty |= self.audio_tuning_card(ui, &th);
-        dirty |= self.audio_mask_card(ui, &th);
-        dirty |= self.audio_advanced_card(ui, &th);
+        self.audio_tuning_card(ui, &th, &audio);
+        self.audio_mask_card(ui, &th, &audio);
+        self.audio_advanced_card(ui, &th, &audio);
         self.audio_notes_card(ui, &th);
 
-        if dirty {
-            dirty_mark(self);
-        }
         let _ = ctx; // 状态点呼吸动画已负责请求重绘
     }
 
@@ -362,7 +283,8 @@ impl SorahkGui {
                         )
                         .clicked()
                     {
-                        self.app_state.audio_hap.request_calibration();
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::AudioCalibrate);
                     }
                     if ui
                         .add(th.secondary_button("马达自检 (0.5 秒)"))
@@ -371,24 +293,29 @@ impl SorahkGui {
                         )
                         .clicked()
                     {
-                        self.app_state.audio_hap.request_self_check();
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::AudioSelfCheck);
                     }
                 });
             });
         });
 
         if let Some(on) = toggled {
-            self.config.audio_haptics.enabled = on;
-            let _ = self.config.save_to_file("Config.toml");
-            let _ = self.app_state.reload_config(self.config.clone());
+            /* ★R2.14: 总开关 = 写 config + 立即落盘 + 两阶段热重载 (音频镜像在
+             * reload_config 内) —— 与旧「save_to_file + reload_config」语义一致 */
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Reload, |c| {
+                    c.audio_haptics.enabled = on;
+                });
             return true;
         }
         false
     }
 
     /// ② 校准建议条 (引擎给出建议门槛, 一键应用)。无建议时不出现在版面上。
-    fn audio_calib_strip(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
-        let calib = self.app_state.audio_hap.calib_result.load(Ordering::Relaxed);
+    /// ★R2.14: 校准读数由帧首快照传入。
+    fn audio_calib_strip(&mut self, ui: &mut egui::Ui, th: &Theme, calib: u32) -> bool {
         if calib == 0 {
             return false;
         }
@@ -409,13 +336,15 @@ impl SorahkGui {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if ui.add(th.secondary_button("忽略")).clicked() {
-                            self.app_state.audio_hap.calib_result.store(0, Ordering::Relaxed);
+                            self.backend
+                                .dispatch(crate::ui_api::UiCommand::AudioCalibDismiss);
                         }
                         if ui.add(th.primary_button("应用")).clicked() {
-                            self.config.audio_haptics.mask_threshold = calib;
-                            self.app_state.audio_hap.mask_threshold.store(calib, Ordering::Relaxed);
-                            self.app_state.audio_hap.calib_result.store(0, Ordering::Relaxed);
-                            applied = true;
+                            /* ★R2.14: 旧「写门槛 + 清校准 + 落盘」三步收敛到 backend */
+                            match self.backend.audio_apply_calib() {
+                                Ok(_) => applied = true,
+                                Err(e) => self.audio_export_msg = Some(format!("应用校准失败：{e}")),
+                            }
                         }
                     });
                 });
@@ -425,8 +354,14 @@ impl SorahkGui {
     }
 
     /// ④ 预设宫格: 6 个场景平铺, 选中有描边 + 勾, 推荐档有星标。
-    fn audio_presets_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
-        let current = self.config.audio_haptics.preset.clone();
+    fn audio_presets_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
+        let current = audio.preset.clone();
+        let presets = self.backend.audio_builtin_presets();
         let mut clicked: Option<&'static str> = None;
 
         th.card_with_actions(
@@ -449,13 +384,13 @@ impl SorahkGui {
                 } else {
                     2
                 }
-                .min(PRESETS.len());
+                .min(presets.len());
                 let tile_w = ((total - gap * (cols as f32 - 1.0)) / cols as f32).max(96.0);
 
-                for start in (0..PRESETS.len()).step_by(cols) {
+                for start in (0..presets.len()).step_by(cols) {
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = gap;
-                        for (i, p) in PRESETS.iter().enumerate().skip(start).take(cols) {
+                        for (i, p) in presets.iter().enumerate().skip(start).take(cols) {
                             let (scene, feel) = preset_copy(p.name);
                             if preset_tile(
                                 ui,
@@ -473,7 +408,7 @@ impl SorahkGui {
                             }
                         }
                     });
-                    if start + cols < PRESETS.len() {
+                    if start + cols < presets.len() {
                         ui.add_space(gap);
                     }
                 }
@@ -493,6 +428,7 @@ impl SorahkGui {
         th: &Theme,
         tele: &Option<AudioTelemetry>,
         enabled: bool,
+        audio: &crate::config::AudioHapticsConfig,
     ) {
         th.card(ui, Some("实时监测"), |ui| {
             if !enabled {
@@ -534,7 +470,7 @@ impl SorahkGui {
             hairline(ui, th);
             ui.add_space(SP_S);
 
-            let map_max = self.config.audio_haptics.map_max.max(1) as f32;
+            let map_max = audio.map_max.max(1) as f32;
             split_cols(ui, 3, SP_M, |ui, i| match i {
                 0 => mini_stat(ui, th, "背景噪声", &format!("{:.0}%", t.noise_floor / map_max * 100.0), th.text_weak, "没声音时环境有多吵"),
                 1 => mini_stat(ui, th, "屏蔽门槛", &format!("{:.0}%", t.threshold_eff / map_max * 100.0), th.accent_text, "比它小的声音一律不震"),
@@ -547,7 +483,12 @@ impl SorahkGui {
     }
 
     /// ⑦ 手感调节: 三组滑条, 组内双列。
-    fn audio_tuning_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
+    fn audio_tuning_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
         let mut dirty = false;
         th.card_with_actions(
             ui,
@@ -561,15 +502,13 @@ impl SorahkGui {
                 group_head(ui, th, "力度与对比");
                 split_cols(ui, 2, SP_L, |ui, i| {
                     if i == 0 {
-                        dirty |= audio_slider!(
-                            self, ui, th, master_gain_pct, master_gain, 0..=150u32, 1.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, master_gain_pct, 0..=150u32, 1.0, "%",
                             ic::SPEAKER_HIGH, "全局总强度",
                             "调大整体更猛，调小更温柔 · 建议 60-80",
                             "所有震动一起变大/变小。建议 60-80；觉得整体太猛就往下调，觉得没劲就往上调。"
                         );
                     } else {
-                        dirty |= audio_slider!(
-                            self, ui, th, punch_pct, punch_pct, 0..=200u32, 5.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, punch_pct, 0..=200u32, 5.0, "%",
                             ic::LIGHTNING, "打击对比度",
                             "调大只有重击才猛震；调小每一下都有反馈",
                             "100% 是标准手感，不是音量。调大 → 轻攻击变轻、只有大招和重击才猛震；调小 → 每一下攻击都有明显反馈。"
@@ -580,15 +519,13 @@ impl SorahkGui {
                 group_head(ui, th, "双马达分频");
                 split_cols(ui, 2, SP_L, |ui, i| {
                     if i == 0 {
-                        dirty |= audio_slider!(
-                            self, ui, th, low_gain_pct, low_gain, 0..=200u32, 5.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, low_gain_pct, 0..=200u32, 5.0, "%",
                             ic::WAVE_TRIANGLE, "低频量感（左马达）",
                             "爆炸、重击、贝斯的「轰」感 · 调 0 = 左马达不震",
                             "爆炸、重击、贝斯这种“轰”的感觉。调 0 = 左马达基本不震。"
                         );
                     } else {
-                        dirty |= audio_slider!(
-                            self, ui, th, high_gain_pct, high_gain, 0..=200u32, 5.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, high_gain_pct, 0..=200u32, 5.0, "%",
                             ic::WAVE_SINE, "高频量感（右马达）",
                             "枪声、打击、碎裂的「脆」感 · 调 0 = 右马达不震",
                             "枪声、打击、碎裂声这种“脆”的感觉。调 0 = 右马达基本不震。"
@@ -597,8 +534,7 @@ impl SorahkGui {
                 });
                 split_cols(ui, 2, SP_L, |ui, i| {
                     if i == 0 {
-                        dirty |= audio_slider!(
-                            self, ui, th, rhythm_pct, rhythm_pct, 0..=100u32, 5.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, rhythm_pct, 0..=100u32, 5.0, "%",
                             ic::METRONOME, "节奏力度（跟鼓点）",
                             "听歌/挂机时跟鼓点震 · 0 = 完全不跟鼓点",
                             "听歌/挂机时跟着鼓点震的强度。0 = 听歌完全不跟鼓点；听歌想要节奏感就调到 40-70。"
@@ -609,15 +545,13 @@ impl SorahkGui {
                 group_head(ui, th, "动态与门槛");
                 split_cols(ui, 2, SP_L, |ui, i| {
                     if i == 0 {
-                        dirty |= audio_slider!(
-                            self, ui, th, mask_threshold, mask_threshold, 0..=1200u32, 20.0, "",
+                        dirty |= audio_slider!(self, ui, th, audio, mask_threshold, 0..=1200u32, 20.0, "",
                             ic::SHIELD, "背景屏蔽门槛",
                             "调高更安静，调低更灵敏 · 默认 400 · 不确定就用上方「屏蔽校准」",
                             "比这个响度小的声音一律不震。调高 = 更安静（音乐、杂音更不容易震到手）；调低 = 更灵敏。\n默认 400 适合大多数游戏；听歌挂机嫌吵就加到 600-800；嫌震得迟钝就减到 200-300。\n不确定就点上面的「屏蔽校准」，让软件自动测。"
                         );
                     } else {
-                        dirty |= audio_slider!(
-                            self, ui, th, attack_pct, attack_pct, 5..=90u32, 1.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, attack_pct, 5..=90u32, 1.0, "%",
                             ic::GAUGE, "响应速度",
                             "调高声一响立刻震、更跟手 · 打游戏建议 60 以上",
                             "调高 = 声一响手立刻震，更跟手；调低 = 更柔和。打游戏建议 60 以上。"
@@ -626,8 +560,7 @@ impl SorahkGui {
                 });
                 split_cols(ui, 2, SP_L, |ui, i| {
                     if i == 0 {
-                        dirty |= audio_slider!(
-                            self, ui, th, release_pct, release_pct, 2..=60u32, 1.0, "%",
+                        dirty |= audio_slider!(self, ui, th, audio, release_pct, 2..=60u32, 1.0, "%",
                             ic::WIND, "余韵",
                             "调高拖尾更绵长，调低干脆利落",
                             "声音停下后震动收尾多快。调高 = 拖尾长、更绵；调低 = 干脆利落。"
@@ -640,43 +573,43 @@ impl SorahkGui {
     }
 
     /// ⑧ 屏蔽选项: 三个自动开关 + 两条压制滑条 (双列, 左开关右滑条)。
-    fn audio_mask_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
+    fn audio_mask_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
         let mut dirty = false;
         th.card(ui, Some("屏蔽选项"), |ui| {
             ui.label(th.hint_text("防 BGM 和杂音乱震。三个开关都建议开着，剩下两条滑条按口味调。"));
             ui.add_space(SP_M);
             split_cols(ui, 2, SP_L, |ui, i| {
                 if i == 0 {
-                    dirty |= audio_check!(
-                        self, ui, th, auto_profile, auto_profile,
+                    dirty |= audio_check!(self, ui, th, audio, auto_profile,
                         "智能识别（自动分辨游戏 / 音乐 / 安静）",
                         "放 BGM 时压住连续震动，只留鼓点和真音效",
                         "推荐开着。软件会自动判断现在放的是游戏音效还是背景音乐：\n放 BGM 时压住连续震动只留鼓点和真音效，安静时手柄完全不动。\n嫌它误判就关掉，关掉后完全按下面的滑条来。"
                     );
                     ui.add_space(SP_S);
-                    dirty |= audio_check!(
-                        self, ui, th, adaptive_threshold, adaptive_threshold,
+                    dirty |= audio_check!(self, ui, th, audio, adaptive_threshold,
                         "自动屏蔽背景噪音",
                         "背景越吵，门槛自动抬得越高",
                         "推荐开着。软件会一直听着背景噪音有多大，自动把门槛抬高到噪音之上。\n背景越吵门槛越高，BGM 和环境音就不容易震到手。"
                     );
                     ui.add_space(SP_S);
-                    dirty |= audio_check!(
-                        self, ui, th, quiet_mask, quiet_mask,
+                    dirty |= audio_check!(self, ui, th, audio, quiet_mask,
                         "安静时手柄完全不动",
                         "挂机 / 读图 / 大厅安静时保持零震动",
                         "推荐开着。没有游戏音效时（挂机/读图/大厅安静下来）手柄保持零震动。\n关掉 = 安静时也保留一半的轻微跟随。"
                     );
                 } else {
-                    dirty |= audio_slider!(
-                        self, ui, th, music_mask_pct, music_mask_pct, 0..=100u32, 5.0, "%",
+                    dirty |= audio_slider!(self, ui, th, audio, music_mask_pct, 0..=100u32, 5.0, "%",
                         ic::MUSIC_NOTES, "音乐段压制强度",
                         "识别到 BGM 时额外压掉多少震动",
                         "识别到背景音乐时，连续震动额外压掉多少。默认 60%；\n嫌听歌时手还是一直震就调到 80-100；嫌压制太狠（BGM 里的大招不震了）就调低。"
                     );
                     ui.add_space(SP_XS);
-                    dirty |= audio_slider!(
-                        self, ui, th, texture_pct, texture_pct, 0..=100u32, 5.0, "%",
+                    dirty |= audio_slider!(self, ui, th, audio, texture_pct, 0..=100u32, 5.0, "%",
                         ic::SPARKLE, "细腻麻感",
                         "听人声 / ASMR 的微颤质感 · 打游戏建议 0-30",
                         "听人声/ASMR/轻声内容时的微弱麻颤质感。不打游戏只听声音的话可以调高一点；打游戏建议 0-30。"
@@ -692,10 +625,11 @@ impl SorahkGui {
         &mut self,
         ui: &mut egui::Ui,
         th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
         tele: &Option<AudioTelemetry>,
     ) -> bool {
         let mut dirty = false;
-        let on = self.config.audio_haptics.whitelist_enabled;
+        let on = audio.whitelist_enabled;
         let mut toggle: Option<bool> = None;
 
         th.card_with_actions(
@@ -718,11 +652,7 @@ impl SorahkGui {
                 }));
 
                 // 条目来源: 默认复用连发白名单 (玩家只维护一份)
-                let src_macro = !self
-                    .config
-                    .audio_haptics
-                    .whitelist_source
-                    .eq_ignore_ascii_case("custom");
+                let src_macro = !audio.whitelist_source.eq_ignore_ascii_case("custom");
                 ui.add_space(if on { SP_M } else { SP_S });
                 ui.horizontal(|ui| {
                     ui.label(th.hint_text("名单用"));
@@ -732,7 +662,8 @@ impl SorahkGui {
                         .clicked()
                         && !src_macro
                     {
-                        self.config.audio_haptics.whitelist_source = "macro".to_string();
+                        self.backend
+                            .update_audio_config(|a| a.whitelist_source = "macro".to_string());
                         dirty = true;
                     }
                     if ui
@@ -741,7 +672,8 @@ impl SorahkGui {
                         .clicked()
                         && src_macro
                     {
-                        self.config.audio_haptics.whitelist_source = "custom".to_string();
+                        self.backend
+                            .update_audio_config(|a| a.whitelist_source = "custom".to_string());
                         dirty = true;
                     }
 
@@ -776,12 +708,14 @@ impl SorahkGui {
                         egui::Id::new("audio_whitelist_input"),
                     );
                     if r.changed() {
-                        self.config.audio_haptics.whitelist_processes = self
+                        /* ★R2.14: 编辑框缓冲留在 GUI, 条目整表替换走 backend */
+                        let entries: Vec<String> = self
                             .audio_whitelist_edit
                             .split([',', '\n'])
                             .map(|s| s.trim().to_string())
                             .filter(|s| !s.is_empty())
                             .collect();
+                        let _ = self.backend.audio_whitelist_set(entries);
                         dirty = true;
                     }
                 }
@@ -841,11 +775,7 @@ impl SorahkGui {
                 .id_salt("audio_wl_advanced")
                 .show(ui, |ui| {
                     ui.add_space(SP_XS);
-                    let mut process_mode = self
-                        .config
-                        .audio_haptics
-                        .whitelist_mode
-                        .eq_ignore_ascii_case("process");
+                    let mut process_mode = audio.whitelist_mode.eq_ignore_ascii_case("process");
                     if ui
                         .checkbox(&mut process_mode, "只监听名单进程的声音（Win10 2004+）")
                         .on_hover_text(
@@ -853,20 +783,23 @@ impl SorahkGui {
                         )
                         .changed()
                     {
-                        self.config.audio_haptics.whitelist_mode = if process_mode {
-                            "process".to_string()
-                        } else {
-                            "foreground".to_string()
-                        };
+                        self.backend.update_audio_config(|a| {
+                            a.whitelist_mode = if process_mode {
+                                "process".to_string()
+                            } else {
+                                "foreground".to_string()
+                            };
+                        });
                         dirty = true;
                     }
-                    let mut tree = self.config.audio_haptics.whitelist_include_tree;
+                    let mut tree = audio.whitelist_include_tree;
                     if ui
                         .checkbox(&mut tree, "含子进程")
                         .on_hover_text("游戏启动器拉起的子进程（登录器/反作弊）也一起算。")
                         .changed()
                     {
-                        self.config.audio_haptics.whitelist_include_tree = tree;
+                        self.backend
+                            .update_audio_config(|a| a.whitelist_include_tree = tree);
                         dirty = true;
                     }
                 });
@@ -874,16 +807,23 @@ impl SorahkGui {
         );
 
         if let Some(v) = toggle {
-            self.config.audio_haptics.whitelist_enabled = v;
-            // 老字段只作遗留别名, 不再驱动行为
-            self.config.audio_haptics.whitelist_filter = false;
+            self.backend.update_audio_config(|a| {
+                a.whitelist_enabled = v;
+                // 老字段只作遗留别名, 不再驱动行为
+                a.whitelist_filter = false;
+            });
             dirty = true;
         }
         dirty
     }
 
     /// ⑨ 高级选项 (默认折叠, 默认值即最佳)。
-    fn audio_advanced_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
+    fn audio_advanced_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
         let mut dirty = false;
         th.card(ui, None, |ui| {
             egui::CollapsingHeader::new(
@@ -893,29 +833,25 @@ impl SorahkGui {
             .show(ui, |ui| {
                 ui.add_space(SP_S);
                 th.panel(ui, Some("马达与频带"), |ui| {
-                    dirty |= audio_check!(
-                        self, ui, th, dual_motor, dual_motor,
+                    dirty |= audio_check!(self, ui, th, audio, dual_motor,
                         "双马达分频（低频走左、高频走右）",
                         "左马达管「轰」，右马达管「脆」，层次更分明",
                         "推荐开。左马达管“轰”（爆炸/贝斯），右马达管“脆”（枪声/打击），层次更分明。\n关掉 = 两颗马达一起同步震，感觉更“整”，但少了层次。"
                     );
                     ui.add_space(SP_XS);
-                    dirty |= audio_check!(
-                        self, ui, th, vocal_only, vocal_only,
+                    dirty |= audio_check!(self, ui, th, audio, vocal_only,
                         "只跟人声频段（双马达关闭时生效）",
                         "只跟人声能量，音乐/环境音基本不震 · 适合看剧听书",
                         "开了以后只跟人声频段的能量，音乐/环境音基本不震。适合看剧/听书。"
                     );
                     ui.add_space(SP_S);
                     split_cols(ui, 2, SP_L, |ui, i| match i {
-                        0 => dirty |= audio_slider!(
-                            self, ui, th, bass_high_hz, bass_high_hz, 200..=1000u32, 10.0, " Hz",
+                        0 => dirty |= audio_slider!(self, ui, th, audio, bass_high_hz, 200..=1000u32, 10.0, " Hz",
                             ic::WAVE_TRIANGLE, "低频上限",
                             "低于这个频率算「低频」走左马达 · 默认 750",
                             "低于这个频率的声音算“低频”走左马达。默认 750；觉得低频抢戏就调低，觉得轰得不够就调高。"
                         ),
-                        1 => dirty |= audio_slider!(
-                            self, ui, th, vocal_low_hz, vocal_low_hz, 300..=1500u32, 10.0, " Hz",
+                        1 => dirty |= audio_slider!(self, ui, th, audio, vocal_low_hz, 300..=1500u32, 10.0, " Hz",
                             ic::MICROPHONE, "人声下限",
                             "人声频段的下边界 · 默认 600，一般不用动",
                             "人声频段的下边界，默认 600。一般不用动。"
@@ -924,8 +860,7 @@ impl SorahkGui {
                     });
                     split_cols(ui, 2, SP_L, |ui, i| {
                         if i == 0 {
-                            dirty |= audio_slider!(
-                                self, ui, th, vocal_high_hz, vocal_high_hz, 1500..=8000u32, 50.0, " Hz",
+                            dirty |= audio_slider!(self, ui, th, audio, vocal_high_hz, 1500..=8000u32, 50.0, " Hz",
                                 ic::MICROPHONE, "人声上限",
                                 "人声频段的上边界 · 默认 4200，一般不用动",
                                 "人声频段的上边界，默认 4200。一般不用动。"
@@ -937,14 +872,12 @@ impl SorahkGui {
                 ui.add_space(SP_S);
                 th.panel(ui, Some("响度标尺"), |ui| {
                     split_cols(ui, 2, SP_L, |ui, i| match i {
-                        0 => dirty |= audio_slider!(
-                            self, ui, th, map_max, map_max, 1000..=12000u32, 100.0, "",
+                        0 => dirty |= audio_slider!(self, ui, th, audio, map_max, 1000..=12000u32, 100.0, "",
                             ic::GAUGE, "满格响度",
                             "多响算震满格 · 默认 6000 · 门槛决定震不震，这条决定震多满",
                             "声音响到什么程度算“震满格”。默认 6000；觉得动静大了调高，觉得不够劲调低。\n（配合「背景屏蔽门槛」用：门槛决定“震不震”，这条决定“震多满”。）"
                         ),
-                        1 => dirty |= audio_slider!(
-                            self, ui, th, dead_zone_pct, dead_zone_pct, 0..=20u32, 1.0, "%",
+                        1 => dirty |= audio_slider!(self, ui, th, audio, dead_zone_pct, 0..=20u32, 1.0, "%",
                             ic::ARROW_COUNTER_CLOCKWISE, "震动死区",
                             "低于这个强度直接归零，消除马达底噪 · 默认 4",
                             "低于这个强度的输出直接归零，消除马达细微的“嗡嗡”底噪。默认 4；嫌轻微动静太黏就加到 6-8。"
@@ -987,21 +920,26 @@ impl SorahkGui {
 
     /// ⑤ 我的预设 + 备份分享 (紧跟预设宫格, 归为"预设管理")。
     /// 拆成独立卡片, 避免宫格卡片过高。
-    fn audio_user_presets_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
+    fn audio_user_presets_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
         let mut dirty = false;
         let mut to_apply: Option<usize> = None;
         let mut to_delete: Option<usize> = None;
         let mut to_select: Option<usize> = None;
-        let current = self.config.audio_haptics.preset.clone();
+        let current = audio.preset.clone();
         let sel = self.audio_user_sel;
 
         th.card(ui, Some("我的预设"), |ui| {
-            if self.config.audio_haptics.presets.is_empty() {
+            if audio.presets.is_empty() {
                 ui.label(th.hint_text(
                     "还没有自定义预设。调好上面的滑条后，在这一行起个名字保存 —— 以后一键切回来。",
                 ));
             } else {
-                for (i, e) in self.config.audio_haptics.presets.iter().enumerate() {
+                for (i, e) in audio.presets.iter().enumerate() {
                     ui.horizontal(|ui| {
                         let is_cur = e.name == current;
                         if ui
@@ -1039,7 +977,7 @@ impl SorahkGui {
                     egui::Id::new("audio_preset_name_input"),
                 );
                 let name = self.audio_preset_name.trim().to_string();
-                let name_ok = !name.is_empty() && !mapping::is_protected_preset(&name);
+                let name_ok = !name.is_empty() && !self.backend.audio_preset_protected(&name);
                 let btn = if name_ok {
                     th.primary_button("保存")
                 } else {
@@ -1056,18 +994,8 @@ impl SorahkGui {
                     })
                     .clicked()
                 {
-                    let entry = self.snapshot_config_entry(&name);
-                    // 同名替换而非追加 (对齐震动区: 重名项永远删不掉的老坑)
-                    match self
-                        .config
-                        .audio_haptics
-                        .presets
-                        .iter()
-                        .position(|x| x.name == name)
-                    {
-                        Some(pos) => self.config.audio_haptics.presets[pos] = entry,
-                        None => self.config.audio_haptics.presets.push(entry),
-                    }
+                    /* ★R2.14: 当前参数快照 → 同名覆盖 upsert, 单次 backend 调用 */
+                    let _ = self.backend.save_audio_preset(&name);
                     self.audio_preset_name.clear();
                     self.audio_export_msg = Some(format!("已保存预设「{name}」"));
                     dirty = true;
@@ -1086,15 +1014,15 @@ impl SorahkGui {
             self.audio_user_sel = i;
         }
         if let Some(i) = to_apply {
-            if let Some(e) = self.config.audio_haptics.presets.get(i).cloned() {
+            if let Some(e) = audio.presets.get(i).cloned() {
                 self.apply_preset_entry(&e);
                 self.audio_user_sel = i;
                 dirty = true;
             }
         }
         if let Some(i) = to_delete {
-            if i < self.config.audio_haptics.presets.len() {
-                self.config.audio_haptics.presets.remove(i);
+            if i < audio.presets.len() {
+                let _ = self.backend.delete_audio_preset(i);
                 self.audio_user_sel = 0;
                 dirty = true;
             }
@@ -1103,7 +1031,12 @@ impl SorahkGui {
     }
 
     /// ⑪ 备份与分享: 导出 / 导入 / 还原默认。
-    fn audio_backup_card(&mut self, ui: &mut egui::Ui, th: &Theme) -> bool {
+    fn audio_backup_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        th: &Theme,
+        audio: &crate::config::AudioHapticsConfig,
+    ) -> bool {
         let mut dirty = false;
         th.card(ui, Some("备份与分享"), |ui| {
             ui.label(th.hint_text("导出的 .toml 存在程序目录，可以发给别人或换电脑用。"));
@@ -1115,7 +1048,7 @@ impl SorahkGui {
                     .on_hover_text("把当前所有音频震动参数导出成一个 .toml 文件（存在程序目录），可以发给别人或换电脑用")
                     .clicked()
                 {
-                    let entry = self.snapshot_config_entry(&self.config.audio_haptics.preset.clone());
+                    let entry = Self::snapshot_config_entry(audio, &audio.preset.clone());
                     match toml::to_string_pretty(&entry) {
                         Ok(body) => {
                             let content = format!(
@@ -1156,25 +1089,30 @@ impl SorahkGui {
                         {
                             Some(mut e)
                                 if !e.name.trim().is_empty()
-                                    && !mapping::is_protected_preset(e.name.trim()) =>
+                                    && !self.backend.audio_preset_protected(e.name.trim()) =>
                             {
                                 e.name = e.name.trim().to_string();
                                 let name = e.name.clone();
-                                match self
-                                    .config
-                                    .audio_haptics
-                                    .presets
-                                    .iter()
-                                    .position(|x| x.name == name)
-                                {
-                                    Some(pos) => self.config.audio_haptics.presets[pos] = e.clone(),
-                                    None => self.config.audio_haptics.presets.push(e.clone()),
-                                }
+                                /* ★R2.14: 自定义预设表 upsert 走 backend (立即落盘) */
+                                let upsert = e.clone();
+                                let _ = self
+                                    .backend
+                                    .update_config(crate::ui_api::Commit::Save, |c| {
+                                        match c
+                                            .audio_haptics
+                                            .presets
+                                            .iter()
+                                            .position(|x| x.name == name)
+                                        {
+                                            Some(pos) => c.audio_haptics.presets[pos] = upsert,
+                                            None => c.audio_haptics.presets.push(upsert),
+                                        }
+                                    });
                                 self.apply_preset_entry(&e);
                                 dirty = true;
                                 self.audio_export_msg = Some(format!("已导入并应用：{name}（{f}）"));
                             }
-                            Some(e) if mapping::is_protected_preset(e.name.trim()) => {
+                            Some(e) if self.backend.audio_preset_protected(e.name.trim()) => {
                                 self.audio_export_msg = Some(format!(
                                     "导入失败：「{}」与内置预设重名，请改名字后重新导出",
                                     e.name.trim()
@@ -1199,7 +1137,11 @@ impl SorahkGui {
                     .on_hover_text("清空我的全部自定义预设，并回到推荐档「人声清晰」")
                     .clicked()
                 {
-                    self.config.audio_haptics.presets.clear();
+                    let _ = self
+                        .backend
+                        .update_config(crate::ui_api::Commit::Save, |c| {
+                            c.audio_haptics.presets.clear();
+                        });
                     self.audio_user_sel = 0;
                     self.audio_apply_first_preset();
                     self.audio_export_msg = Some("已清空自定义预设，回到「人声清晰」".to_string());
@@ -1223,18 +1165,11 @@ impl SorahkGui {
 
     /// 还原默认: 应用第一档内置预设 (推荐档), 避免借用冲突单独抽出。
     fn audio_apply_first_preset(&mut self) {
-        let name = PRESETS[0].name;
+        let name = self.backend.audio_builtin_presets()[0].name;
         self.apply_audio_preset(name);
     }
 }
 
-/// 打脏标 + 整体镜像 (滑条拖动/预设应用后统一走这里, 主循环 1s 去抖落盘)。
-fn dirty_mark(gui: &mut SorahkGui) {
-    gui.app_state
-        .audio_hap
-        .apply_config(&gui.config.audio_haptics);
-    gui.audio_params_dirty_since = Some(Instant::now());
-}
 
 /* ═══════════════════════════ 版式小工具 (本页专用) ═══════════════════════════ */
 
@@ -1547,7 +1482,7 @@ fn draw_spectrum(ui: &mut egui::Ui, th: &Theme, t: &AudioTelemetry) {
     let names = ["超低", "低", "中", "高", "超高"];
     let step = rect.width() / 5.0;
 
-    let now_ms = crate::vibration::now_ms_u64();
+    let now_ms = crate::backend::BackendService::now_ms();
     let hot = t.last_onset_ms != 0 && now_ms.saturating_sub(t.last_onset_ms) < 150;
 
     for i in 0..5 {

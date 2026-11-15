@@ -141,8 +141,8 @@ enum KeyMapState {
     OtherTarget,
 }
 
-fn key_map_state(config: &crate::config::AppConfig, name: &str) -> KeyMapState {
-    for m in &config.mappings {
+fn key_map_state(mappings: &[crate::config::KeyMapping], name: &str) -> KeyMapState {
+    for m in mappings {
         if m.trigger_key.eq_ignore_ascii_case(name) {
             let same = m.target_keys.len() == 1 && m.target_keys[0].eq_ignore_ascii_case(name);
             return if same { KeyMapState::SameName } else { KeyMapState::OtherTarget };
@@ -234,6 +234,8 @@ impl SorahkGui {
     /// ★v24.33 「键盘快捷连发」卡片 (连发页: 预设管理下方 / 连发映射上方)。
     pub(crate) fn render_keyboard_quick_card(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let th = Theme::new(self.dark_mode);
+        /* ★R2.14: 映射列表帧首克隆 (键位占用状态渲染只读; 批量修改一次 Reload 提交) */
+        let mappings = self.backend.with_config(|c| c.mappings.clone());
 
         /* ★v24.36 性能: 正常情况下纹理已由启动预热线程备好 (页面首帧零成本)。
          * 仅当预热尚未就绪/失败时才在此同步兜底; 主题不匹配时**继续用旧纹理**
@@ -288,7 +290,7 @@ impl SorahkGui {
                         ),
                         egui::vec2(key.w / VIEWBOX.0 * rect.width(), key.h / VIEWBOX.1 * rect.height()),
                     );
-                    let state = key_map_state(&self.config, key.name);
+                    let state = key_map_state(&mappings, key.name);
                     let selected = self
                         .kbd_selected
                         .iter()
@@ -441,14 +443,14 @@ impl SorahkGui {
                         let mut conflicts: Vec<String> = Vec::new();
                         let mut free: Vec<String> = Vec::new();
                         for name in &self.kbd_selected {
-                            match key_map_state(&self.config, name) {
+                            match key_map_state(&mappings, name) {
                                 KeyMapState::SameName => {}
                                 KeyMapState::OtherTarget => conflicts.push(name.clone()),
                                 KeyMapState::Free => free.push(name.clone()),
                             }
                         }
                         if conflicts.is_empty() {
-                            apply_pending_changes_gui(self, &free);
+                            apply_pending_changes_gui(self, &free, &[]);
                             self.kbd_selected.clear();
                         } else {
                             self.kbd_pending_free = free;
@@ -493,16 +495,21 @@ impl SorahkGui {
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
                                 if ui.add(th.primary_button("覆盖并添加")).clicked() {
-                                    for name in conflicts {
-                                        overwrite_to_same_name_turbo(self, name);
-                                    }
-                                    apply_pending_changes_gui(self, &self.kbd_pending_free.clone());
+                                    apply_pending_changes_gui(
+                                        self,
+                                        &self.kbd_pending_free.clone(),
+                                        conflicts,
+                                    );
                                     self.kbd_selected.clear();
                                     self.kbd_pending_free.clear();
                                     self.kbd_conflicts = None;
                                 }
                                 if ui.add(th.secondary_button("跳过冲突项")).clicked() {
-                                    apply_pending_changes_gui(self, &self.kbd_pending_free.clone());
+                                    apply_pending_changes_gui(
+                                        self,
+                                        &self.kbd_pending_free.clone(),
+                                        &[],
+                                    );
                                     self.kbd_selected.clear();
                                     self.kbd_pending_free.clear();
                                     self.kbd_conflicts = None;
@@ -519,12 +526,21 @@ impl SorahkGui {
     }
 }
 
-/// 落盘 + 热重载 (键盘卡片配置变更后统一走这里)
-fn save_and_reload(gui: &mut SorahkGui) {
-    let _ = gui.config.save_to_file("Config.toml");
-    if let Err(e) = gui.app_state.reload_config(gui.config.clone()) {
-        eprintln!("Failed to reload config after keyboard quick change: {e}");
+/// ★R2.14 批量提交 (键盘卡片配置变更统一出口): 移除标红键 + 添加同名连发 + 覆盖冲突项,
+/// **一次 Reload 提交**完成 (落盘 + 热重载, 与旧「改完一次 save_and_reload」语义一致)。
+fn apply_pending_changes_gui(gui: &mut SorahkGui, adds_free: &[String], overwrites: &[String]) {
+    let removals = std::mem::take(&mut gui.kbd_removals);
+    if removals.is_empty() && adds_free.is_empty() && overwrites.is_empty() {
+        return;
     }
+    let _ = gui
+        .backend
+        .update_config(crate::ui_api::Commit::Reload, |c| {
+            for name in overwrites {
+                overwrite_to_same_name_turbo_in(c, name);
+            }
+            apply_pending_changes(c, &removals, adds_free);
+        });
 }
 
 /// 构造同名连发映射 (S→S + 连发开, 其余默认)
@@ -576,19 +592,9 @@ fn apply_pending_changes(
     (removed, added)
 }
 
-/// ★确认修改连发 (GUI 封装): 应用暂存的移除+添加并落盘热重载
-fn apply_pending_changes_gui(gui: &mut SorahkGui, adds_free: &[String]) {
-    let removals = std::mem::take(&mut gui.kbd_removals);
-    let (removed, added) = apply_pending_changes(&mut gui.config, &removals, adds_free);
-    if removed > 0 || added > 0 {
-        save_and_reload(gui);
-    }
-}
-
-/// 把既有映射覆盖为同名连发 (S→X → S→S + 连发)
-fn overwrite_to_same_name_turbo(gui: &mut SorahkGui, name: &str) {
-    if let Some(m) = gui
-        .config
+/// 把既有映射覆盖为同名连发 (S→X → S→S + 连发)。纯配置操作 (提交由调用方统一做)。
+fn overwrite_to_same_name_turbo_in(config: &mut AppConfig, name: &str) {
+    if let Some(m) = config
         .mappings
         .iter_mut()
         .find(|m| m.trigger_key.eq_ignore_ascii_case(name))

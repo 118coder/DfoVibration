@@ -80,7 +80,7 @@ pub(super) fn trigger_matches_raw(trigger: &str, vid: u16, pid: u16, pos: u32) -
         return false;
     }
     matches!(
-        crate::state::AppState::input_name_to_device(trigger),
+        crate::backend::BackendService::input_name_to_device(trigger),
         Some(crate::state::InputDevice::GenericDevice { button_id, .. }) if button_id as u32 == pos
     )
 }
@@ -95,7 +95,7 @@ pub fn trigger_matches_xinput(trigger: &str, vid: u16, mask: u32) -> bool {
     let Some(crate::state::InputDevice::XInputCombo {
         device_type,
         button_ids,
-    }) = crate::state::AppState::input_name_to_device(trigger)
+    }) = crate::backend::BackendService::input_name_to_device(trigger)
     else {
         return false;
     };

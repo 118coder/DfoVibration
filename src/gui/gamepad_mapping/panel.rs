@@ -7,16 +7,23 @@ use eframe::egui;
 use super::*;
 impl SorahkGui {
     pub(super) fn gp_save_and_reload(&mut self) {
-        let _ = self.config.save_to_file("Config.toml");
-        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-            eprintln!("Failed to reload config after gamepad calibration: {e}");
-        }
+        /* ★R2.14: 落盘 + 热重载走 backend (各变更点先以 Commit::Memory 改权威配置,
+         * 再统一在这里持久化, 与旧「改 config → save_to_file → reload_config」一致) */
+        let _ = self
+            .backend
+            .update_config(crate::ui_api::Commit::Reload, |_| {});
         /* ★R2.12 结构化日志: 组合键的增删改 / 独占勾选都从这里落盘,
          * 记下当前存活条数, 重启后也能追溯「到底存进去几条」。 */
-        let chords = crate::gui::gamepad_mapping::chord_mapping_indexes(&self.config).len();
-        crate::vibration::vib_log(&format!(
-            "[chord] persist | chords={chords} | mappings={}",
-            self.config.mappings.len()
+        let (chords, mappings) = self
+            .backend
+            .with_config(|c| {
+                (
+                    crate::gui::gamepad_mapping::chord_mapping_indexes(c).len(),
+                    c.mappings.len(),
+                )
+            });
+        crate::backend::BackendService::log(&format!(
+            "[chord] persist | chords={chords} | mappings={mappings}"
         ));
     }
 
@@ -32,7 +39,7 @@ impl SorahkGui {
     pub(super) fn render_gamepad_slot_panel(&mut self, ui: &mut egui::Ui, th: &Theme) {
         match self.gp_flow.clone() {
             GpFlow::Idle => {
-                let identified = self.app_state.live_hid_pad().is_some();
+                let identified = self.backend.live_hid_pad().is_some();
                 match render_slot_empty_state(ui, th, identified) {
                     EmptyAction::Map => self.start_identify_first_pad(),
                     EmptyAction::Calibrate => self.start_calibration(),
@@ -86,7 +93,7 @@ impl SorahkGui {
         if edit_again {
             /* 回到本键第 1 步 (Selected 面板: 看现状 / 设键盘键 / 校键) */
             self.gp_quick_listen = false;
-            self.app_state.set_raw_input_capture_mode(false);
+            self.backend.set_pad_capture(false);
             self.select_slot(slot_id);
         }
     }
@@ -148,9 +155,13 @@ impl SorahkGui {
                 let label = calibration_short_label(*id);
                 let (text, color) = if i < step {
                     /* ★v24.2: 已完成项直接显示"记下的触发键简称" —— 串键 / 串进 045E 命名一眼可见,
-                     * 不用再跑去连发映射区逐条核对。 */
+                     * 不用再跑去连发映射区逐条核对。
+                     * ★R2.14: 触发键名从 backend 现取 (校准每步都在写配置)。 */
                     let rec = get_slot(*id)
-                        .map(|s| slot_trigger_display(&self.config, s))
+                        .map(|s| {
+                            self.backend
+                                .with_config(|c| slot_trigger_display(c, s))
+                        })
                         .filter(|s| !s.is_empty())
                         .map(|s| {
                             let short = short_trigger_name(&s);
@@ -198,9 +209,19 @@ impl SorahkGui {
     /// 第 1 步 · 已选中一个手柄键: 看现状, 给出唯一的下一步。
     pub(super) fn render_slot_selected(&mut self, ui: &mut egui::Ui, th: &Theme, slot_id: usize) {
         let Some(slot) = get_slot(slot_id) else { return };
-        let trigger = slot_trigger_display(&self.config, slot);
-        let targets = slot_targets(&self.config, slot);
-        let mapped = find_slot_mapping_index(&self.config, slot).is_some();
+        /* ★R2.14: 该槽位映射现状帧首从 backend 一次取齐 */
+        let (trigger, targets, mapped, slot_seq_text) = self.backend.with_config(|c| {
+            let idx = find_slot_mapping_index(c, slot);
+            (
+                idx.map(|i| c.mappings[i].trigger_key.clone())
+                    .unwrap_or_default(),
+                idx.map(|i| c.mappings[i].target_keys.to_vec())
+                    .unwrap_or_default(),
+                idx.is_some(),
+                idx.map(|i| c.mappings[i].sequence_text.trim().to_string())
+                    .unwrap_or_default(),
+            )
+        });
         let uncalibrated = !mapped;
 
         th.panel(ui, None, |ui| {
@@ -259,17 +280,17 @@ impl SorahkGui {
                     }
                 }
                 /* ★v24.35 序列接管明示: 该槽位挂了序列宏时键盘按键不生效;
-                 * 序列本身坏了 (解析失败 = 整条不生效) 时给红字, 别说成"已接管" */
-                let slot_seq_text = find_slot_mapping_index(&self.config, slot)
-                    .map(|i| self.config.mappings[i].sequence_text.trim().to_string())
-                    .unwrap_or_default();
+                 * 序列本身坏了 (解析失败 = 整条不生效) 时给红字, 别说成"已接管"
+                 * ★R2.14: 宏表从 backend 现取 (slot_seq_text 已在帧首收集) */
                 if !slot_seq_text.is_empty() {
                     let macros: std::collections::HashMap<String, String> = self
-                        .config
-                        .universal_macros
-                        .iter()
-                        .map(|m| (m.name.to_lowercase(), m.text.clone()))
-                        .collect();
+                        .backend
+                        .with_config(|c| {
+                            c.universal_macros
+                                .iter()
+                                .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                                .collect()
+                        });
                     if crate::sequence::parse_sequence(&slot_seq_text, &macros).is_err() {
                         ui.label(
                             egui::RichText::new("✗ 序列宏解析失败 — 本条映射不生效")
@@ -343,11 +364,12 @@ impl SorahkGui {
                     .add_enabled(!targets.is_empty(), th.secondary_button("清空键盘按键"))
                     .clicked()
                 {
-                    clear_slot_targets(&mut self.config, slot);
-                    let _ = self.config.save_to_file("Config.toml");
-                    if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                        eprintln!("Failed to reload config after clear targets: {}", e);
-                    }
+                    /* ★R2.14: 一次 Reload 提交 (清空 + 落盘 + 热重载) */
+                    let _ = self
+                        .backend
+                        .update_config(crate::ui_api::Commit::Reload, |c| {
+                            clear_slot_targets(c, slot);
+                        });
                 }
                 if ui
                     .add_enabled(mapped, th.danger_button("删除该映射"))
@@ -415,7 +437,7 @@ impl SorahkGui {
     /// 第 2 步 · 等手柄物理键 (校对该槽位是哪个键)。
     pub(super) fn render_slot_await_pad(&mut self, ui: &mut egui::Ui, th: &Theme, slot_id: usize) {
         let Some(slot) = get_slot(slot_id) else { return };
-        let identified = self.app_state.live_hid_pad().is_some();
+        let identified = self.backend.live_hid_pad().is_some();
         th.panel(ui, None, |ui| {
             step_header(ui, th, 2, &format!("{}: 请按手柄上的一个键", slot.label));
             ui.add_space(8.0);
@@ -516,20 +538,22 @@ impl SorahkGui {
     }
 
     /// ★v24.0: 该槽位此刻是否被按下 —— 直接看**它自己那条映射的触发键**与当前原始位组合是否相等。
-    /// (与连发映射同一套判定; 未校对的槽位不亮。)
+    /// (与连发映射同一套判定; 未校对的槽位不亮。★R2.14: 映射读 backend。)
     pub(super) fn gp_slot_is_live(&self, slot_id: usize, live: &crate::state::LiveHidState) -> bool {
         let Some(slot) = get_slot(slot_id) else {
             return false;
         };
-        match find_slot_mapping_index(&self.config, slot) {
-            Some(i) => trigger_matches_raw(
-                &self.config.mappings[i].trigger_key,
-                live.vid,
-                live.pid,
-                live.raw_position,
-            ),
-            None => false,
-        }
+        self.backend.with_config(|c| {
+            match find_slot_mapping_index(c, slot) {
+                Some(i) => trigger_matches_raw(
+                    &c.mappings[i].trigger_key,
+                    live.vid,
+                    live.pid,
+                    live.raw_position,
+                ),
+                None => false,
+            }
+        })
     }
 
     /// ★v24.0: 这一帧新按下的槽位 (识别态自动选中用)。
@@ -552,10 +576,12 @@ impl SorahkGui {
         let Some(slot) = get_slot(slot_id) else {
             return false;
         };
-        match find_slot_mapping_index(&self.config, slot) {
-            Some(i) => trigger_matches_xinput(&self.config.mappings[i].trigger_key, vid, mask),
-            None => false,
-        }
+        self.backend.with_config(|c| {
+            match find_slot_mapping_index(c, slot) {
+                Some(i) => trigger_matches_xinput(&c.mappings[i].trigger_key, vid, mask),
+                None => false,
+            }
+        })
     }
 
     /// ★v24.6: 这一帧新按下的槽位 (XInput live 位图版) —— 要求该槽位在上一帧还没被按下,
@@ -578,8 +604,8 @@ impl SorahkGui {
     }
 
     /// ★v22.0: 当前正在"实时识别"的手柄 (从已枚举列表里按 vid:pid 找)。
-    pub(super) fn live_pad(&self) -> Option<crate::rawinput::RawHidGamepad> {
-        let (v, p) = self.app_state.live_hid_pad()?;
+    pub(super) fn live_pad(&self) -> Option<crate::backend::RawHidGamepad> {
+        let (v, p) = self.backend.live_hid_pad()?;
         self.raw_hid_pads
             .iter()
             .find(|d| d.vid == v && d.pid == p)
@@ -611,9 +637,13 @@ impl SorahkGui {
     pub(super) fn select_slot_autostep(&mut self, slot_id: usize) {
         self.select_slot(slot_id);
         let Some(slot) = get_slot(slot_id) else { return };
-        let has_target = find_slot_mapping_index(&self.config, slot)
-            .map(|i| !self.config.mappings[i].target_keys.is_empty())
-            .unwrap_or(false);
+        let has_target = self
+            .backend
+            .with_config(|c| {
+                find_slot_mapping_index(c, slot)
+                    .map(|i| !c.mappings[i].target_keys.is_empty())
+                    .unwrap_or(false)
+            });
         if !has_target {
             self.begin_set_kb(slot_id);
         }
@@ -625,7 +655,10 @@ impl SorahkGui {
     /// 未校对的槽位不给设键盘键 (先校对, 才有触发键)。
     pub(super) fn begin_set_kb(&mut self, slot_id: usize) {
         let Some(slot) = get_slot(slot_id) else { return };
-        if find_slot_mapping_index(&self.config, slot).is_none() {
+        let mapped = self
+            .backend
+            .with_config(|c| find_slot_mapping_index(c, slot).is_some());
+        if !mapped {
             self.set_gamepad_warn("这个键还没校对 — 请先点右上「快速校对手柄按键」");
             return;
         }
@@ -635,10 +668,10 @@ impl SorahkGui {
             .transition(GpEvent::BeginSetKb);
         /* ★v24.4: 进入键盘捕获 → 退出"按手柄键继续映射"的监听态 (捕获通道也关掉) */
         self.gp_quick_listen = false;
-        self.app_state.set_raw_input_capture_mode(false);
+        self.backend.set_pad_capture(false);
         self.gp_pad_capture.reset();
         self.capture_pressed_keys.clear();
-        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+        self.capture_initial_pressed = self.backend.poll_pressed_keys();
         self.just_captured_input = true;
     }
 
@@ -659,7 +692,7 @@ impl SorahkGui {
         self.just_captured_input = true;
         self.gp_pad_capture.reset();
         self.gp_quick_listen = false;
-        self.app_state.set_raw_input_capture_mode(true);
+        self.backend.set_pad_capture(true);
     }
 
     /// 取消: **只回退一层**并关掉捕获通道 —— 保留手柄识别 (旧版"取消即退出识别"已废弃)。
@@ -674,17 +707,15 @@ impl SorahkGui {
         self.just_captured_input = false;
         self.gp_pad_capture.reset();
         self.gp_quick_listen = false;
-        self.app_state.set_raw_input_capture_mode(false);
+        self.backend.set_pad_capture(false);
         /* ★v24.39: 组合捕获的「输入数最多」帧选择同步关闭 (取消/离开页面) */
-        self.app_state
-            .capture_prefers_max_inputs
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.backend.set_capture_prefers_max_inputs(false);
     }
 
     /// 停止识别 → 回初始状态 (现在唯一的"退出识别"入口)。
     pub(super) fn stop_identify(&mut self) {
-        self.app_state.set_live_hid_pad(None);
-        self.app_state.set_raw_input_capture_mode(false);
+        self.backend.set_live_hid_pad(None);
+        self.backend.set_pad_capture(false);
         self.gp_flow = self.gp_flow.transition(GpEvent::Reset);
         self.capture_pressed_keys.clear();
         self.just_captured_input = false;
@@ -710,24 +741,31 @@ impl SorahkGui {
             GpCaptureKind::Trigger => {
                 /* ★v24.0: 校准 = 直接写这条映射的触发键 (备注已是系统备注)。
                  * 与连发映射完全一致, 不再有独立的校准表。 */
-                set_slot_trigger(&mut self.config, slot, value.clone());
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Reload, |c| {
+                        set_slot_trigger(c, slot, value.clone());
+                    });
                 self.set_gamepad_toast(format!("已校对: {} 键", slot.label));
             }
             GpCaptureKind::Target => {
-                if find_slot_mapping_index(&self.config, slot).is_none() {
+                let mapped = self
+                    .backend
+                    .with_config(|c| find_slot_mapping_index(c, slot).is_some());
+                if !mapped {
                     self.set_gamepad_warn("这个键还没校对 — 请先点「快速校对手柄按键」");
                     self.gp_flow = self.gp_flow.transition(GpEvent::Cancel);
                     return;
                 }
                 /* ★v24.18: **替换**而不是追加 —— 捕获结果就是这个槽位完整的目标键。
                  * (原来是 add: 已有「X+A」时再捕获「X」因为 X 已在集合里, 看着像没生效) */
-                set_slot_targets(&mut self.config, slot, value.clone());
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Reload, |c| {
+                        set_slot_targets(c, slot, value.clone());
+                    });
                 self.set_gamepad_toast(format!("已设置: {} → {}", slot.label, value));
             }
-        }
-        let _ = self.config.save_to_file("Config.toml");
-        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-            eprintln!("Failed to reload config after capture confirm: {e}");
         }
         self.gp_flow = self.gp_flow.transition(GpEvent::ConfirmCapture);
         /* ★v24.4: 完成页允许"直接按其他手柄键继续映射"。
@@ -743,7 +781,7 @@ impl SorahkGui {
     pub(super) fn gp_add_another_key(&mut self) {
         self.gp_flow = self.gp_flow.transition(GpEvent::AddAnotherKey);
         self.capture_pressed_keys.clear();
-        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+        self.capture_initial_pressed = self.backend.poll_pressed_keys();
         self.just_captured_input = true;
     }
 
@@ -753,11 +791,12 @@ impl SorahkGui {
             return;
         };
         let Some(slot) = get_slot(slot_id) else { return };
-        remove_slot_mapping(&mut self.config, slot);
-        let _ = self.config.save_to_file("Config.toml");
-        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-            eprintln!("Failed to reload config after remove mapping: {e}");
-        }
+        /* ★R2.14: 一次 Reload 提交 (删除 + 落盘 + 热重载) */
+        let _ = self
+            .backend
+            .update_config(crate::ui_api::Commit::Reload, |c| {
+                remove_slot_mapping(c, slot);
+            });
         self.set_gamepad_toast(format!("已删除: {}", slot.label));
         self.gp_flow = self.gp_flow.transition(GpEvent::ConfirmDelete);
     }
@@ -769,18 +808,23 @@ impl SorahkGui {
         th: &Theme,
         slot: &'static GamepadSlot,
     ) {
-        let Some(idx) = find_slot_mapping_index(&self.config, slot) else {
+        let Some(idx) = self
+            .backend
+            .with_config(|c| find_slot_mapping_index(c, slot))
+        else {
             return;
         };
-        let (mut turbo, mut dtap, mut run, mut run_thr) = {
-            let m = &self.config.mappings[idx];
-            (
-                m.turbo_enabled,
-                m.double_tap_enabled,
-                m.run_enabled,
-                m.run_threshold,
-            )
-        };
+        let (mut turbo, mut dtap, mut run, mut run_thr) = self
+            .backend
+            .with_config(|c| {
+                let m = &c.mappings[idx];
+                (
+                    m.turbo_enabled,
+                    m.double_tap_enabled,
+                    m.run_enabled,
+                    m.run_threshold,
+                )
+            });
         egui::CollapsingHeader::new("更多设置 (连发 / 奔跑)")
             .id_salt(("gp_slot_advanced", slot.id))
             .show(ui, |ui| {
@@ -817,15 +861,17 @@ impl SorahkGui {
                         .changed();
                 }
                 if changed {
-                    let m = &mut self.config.mappings[idx];
-                    m.turbo_enabled = turbo;
-                    m.double_tap_enabled = dtap && !run;
-                    m.run_enabled = run;
-                    m.run_threshold = run_thr;
-                    let _ = self.config.save_to_file("Config.toml");
-                    if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                        eprintln!("Failed to reload config after slot advanced edit: {e}");
-                    }
+                    /* ★R2.14: 一次 Reload 提交 (改参数 + 落盘 + 热重载) */
+                    let _ = self
+                        .backend
+                        .update_config(crate::ui_api::Commit::Reload, |c| {
+                            if let Some(m) = c.mappings.get_mut(idx) {
+                                m.turbo_enabled = turbo;
+                                m.double_tap_enabled = dtap && !run;
+                                m.run_enabled = run;
+                                m.run_threshold = run_thr;
+                            }
+                        });
                 }
             });
 
@@ -848,7 +894,7 @@ impl SorahkGui {
     /// ★v22.0/★v22.6: 「手柄按键快速映射」→ 枚举并读取选中的手柄 (原「开始识别手柄」)。
     pub(super) fn start_identify_first_pad(&mut self) {
         if self.raw_hid_pads.is_empty() {
-            self.raw_hid_pads = crate::rawinput::enumerate_raw_hid_gamepads();
+            self.raw_hid_pads = self.backend.enumerate_raw_hid_gamepads();
             self.raw_hid_pads_fetched = Some(std::time::Instant::now());
         }
         if self.raw_hid_pads.is_empty() {
@@ -859,7 +905,7 @@ impl SorahkGui {
             self.raw_hid_selected = 0;
         }
         let pad = self.raw_hid_pads[self.raw_hid_selected].clone();
-        self.app_state.set_live_hid_pad(Some((pad.vid, pad.pid)));
+        self.backend.set_live_hid_pad(Some((pad.vid, pad.pid)));
         self.raw_hid_status = Some(pad.device_name.clone());
         /* ★v24.2: 进入"监听"态 —— 按手柄上任意已校对的键, 直接选中该槽位并开始设键盘键。
          * ★v24.6: 只开 live 状态匹配 (raw + XInput 位图), **不启用捕获模式**, 不干扰正常映射派发。 */

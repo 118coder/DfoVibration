@@ -13,6 +13,10 @@ pub mod hid_layout;
  * 并还原 config.rs / gui 三处接线 (详见 docs/frozen/hidhide.rs 文件头)。 */
 // pub mod hidhide;
 pub mod i18n;
+/// ★R2.14 前后端分离: UI↔后端 契约层 (UiSnapshot/UiEvent/UiCommand)
+pub mod ui_api;
+/// ★R2.14 前后端分离: 后端服务门面 (配置权威/快照/事件/命令/领域 API)
+pub mod backend;
 pub mod input_manager;
 pub mod input_ownership;
 pub mod job_presets;

@@ -8,30 +8,35 @@ use eframe::egui;
 impl SorahkGui {
     pub(in crate::gui) fn render_turbo_preset_manager(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
+        /* ★R2.14: 预设表/当前名帧首克隆 (渲染只读; 切换/增删改走 backend) */
+        let presets = self.backend.with_config(|c| c.presets.clone());
+        let current_preset = self
+            .backend
+            .with_config(|c| c.current_preset.clone());
         th.card(ui, Some("预设管理"), |ui| {
             /* 行1: 切换预设 (选择即应用) */
             ui.horizontal(|ui| {
                 ui.label(th.weak("切换预设:"));
-                let cur_name = if self.config.current_preset.is_empty() {
+                let cur_name = if current_preset.is_empty() {
                     "(无)".to_owned()
                 } else {
-                    self.config.current_preset.clone()
+                    current_preset.clone()
                 };
-                let mut next = self.config.current_preset.clone();
+                let mut next = current_preset.clone();
                 let mut switched = false;
                 egui::ComboBox::from_id_salt("page_preset_switch")
                     .selected_text(cur_name)
                     .width(180.0)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(self.config.current_preset.is_empty(), "(无)")
+                            .selectable_label(current_preset.is_empty(), "(无)")
                             .clicked()
                         {
                             next = String::new();
                             switched = true;
                         }
-                        for pr in &self.config.presets {
-                            let is_sel = self.config.current_preset == pr.name;
+                        for pr in &presets {
+                            let is_sel = current_preset == pr.name;
                             if ui.selectable_label(is_sel, &pr.name).clicked() {
                                 next = pr.name.clone();
                                 switched = true;
@@ -39,18 +44,19 @@ impl SorahkGui {
                         }
                     });
                 if switched {
-                    self.config.current_preset = next.clone();
-                    if let Some(pr) = self.config.presets.iter().find(|p| p.name == next) {
-                        /* ★空预设合法: mappings 为空就是"清空所有键位映射"的正式状态, 照常加载。 */
-                        self.config.mappings = pr.mappings.clone();
+                    /* ★R2.14: 切换即落盘 + 热重载: 运行时钩子只消费 reload 后的映射,
+                     * 不 reload 的话 UI 显示新映射而钩子仍按旧映射连发 */
+                    if next.is_empty() {
+                        /* 「(无)」= 只清当前名, 映射不动 (与旧行为一致) */
+                        let _ =
+                            self.backend
+                                .update_config(crate::ui_api::Commit::Reload, |c| {
+                                    c.current_preset.clear();
+                                });
+                    } else {
+                        let _ = self.backend.apply_mapping_preset(&next);
                     }
                     self.page_preset_delete_arm = false;
-                    let _ = self.config.save_to_file("Config.toml");
-                    // 切换即热重载: 运行时钩子只消费 AppState.input_mappings,
-                    // 不 reload 的话 UI 显示新映射而钩子仍按旧映射连发
-                    if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                        eprintln!("Failed to reload config after preset switch: {}", e);
-                    }
                 }
                 ui.label(th.hint_text("选择后立即应用映射"));
             });
@@ -77,29 +83,15 @@ impl SorahkGui {
                 {
                     let typed = self.page_preset_name_input.trim().to_string();
                     let name = if typed.is_empty() {
-                        self.config.current_preset.trim().to_string()
+                        current_preset.trim().to_string()
                     } else {
                         typed
                     };
                     if !name.is_empty() {
-                        /* ★v20.3: 同名覆盖时保留已绑定的切换键 */
-                        let switch_key = self
-                            .config
-                            .presets
-                            .iter()
-                            .find(|p| p.name == name)
-                            .map(|p| p.switch_key.clone())
-                            .unwrap_or_default();
-                        self.config.presets.retain(|p| p.name != name);
-                        self.config.presets.push(crate::config::Preset {
-                            name: name.clone(),
-                            mappings: self.config.mappings.clone(),
-                            switch_key,
-                        });
-                        self.config.current_preset = name;
+                        /* ★R2.14: 同名覆盖时保留已绑定的切换键 (save_mapping_preset 同语义) */
+                        let _ = self.backend.save_mapping_preset(&name);
                         self.page_preset_name_input.clear();
                         self.page_preset_delete_arm = false;
-                        let _ = self.config.save_to_file("Config.toml");
                     }
                 }
                 ui.label(th.hint_text("保存当前整页映射为预设"));
@@ -107,7 +99,7 @@ impl SorahkGui {
             ui.add_space(theme::SP_S);
 
             /* 行3: 重命名 + 删除 (两次确认), 仅当前预设非空时可用 */
-            if !self.config.current_preset.is_empty() {
+            if !current_preset.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label(th.weak("当前预设:"));
                     if ui
@@ -118,7 +110,7 @@ impl SorahkGui {
                         .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL)))
                         .clicked()
                     {
-                        self.page_preset_rename_input = self.config.current_preset.clone();
+                        self.page_preset_rename_input = current_preset.clone();
                         self.page_preset_rename_show = true;
                     }
                     let del_label = if self.page_preset_delete_arm {
@@ -138,11 +130,8 @@ impl SorahkGui {
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL));
                     if ui.add(del_btn).clicked() {
                         if self.page_preset_delete_arm {
-                            let name = self.config.current_preset.clone();
-                            self.config.presets.retain(|p| p.name != name);
-                            self.config.current_preset.clear();
+                            let _ = self.backend.delete_mapping_preset(&current_preset);
                             self.page_preset_delete_arm = false;
-                            let _ = self.config.save_to_file("Config.toml");
                         } else {
                             self.page_preset_delete_arm = true;
                         }
@@ -174,16 +163,10 @@ impl SorahkGui {
                             .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL)))
                             .clicked()
                         {
-                            let old = self.config.current_preset.clone();
+                            let old = current_preset.clone();
                             let new_name = self.page_preset_rename_input.trim().to_string();
                             if !new_name.is_empty() && new_name != old {
-                                if let Some(pr) =
-                                    self.config.presets.iter_mut().find(|p| p.name == old)
-                                {
-                                    pr.name = new_name.clone();
-                                }
-                                self.config.current_preset = new_name;
-                                let _ = self.config.save_to_file("Config.toml");
+                                let _ = self.backend.rename_mapping_preset(&old, &new_name);
                             }
                             self.page_preset_rename_show = false;
                             self.page_preset_rename_input.clear();
@@ -202,13 +185,13 @@ impl SorahkGui {
             ui.add_space(theme::SP_S);
             ui.separator();
             ui.add_space(theme::SP_XS);
-            if self.config.presets.is_empty() {
+            if presets.is_empty() {
                 ui.label(th.hint_text("组合键切换预设: 先用上方「保存预设」入档, 再在这里绑定切换键"));
             } else {
-                if self.preset_key_target >= self.config.presets.len() {
-                    self.preset_key_target = self.config.presets.len() - 1;
+                if self.preset_key_target >= presets.len() {
+                    self.preset_key_target = presets.len() - 1;
                 }
-                let cur_key = self.config.presets[self.preset_key_target].switch_key.clone();
+                let cur_key = presets[self.preset_key_target].switch_key.clone();
                 /* ★v21.7c: 标签列表跟随所选预设 (只捕获不手输 → 无法输入汉字等非法内容) */
                 if self.preset_key_parts_signature != cur_key {
                     self.preset_key_parts = Self::decombo_switch_key(&cur_key);
@@ -216,13 +199,13 @@ impl SorahkGui {
                 }
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("切换键:"));
-                    let target_name = self.config.presets[self.preset_key_target].name.clone();
+                    let target_name = presets[self.preset_key_target].name.clone();
                     let mut next_idx = self.preset_key_target;
                     egui::ComboBox::from_id_salt("preset_switch_key_target")
                         .selected_text(target_name)
                         .width(130.0)
                         .show_ui(ui, |ui| {
-                            for (i, pr) in self.config.presets.iter().enumerate() {
+                            for (i, pr) in presets.iter().enumerate() {
                                 if ui
                                     .selectable_label(i == self.preset_key_target, &pr.name)
                                     .clicked()
@@ -233,7 +216,7 @@ impl SorahkGui {
                         });
                     if next_idx != self.preset_key_target {
                         self.preset_key_target = next_idx;
-                        let k = self.config.presets[next_idx].switch_key.clone();
+                        let k = presets[next_idx].switch_key.clone();
                         self.preset_key_parts = Self::decombo_switch_key(&k);
                         self.preset_key_parts_signature = k;
                         self.preset_key_error = None;
@@ -330,16 +313,28 @@ impl SorahkGui {
     /// 切换键重复 ③不与「连发切换键」重复 ④**不与任何预设的任何映射触发键重名或同组件**
     /// —— 见下方 `find_preset_switch_conflict` (v21.7 用户提出的"连发/组合键冲突"以此根治)。
     pub(in crate::gui) fn save_preset_switch_key(&mut self) {
-        if self.preset_key_target >= self.config.presets.len() {
+        /* ★R2.14: 校验所需的配置数据帧首从 backend 收集 (闭包外做校验, 闭包内不写) */
+        let (presets_len, target_name, turbo_switch_key) = self.backend.with_config(|c| {
+            (
+                c.presets.len(),
+                c.presets
+                    .get(self.preset_key_target)
+                    .map(|p| p.name.clone()),
+                c.switch_key.clone(),
+            )
+        });
+        if self.preset_key_target >= presets_len {
             return;
         }
-        let target_name = self.config.presets[self.preset_key_target].name.clone();
+        let Some(target_name) = target_name else {
+            return;
+        };
         /* ★v21.7d: 组合键先去重+规范排序 (用户要求 相同键不重复 / 顺序严格) */
         let key = crate::util::normalize_key_combo(&Self::compact_switch_key_parts(
             &self.preset_key_parts,
         ));
         if key.is_empty() {
-            self.config.presets[self.preset_key_target].switch_key.clear();
+            let _ = self.backend.set_preset_switch_key(&target_name, "");
             self.preset_key_parts_signature.clear();
             self.preset_key_error = None;
         } else if Self::combo_is_modifier_only(&key) {
@@ -347,21 +342,26 @@ impl SorahkGui {
                 "组合键需要至少一个非修饰键 (如 CTRL+F6, 不能只有 CTRL+SHIFT)".to_string(),
             );
             return;
-        } else if !crate::state::AppState::is_valid_input_name(&key) {
+        } else if !crate::backend::BackendService::is_valid_input_name(&key) {
             self.preset_key_error = Some(
                 "无法识别的组合 (手柄的多个按键暂不能合成一个切换键; 键盘组合如 CTRL+F6 可以)"
                     .to_string(),
             );
             return;
-        } else if let Some(other) = self.config.presets.iter().find(|p| {
-            p.name != target_name
-                && !p.switch_key.trim().is_empty()
-                && p.switch_key.trim().to_uppercase() == key
+        } else if let Some(other_name) = self.backend.with_config(|c| {
+            c.presets
+                .iter()
+                .find(|p| {
+                    p.name != target_name
+                        && !p.switch_key.trim().is_empty()
+                        && p.switch_key.trim().to_uppercase() == key
+                })
+                .map(|p| p.name.clone())
         }) {
-            self.preset_key_error = Some(format!("与预设「{}」的切换键冲突", other.name));
+            self.preset_key_error = Some(format!("与预设「{}」的切换键冲突", other_name));
             return;
-        } else if !self.config.switch_key.trim().is_empty()
-            && self.config.switch_key.trim().to_uppercase() == key
+        } else if !turbo_switch_key.trim().is_empty()
+            && turbo_switch_key.trim().to_uppercase() == key
         {
             self.preset_key_error = Some("与「连发切换键」冲突, 请换一个键".to_string());
             return;
@@ -380,13 +380,13 @@ impl SorahkGui {
             });
             return;
         } else {
-            self.config.presets[self.preset_key_target].switch_key = key.clone();
+            /* ★R2.14: 写入走 backend (落盘 + 切换键绑定表重建) */
+            let _ = self.backend.set_preset_switch_key(&target_name, &key);
             self.preset_key_parts_signature = key.clone();
             /* 回显规范顺序 (去重/排序后的标签) */
             self.preset_key_parts = Self::decombo_switch_key(&key);
             self.preset_key_error = None;
         }
-        let _ = self.config.save_to_file("Config.toml");
     }
 
     /// ★v21.7c: 已存切换键 → 标签列表 (反向分解, 供 UI 显示 chips)。
@@ -405,7 +405,8 @@ impl SorahkGui {
     /// 判定 = 完全相同 **或** 作为 `+` 组合键的任一组件 (如映射 CTRL+F6 与切换键 F6 也冲突)。
     /// 返回 (预设名, 触发键原文, 是否带连发/组合性质)。
     pub(super) fn find_preset_switch_conflict(&self, key: &str) -> Option<(String, String, bool)> {
-        Self::find_preset_switch_conflict_in(&self.config.presets, key)
+        self.backend
+            .with_config(|c| Self::find_preset_switch_conflict_in(&c.presets, key))
     }
 
     /// 纯函数版 (可单测): 冲突查找规则见上。
@@ -467,8 +468,8 @@ impl SorahkGui {
     pub(in crate::gui) fn start_preset_switch_capture(&mut self) {
         self.key_capture_mode = KeyCaptureMode::PresetSwitchKey;
         self.capture_pressed_keys.clear();
-        self.capture_initial_pressed = Self::poll_all_pressed_keys();
-        self.app_state.set_raw_input_capture_mode(true);
+        self.capture_initial_pressed = self.backend.poll_pressed_keys();
+        self.backend.set_pad_capture(true);
         self.just_captured_input = false;
         self.preset_key_error = None;
     }
@@ -477,7 +478,7 @@ impl SorahkGui {
     pub(in crate::gui) fn cancel_preset_switch_capture(&mut self) {
         self.key_capture_mode = KeyCaptureMode::None;
         self.capture_pressed_keys.clear();
-        self.app_state.set_raw_input_capture_mode(false);
+        self.backend.set_pad_capture(false);
         self.just_captured_input = false;
     }
 
@@ -494,7 +495,7 @@ impl SorahkGui {
         let mut captured: Option<String> = None;
 
         /* 键盘: 记录新按下的键, 任一松开即视为完成 (与映射捕获同语义) */
-        let current_pressed = Self::poll_all_pressed_keys();
+        let current_pressed = self.backend.poll_pressed_keys();
         current_pressed
             .iter()
             .filter(|&&vk| !self.capture_initial_pressed.contains(&vk))
@@ -511,7 +512,7 @@ impl SorahkGui {
 
         /* 手柄: 原始输入捕获通道 (RawInput 原始报文 / XInput 标准按键) */
         if captured.is_none()
-            && let Some(device) = self.app_state.try_recv_raw_input_capture()
+            && let Some(device) = self.backend.poll_pad_capture()
         {
             captured = Some(device.to_string());
         }
@@ -532,7 +533,7 @@ impl SorahkGui {
             return;
         }
         let semantic = |s: &str| {
-            match crate::state::AppState::input_name_to_device(s) {
+            match crate::backend::BackendService::input_name_to_device(s) {
                 Some(crate::state::InputDevice::GenericDevice { button_id, .. }) => {
                     let pos = (button_id & 0xFFFF_FFFF) as u32;
                     crate::hid_layout::semantic_button_usage(pos).is_some()

@@ -41,10 +41,8 @@ use crate::config::AppConfig;
 use crate::gui::theme::Theme;
 use crate::gui::types::{GpFlow, KeyCaptureMode, Page};
 use crate::i18n::CachedTranslations;
-use crate::state::AppState;
 use eframe::egui;
 use smallvec::SmallVec;
-use std::sync::Arc;
 
 pub use error_dialog::show_error;
 
@@ -74,10 +72,9 @@ pub enum PrewarmTex {
 ///
 /// Manages the application window state, dialogs, and user interactions.
 pub struct SorahkGui {
-    /// Shared application state
-    app_state: Arc<AppState>,
-    /// Application configuration
-    config: AppConfig,
+    /// ★R2.14 前后端分离: 后端服务句柄 —— 配置权威/运行态/命令全走它。
+    /// UI 侧不再直接持有 AppConfig / AppState / UpdateManager。
+    pub(crate) backend: crate::backend::Backend,
     /// Cached translations for rendering
     translations: CachedTranslations,
     /// 当前激活的页面 (顶部选项卡, 见 types::Page)
@@ -179,10 +176,10 @@ pub struct SorahkGui {
     pub gamepad_warn_until: Option<std::time::Instant>,
     /// ★v21.9: 「鼠标映射」小菜单是否展开 (滚动 / 点击)
     pub gamepad_mouse_menu: bool,
-    /// ★v21.7: 手柄类预设切换键绑定表的签名 (变化时才推送到 AppState, 避免逐帧加锁)
-    pub preset_switch_bindings_sig: u64,
+    /// ★R2.14: 旧 preset_switch_bindings_sig 绑定签名推送已废除 (backend 在
+    /// 构造/Commit::Reload 时重建绑定表)。
     /// ★v21.7 方案A: 原始 HID 手柄 (标准布局一键生成) —— 设备缓存/时刻/选中/提示
-    pub raw_hid_pads: Vec<crate::rawinput::RawHidGamepad>,
+    pub raw_hid_pads: Vec<crate::backend::RawHidGamepad>,
     pub raw_hid_pads_fetched: Option<std::time::Instant>,
     pub raw_hid_selected: usize,
     pub raw_hid_status: Option<String>,
@@ -293,11 +290,9 @@ pub struct SorahkGui {
     pub minimal_job_block_w: f32,
     /// 极简模式震动预设来源: false=通用预设 / true=全职业预设 (互斥)
     pub minimal_vib_preset_job: bool,
-    /// ★60 槽滑块自动落盘脏标 (v16.2): 拖动即镜像进 config.vibration 并记时刻,
-    /// 主循环静默 1 秒后统一写 Vibration.toml (去抖, 防逐帧写盘)。仅非职业模式。
-    pub vib_params_dirty_since: Option<std::time::Instant>,
-    /// ★v24.50 音频震动参数落盘脏标 (同款去抖; 静默 1s 后写 Config.toml)
-    pub audio_params_dirty_since: Option<std::time::Instant>,
+    /// ★R2.14: 滑杆落盘去抖已下沉 backend 保存调度线程, GUI 脏标字段废除。
+    /// (vib/audio 页改参数走 backend.update_vibration_config / update_audio_config,
+    ///  自动打脏标 + 静默 1s 原子落盘, 语义与旧 GUI 一致。)
     /// ★v24.51 音频白名单编辑框缓冲 (逗号/换行分隔的进程名或完整路径)
     pub audio_whitelist_edit: String,
     /// ★v24.61 音频自定义预设「保存为」名称输入框缓冲
@@ -330,9 +325,7 @@ pub struct SorahkGui {
     /// Cached light theme style
     cached_light_style: egui::Style,
     /* ═══════ ★v24.55 检查更新 (浮窗/面板/设置区共用) ═══════ */
-    /// 状态容器: 后台线程写, 界面侧每帧取快照
-    pub(crate) update: crate::update::UpdateManager,
-    /// 本帧使用的快照 (tick 时同步, 绘制只读它)
+    /// ★R2.14: UpdateManager 所有权归 backend, 这里只留本帧快照 (tick 时同步, 绘制只读)
     pub(crate) update_state: crate::update::Snapshot,
     /// 启动自动检查只跑一次
     pub(crate) update_started: bool,
@@ -345,26 +338,30 @@ pub struct SorahkGui {
 }
 
 impl SorahkGui {
-    /// Creates a new GUI instance with the given state and configuration.
-    pub fn new(app_state: Arc<AppState>, mut config: AppConfig) -> Self {
-        /* ★v24.10: 「仅用连发」(dfo_player=false) → 震动关闭并落盘, 与入口隐藏口径一致。
-         * 同时修历史数据: Vibration.toml 里 enabled=true 但用户已选仅用连发的情况。 */
-        if !config.dfo_player && config.vibration.enabled {
-            config.vibration.enabled = false;
-            let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for(
-                "Config.toml",
-            ));
-        }
-        let dark_mode = config.dark_mode;
-        let translations = CachedTranslations::new(config.language);
+    /// Creates a new GUI instance with the given backend handle.
+    ///
+    /// ★R2.14 前后端分离: 配置权威已归 backend (含「仅用连发→震动关」启动修正,
+    /// 该修正移到 main.rs 装配处、AppState 构造前), GUI 只从 backend 读初值。
+    pub fn new(backend: crate::backend::Backend) -> Self {
+        let (dark_mode, language, switch_key, minimal_cfg, classic_cfg, minimal_vib_preset_job, audio_whitelist_edit) =
+            backend.with_config(|c| {
+                (
+                    c.dark_mode,
+                    c.language,
+                    c.switch_key.clone(),
+                    c.minimal_mode,
+                    c.classic_mode,
+                    c.minimal_vib_preset_job,
+                    c.audio_haptics.whitelist_processes.join(", "),
+                )
+            });
+        let translations = CachedTranslations::new(language);
         let cached_dark_style = Self::create_dark_style();
         let cached_light_style = Self::create_light_style();
-        let parsed_switch_key = Self::parse_switch_key(&config.switch_key);
-        let minimal_mode = config.minimal_mode;
+        let parsed_switch_key = Self::parse_switch_key(&switch_key);
+        let minimal_mode = minimal_cfg;
         /* ★v24.18: 首次运行进完整界面 (classic 默认关); 显式设置的极简模式优先 (双标记同真时极简赢) */
-        let classic_mode = config.classic_mode && !config.minimal_mode;
-        let minimal_vib_preset_job = config.minimal_vib_preset_job;
-        let audio_whitelist_edit = config.audio_haptics.whitelist_processes.join(", ");
+        let classic_mode = classic_cfg && !minimal_cfg;
 
         /* ★v24.19b 手柄隐藏暂时下线 (2026-09-14 用户决策: 代码整体注释, 避免影响主功能)。
          * 原启动两步 (崩溃自愈 + 恢复意图) 与落盘块全部注释; 用户配置里没有遗留快照
@@ -385,8 +382,7 @@ impl SorahkGui {
         // }
 
         Self {
-            app_state,
-            config,
+            backend,
             translations,
             active_page: Page::Gamepad,
             gamepad_texture: None,
@@ -439,7 +435,6 @@ impl SorahkGui {
             gamepad_warn: None,
             gamepad_warn_until: None,
             gamepad_mouse_menu: false,
-            preset_switch_bindings_sig: 0,
             raw_hid_pads: Vec::new(),
             raw_hid_pads_fetched: None,
             raw_hid_selected: 0,
@@ -489,8 +484,6 @@ impl SorahkGui {
             minimal_pos_latch: 0,
             minimal_vib_preset_job,
             minimal_job_block_w: 0.0,
-            vib_params_dirty_since: None,
-            audio_params_dirty_since: None,
             audio_whitelist_edit,
             audio_preset_name: String::new(),
             audio_user_sel: 0,
@@ -515,7 +508,6 @@ impl SorahkGui {
             preset_rename_input: String::new(),
             cached_dark_style,
             cached_light_style,
-            update: crate::update::UpdateManager::new(),
             update_state: crate::update::Snapshot::default(),
             update_started: false,
             show_update_dialog: false,
@@ -653,11 +645,15 @@ impl SorahkGui {
 
     /// Launches the GUI application.
     ///
+    /// ★R2.14 前后端分离: 入参改为后端句柄 (配置权威在 backend)。
+    ///
     /// # Errors
     ///
     /// Returns an error if the GUI framework fails to initialize or run.
-    pub fn run(app_state: Arc<AppState>, config: AppConfig) -> anyhow::Result<()> {
+    pub fn run(backend: crate::backend::Backend) -> anyhow::Result<()> {
         let icon = crate::gui::utils::create_icon();
+
+        let (always_on_top, language) = backend.with_config(|c| (c.always_on_top, c.language));
 
         let mut viewport = egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
@@ -669,7 +665,7 @@ impl SorahkGui {
             .with_visible(true)
             .with_decorations(false); // 自绘标题栏 (无系统边框)
 
-        if config.always_on_top {
+        if always_on_top {
             viewport = viewport.with_always_on_top();
         }
 
@@ -677,8 +673,6 @@ impl SorahkGui {
             viewport,
             ..Default::default()
         };
-
-        let language = config.language;
 
         eframe::run_native(
             "Sorahk",
@@ -700,7 +694,7 @@ impl SorahkGui {
                     })
                     .expect("spawn ui-keepalive thread");
 
-                Ok(Box::new(SorahkGui::new(app_state, config)))
+                Ok(Box::new(SorahkGui::new(backend)))
             }),
         )
         .map_err(|e| anyhow::anyhow!("Failed to run GUI: {}", e))
@@ -759,7 +753,9 @@ impl SorahkGui {
 
     /// 跳过首次运行向导 (截图不应被向导遮挡; 正式流程不受影响)。
     pub fn skip_first_run_for_shot(&mut self) {
-        self.config.guide_seen = true;
+        let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+            c.guide_seen = true;
+        });
         self.dfo_ask_answered = true;
         self.show_guide = false;
         self.show_edition_ask = false;

@@ -27,6 +27,19 @@ impl SorahkGui {
     /// 连发映射页 · 预设管理卡: 切换 / 保存 / 重命名 / 删除 (两次确认防误删)。
     /// 状态 hero: 运行状态 + 震动开关 + 主操作按钮 + 统计。
     pub(in crate::gui) fn render_turbo_hero(&mut self, ui: &mut egui::Ui, frame_state: &FrameState) {
+        /* ★R2.14: 配置读数帧首一次收集 (backend 权威); 震动开关走运行态快照 */
+        let (dfo_player, mappings_len, interval, event_duration, switch_key) = self
+            .backend
+            .with_config(|c| {
+                (
+                    c.dfo_player,
+                    c.mappings.len(),
+                    c.interval,
+                    c.event_duration,
+                    c.switch_key.clone(),
+                )
+            });
+        let vib_on = self.backend.snapshot().vibration.enabled;
         // 提前取值, 闭包内 &mut self 与 translations 借用不冲突
         let status_paused = self.translations.paused_status().to_owned();
         let status_running = self.translations.running_status().to_owned();
@@ -56,25 +69,17 @@ impl SorahkGui {
                     });
                     ui.add_space(theme::SP_XS);
                     /* ★v24.10: 「仅用连发」不显示震动开关 (入口/开关一起收掉, 口径统一) */
-                    if self.config.dfo_player {
+                    if dfo_player {
                         ui.horizontal(|ui| {
-                            let vib_on = self
-                                .app_state
-                                .vibration_enabled
-                                .load(std::sync::atomic::Ordering::Relaxed);
                             let (vtext, vcolor, vbg) = if vib_on {
                                 ("震动: 开", th.good, th.good_soft)
                             } else {
                                 ("震动: 关", th.bad, th.bad_soft)
                             };
                             if ui.add(th.status_pill(vtext, vcolor, vbg)).clicked() {
-                                let v = self
-                                    .app_state
-                                    .vibration_enabled
-                                    .load(std::sync::atomic::Ordering::Relaxed);
-                                self.app_state
-                                    .vibration_enabled
-                                    .store(!v, std::sync::atomic::Ordering::Relaxed);
+                                /* ★R2.14: 震动总开关走命令通道 (配置 + 引擎镜像即时生效) */
+                                self.backend
+                                    .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
                             }
                             ui.label(th.hint_text("由 DfoVibration.dll 战斗事件驱动 (进图后自动)"));
                         });
@@ -93,9 +98,9 @@ impl SorahkGui {
                     .corner_radius(egui::CornerRadius::same(theme::RADIUS_CTRL))
                     .min_size(egui::vec2(96.0, 34.0));
                     if ui.add(exit_btn).clicked() {
-                        // 只走 app_state.exit(): 经 should_exit → ViewportCommand::Close
-                        // 优雅退出, 保证托盘/震动线程清理与 on_exit 执行
-                        self.app_state.exit();
+                        // ★R2.14: 走命令通道 Quit (落盘兜底 + 经 should_exit → ViewportCommand::Close
+                        // 优雅退出, 保证托盘/震动线程清理与 on_exit 执行)
+                        self.backend.dispatch(crate::ui_api::UiCommand::Quit);
                     }
                     ui.add_space(theme::SP_S);
                     let (label, color) = if frame_state.is_paused {
@@ -124,7 +129,7 @@ impl SorahkGui {
                 widgets::stat(
                     ui,
                     &th,
-                    &self.config.mappings.len().to_string(),
+                    &mappings_len.to_string(),
                     "映射条目",
                     th.accent_text,
                 );
@@ -139,19 +144,19 @@ impl SorahkGui {
                     );
                     ui.separator();
                 }
-                widgets::stat(ui, &th, &format!("{} ms", self.config.interval), "默认间隔", th.text);
+                widgets::stat(ui, &th, &format!("{} ms", interval), "默认间隔", th.text);
                 ui.separator();
                 widgets::stat(
                     ui,
                     &th,
-                    &format!("{} ms", self.config.event_duration),
+                    &format!("{} ms", event_duration),
                     "默认时长",
                     th.text,
                 );
                 ui.separator();
                 ui.vertical(|ui| {
                     ui.set_min_width(64.0);
-                    widgets::keycap(ui, &th, &self.config.switch_key);
+                    widgets::keycap(ui, &th, &switch_key);
                     ui.label(th.hint_text("切换热键"));
                 });
             });
@@ -162,7 +167,12 @@ impl SorahkGui {
     /// 映射列表: 行式布局 + 行内编辑/新增 (无需再进设置弹窗)。
     pub(in crate::gui) fn render_turbo_mappings(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
-        let count = self.config.mappings.len();
+        /* ★R2.14: 帧首克隆映射列表 + 全局参数 (渲染用只读快照; 写操作走 backend) */
+        let mappings = self.backend.with_config(|c| c.mappings.clone());
+        let count = mappings.len();
+        let (interval, duration) = self
+            .backend
+            .with_config(|c| (c.interval, c.event_duration));
         th.card(ui, None, |ui| {
             ui.horizontal(|ui| {
                 ui.label(th.h2("连发映射"));
@@ -193,18 +203,17 @@ impl SorahkGui {
                     );
                     return;
                 }
-                let interval = self.config.interval;
-                let duration = self.config.event_duration;
                 let mut idx = 0usize;
-                while idx < self.config.mappings.len() {
+                while idx < mappings.len() {
                     if self.edit_mapping_idx == Some(idx) {
                         /* ★v20.3: 新增映射置顶后, 把编辑面板滚到可视区顶部 */
                         if std::mem::take(&mut self.scroll_to_edit_row) {
                             ui.scroll_to_cursor(Some(egui::Align::TOP));
                         }
                         self.render_mapping_edit_row(ui, idx, interval, duration);
-                        // 编辑行可能触发删除, 重新检查下标
-                        if idx >= self.config.mappings.len() {
+                        // 编辑行可能触发删除, 重新检查下标 (以 backend 权威为准)
+                        let len_now = self.backend.with_config(|c| c.mappings.len());
+                        if idx >= len_now {
                             break;
                         }
                         idx += 1;
@@ -212,7 +221,7 @@ impl SorahkGui {
                     }
                     // 静态行: 拷贝显示数据避免借用冲突, 行尾挂「编辑」按钮
                     let (trigger, targets, note, turbo, m_lock, m_seq) = {
-                        let m = &self.config.mappings[idx];
+                        let m = &mappings[idx];
                         (
                             m.trigger_key.clone(),
                             m.target_keys.to_vec(),
@@ -222,8 +231,8 @@ impl SorahkGui {
                             !m.sequence_text.trim().is_empty(),
                         )
                     };
-                    let m_interval = self.config.mappings[idx].interval.unwrap_or(interval);
-                    let m_duration = self.config.mappings[idx].event_duration.unwrap_or(duration);
+                    let m_interval = mappings[idx].interval.unwrap_or(interval);
+                    let m_duration = mappings[idx].event_duration.unwrap_or(duration);
                     render_mapping_row(
                         ui,
                         &th,
@@ -256,28 +265,32 @@ impl SorahkGui {
     /// ★v20.3: 插到列表**最前** (用户定稿: 新增映射的编辑面板必须显示在最前面),
     /// 并在下一帧滚动到编辑面板顶部。
     pub(in crate::gui) fn add_new_mapping(&mut self) {
-        self.config.mappings.insert(
-            0,
-            crate::config::KeyMapping {
-                release_targets: Default::default(),
-                sequence_text: String::new(),
-                /* ★v24.3: 新建映射初始**无触发键** —— UI 显示「尚未捕获触发键」,
-                 * 旧默认 "A" 会让人以为已经捕获了 A 键 (用户实测困惑点)。 */
-                trigger_key: String::new(),
-                target_keys: Default::default(),
-                interval: None,
-                event_duration: None,
-                turbo_enabled: true,
-                move_speed: 5,
-                double_tap_enabled: false,
-                double_tap_gap_ms: 50,
-                run_enabled: false,
-                run_threshold: 80,
-                run_recheck: true,
-                lock_enabled: false,
-                note: String::new(),
-            },
-        );
+        /* ★R2.14: 插入走 backend (Commit::Memory = 只进内存, 与旧行为一致:
+         * 保存/取消时才落盘热重载; Ctrl+S 也能兜住) */
+        let _ = self.backend.update_config(crate::ui_api::Commit::Memory, |c| {
+            c.mappings.insert(
+                0,
+                crate::config::KeyMapping {
+                    release_targets: Default::default(),
+                    sequence_text: String::new(),
+                    /* ★v24.3: 新建映射初始**无触发键** —— UI 显示「尚未捕获触发键」,
+                     * 旧默认 "A" 会让人以为已经捕获了 A 键 (用户实测困惑点)。 */
+                    trigger_key: String::new(),
+                    target_keys: Default::default(),
+                    interval: None,
+                    event_duration: None,
+                    turbo_enabled: true,
+                    move_speed: 5,
+                    double_tap_enabled: false,
+                    double_tap_gap_ms: 50,
+                    run_enabled: false,
+                    run_threshold: 80,
+                    run_recheck: true,
+                    lock_enabled: false,
+                    note: String::new(),
+                },
+            );
+        });
         self.edit_mapping_is_new = true;
         self.edit_mapping_snapshot = None;
         self.edit_mapping_idx = Some(0);
@@ -287,8 +300,11 @@ impl SorahkGui {
 
     /// 进入已有映射的编辑态 (保存快照用于取消还原)。
     pub(in crate::gui) fn begin_mapping_edit(&mut self, idx: usize) {
-        if let Some(m) = self.config.mappings.get(idx) {
-            self.edit_mapping_snapshot = Some(m.clone());
+        let snap = self
+            .backend
+            .with_config(|c| c.mappings.get(idx).cloned());
+        if let Some(m) = snap {
+            self.edit_mapping_snapshot = Some(m);
             self.edit_mapping_is_new = false;
             self.edit_mapping_idx = Some(idx);
         }
@@ -313,22 +329,33 @@ impl SorahkGui {
 
     /// ★v20.3: 按预设名切换连发预设 (热键/下拉共用; 切换即落盘 + 热重载 + 同步弹窗暂存)。
     pub(in crate::gui) fn switch_to_turbo_preset(&mut self, name: &str) {
-        if self.config.current_preset == name {
+        let exists = self
+            .backend
+            .with_config(|c| c.presets.iter().any(|p| p.name == name));
+        let is_current = self
+            .backend
+            .with_config(|c| c.current_preset == name);
+        if is_current {
             return;
         }
-        if let Some(pr) = self.config.presets.iter().find(|p| p.name == name) {
-            self.config.current_preset = pr.name.clone();
-            /* ★空预设合法: 热键/手柄切换同样允许切到"零映射"预设并长期保持。 */
-            self.config.mappings = pr.mappings.clone();
+        if exists {
+            /* ★R2.14: 预设切换走 backend (落盘 + 热重载 + 切换键重挂一体)。
+             * ★空预设合法: 热键/手柄切换同样允许切到"零映射"预设并长期保持。 */
+            let _ = self.backend.apply_mapping_preset(name);
             self.page_preset_delete_arm = false;
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after preset switch: {}", e);
-            }
+            let (cur_preset, mappings, presets) = self
+                .backend
+                .with_config(|c| {
+                    (
+                        c.current_preset.clone(),
+                        c.mappings.clone(),
+                        c.presets.clone(),
+                    )
+                });
             if let Some(tc) = &mut self.temp_config {
-                tc.current_preset = self.config.current_preset.clone();
-                tc.mappings = self.config.mappings.clone();
-                tc.presets = self.config.presets.clone();
+                tc.current_preset = cur_preset;
+                tc.mappings = mappings;
+                tc.presets = presets;
             }
         }
     }
@@ -339,15 +366,35 @@ impl SorahkGui {
     /// 数值改动即保存 + 热重载; 置顶切换实时作用于窗口。
     pub(in crate::gui) fn render_turbo_params(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let th = self.theme();
-        /* 标签先克隆: 避免闭包内 &self.translations 与 &mut self.config 冲突 */
+        /* ★R2.14: 配置读数帧首一次收集; 改动攒到帧末一次 Reload 提交
+         * (reload_config 内部会镜像 input_timeout/combo_key_gap_ms/托盘/通知等运行态) */
+        let (cur_timeout, cur_interval, cur_duration, cur_gap, cur_tray, cur_notif, cur_top) = self
+            .backend
+            .with_config(|c| {
+                (
+                    c.input_timeout,
+                    c.interval,
+                    c.event_duration,
+                    c.combo_key_gap_ms,
+                    c.show_tray_icon,
+                    c.show_notifications,
+                    c.always_on_top,
+                )
+            });
+        /* 标签先克隆: 避免闭包内 &self.translations 与 &mut self 冲突 */
         let lbl_timeout = self.translations.input_timeout_display().to_owned();
         let lbl_interval = self.translations.default_interval_display().to_owned();
         let lbl_duration = self.translations.default_duration_display().to_owned();
         let lbl_tray = self.translations.show_tray_icon_display().to_owned();
         let lbl_notif = self.translations.show_notifications_display().to_owned();
         let lbl_top = self.translations.always_on_top_display().to_owned();
-        let mut dirty = false;
-        let mut top_changed: Option<bool> = None;
+        let mut new_timeout: Option<u64> = None;
+        let mut new_interval: Option<u64> = None;
+        let mut new_duration: Option<u64> = None;
+        let mut new_gap: Option<u64> = None;
+        let mut new_tray: Option<bool> = None;
+        let mut new_notif: Option<bool> = None;
+        let mut new_top: Option<bool> = None;
         th.card(ui, Some("全局配置"), |ui| {
             egui::Grid::new("turbo_params_grid")
                 .num_columns(2)
@@ -355,7 +402,7 @@ impl SorahkGui {
                 .min_col_width(ui.available_width() * 0.42)
                 .striped(false)
                 .show(ui, |ui| {
-                    let mut v = self.config.input_timeout as f64;
+                    let mut v = cur_timeout as f64;
                     ui.label(th.weak(&lbl_timeout));
                     if ui
                         .add(
@@ -367,12 +414,11 @@ impl SorahkGui {
                         .on_hover_text("按键输入超时/去抖 (1-2000 ms)")
                         .changed()
                     {
-                        self.config.input_timeout = (v.round().max(1.0) as u64).clamp(1, 2000);
-                        dirty = true;
+                        new_timeout = Some((v.round().max(1.0) as u64).clamp(1, 2000));
                     }
                     ui.end_row();
 
-                    let mut v = self.config.interval as f64;
+                    let mut v = cur_interval as f64;
                     ui.label(th.weak(&lbl_interval));
                     if ui
                         .add(
@@ -384,12 +430,11 @@ impl SorahkGui {
                         .on_hover_text("连发按键的默认重复间隔 (单条映射可在编辑里覆盖)")
                         .changed()
                     {
-                        self.config.interval = (v.round().max(1.0) as u64).max(1);
-                        dirty = true;
+                        new_interval = Some((v.round().max(1.0) as u64).max(1));
                     }
                     ui.end_row();
 
-                    let mut v = self.config.event_duration as f64;
+                    let mut v = cur_duration as f64;
                     ui.label(th.weak(&lbl_duration));
                     if ui
                         .add(
@@ -401,13 +446,12 @@ impl SorahkGui {
                         .on_hover_text("每次按键的默认按压时长 (单条映射可在编辑里覆盖)")
                         .changed()
                     {
-                        self.config.event_duration = (v.round().max(1.0) as u64).max(1);
-                        dirty = true;
+                        new_duration = Some((v.round().max(1.0) as u64).max(1));
                     }
                     ui.end_row();
 
                     /* ★v24.27 组合键每键间隔 (模拟手速) */
-                    let mut v = self.config.combo_key_gap_ms as f64;
+                    let mut v = cur_gap as f64;
                     ui.label(th.weak("组合键每键间隔"));
                     if ui
                         .add(
@@ -421,60 +465,80 @@ impl SorahkGui {
                         )
                         .changed()
                     {
-                        self.config.combo_key_gap_ms = (v.round().max(0.0) as u64).min(1000);
-                        self.app_state
-                            .combo_key_gap_ms
-                            .store(self.config.combo_key_gap_ms, std::sync::atomic::Ordering::Relaxed);
-                        dirty = true;
+                        new_gap = Some((v.round().max(0.0) as u64).min(1000));
                     }
                     ui.end_row();
 
                     ui.label(th.weak(&lbl_tray));
-                    let mut flag = self.config.show_tray_icon;
+                    let mut flag = cur_tray;
                     if ui
                         .add(egui::Checkbox::new(&mut flag, ""))
                         .on_hover_text("显示系统托盘图标")
                         .changed()
                     {
-                        self.config.show_tray_icon = flag;
-                        dirty = true;
+                        new_tray = Some(flag);
                     }
                     ui.end_row();
 
                     ui.label(th.weak(&lbl_notif));
-                    let mut flag = self.config.show_notifications;
+                    let mut flag = cur_notif;
                     if ui
                         .add(egui::Checkbox::new(&mut flag, ""))
                         .on_hover_text("显示系统通知")
                         .changed()
                     {
-                        self.config.show_notifications = flag;
-                        dirty = true;
+                        new_notif = Some(flag);
                     }
                     ui.end_row();
 
                     ui.label(th.weak(&lbl_top));
-                    let mut flag = self.config.always_on_top;
+                    let mut flag = cur_top;
                     if ui
                         .add(egui::Checkbox::new(&mut flag, ""))
                         .on_hover_text("窗口置顶 (即时生效)")
                         .changed()
                     {
-                        self.config.always_on_top = flag;
-                        top_changed = Some(flag);
-                        dirty = true;
+                        new_top = Some(flag);
                     }
                     ui.end_row();
                 });
             ui.add_space(theme::SP_XS);
             ui.label(th.hint_text("改动即时生效并自动保存 (拖动数值 / 勾选开关)"));
         });
+        let dirty = new_timeout.is_some()
+            || new_interval.is_some()
+            || new_duration.is_some()
+            || new_gap.is_some()
+            || new_tray.is_some()
+            || new_notif.is_some()
+            || new_top.is_some();
         if dirty {
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after global params edit: {}", e);
-            }
-            if let Some(top) = top_changed {
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Reload, |c| {
+                    if let Some(v) = new_timeout {
+                        c.input_timeout = v;
+                    }
+                    if let Some(v) = new_interval {
+                        c.interval = v;
+                    }
+                    if let Some(v) = new_duration {
+                        c.event_duration = v;
+                    }
+                    if let Some(v) = new_gap {
+                        c.combo_key_gap_ms = v;
+                    }
+                    if let Some(v) = new_tray {
+                        c.show_tray_icon = v;
+                    }
+                    if let Some(v) = new_notif {
+                        c.show_notifications = v;
+                    }
+                    if let Some(v) = new_top {
+                        c.always_on_top = v;
+                    }
+                });
+            if let Some(top) = new_top {
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if top {
                     egui::WindowLevel::AlwaysOnTop
                 } else {

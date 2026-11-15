@@ -11,8 +11,15 @@ use eframe::egui;
 impl SorahkGui {
     pub(super) fn render_whitelist_page(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
-        let enabled = self.config.whitelist_enabled;
-        let count = self.config.process_whitelist.len();
+        /* ★R2.14: 开关/模式/列表帧首从 backend 收集 (增删改走 whitelist_* 提交) */
+        let (enabled, simple, whitelist) = self.backend.with_config(|c| {
+            (
+                c.whitelist_enabled,
+                c.whitelist_simple_mode,
+                c.process_whitelist.clone(),
+            )
+        });
+        let count = whitelist.len();
 
         /* 卡1: 过滤总开关 + 一句话说明 */
         th.card(ui, Some("进程过滤"), |ui| {
@@ -25,9 +32,11 @@ impl SorahkGui {
                     ))
                     .clicked()
                 {
-                    self.config.whitelist_enabled = !enabled;
-                    let _ = self.config.save_to_file("Config.toml");
-                    let _ = self.app_state.reload_config(self.config.clone());
+                    let _ =
+                        self.backend
+                            .update_config(crate::ui_api::Commit::Reload, |c| {
+                                c.whitelist_enabled = !enabled;
+                            });
                 }
                 ui.label(th.hint_text(if enabled {
                     "只有列表内的进程会响应连发"
@@ -46,7 +55,6 @@ impl SorahkGui {
             ));
             ui.add_space(theme::SP_XS);
             /* ★v24.40: 简易/精细模式切换 (点击即生效) */
-            let simple = self.config.whitelist_simple_mode;
             ui.horizontal(|ui| {
                 if ui
                     .add(th.status_pill(
@@ -56,9 +64,11 @@ impl SorahkGui {
                     ))
                     .clicked()
                 {
-                    self.config.whitelist_simple_mode = !simple;
-                    let _ = self.config.save_to_file("Config.toml");
-                    let _ = self.app_state.reload_config(self.config.clone());
+                    let _ =
+                        self.backend
+                            .update_config(crate::ui_api::Commit::Reload, |c| {
+                                c.whitelist_simple_mode = !simple;
+                            });
                 }
                 ui.label(th.hint_text(if simple {
                     "只认文件名 —— 条目与进程都按文件名比对, 换目录/换盘不失效 (旧版行为)"
@@ -90,19 +100,15 @@ impl SorahkGui {
                         let name = self.new_whitelist_name.trim().to_string();
                         if name.is_empty() {
                             self.whitelist_error = Some("请输入进程名".into());
-                        } else if self
-                            .config
-                            .process_whitelist
+                        } else if whitelist
                             .iter()
                             .any(|x| x.eq_ignore_ascii_case(&name))
                         {
                             self.whitelist_error = Some(format!("「{}」已在白名单中", name));
                         } else {
-                            self.config.process_whitelist.push(name);
+                            let _ = self.backend.whitelist_add(&name);
                             self.new_whitelist_name.clear();
                             self.whitelist_error = None;
-                            let _ = self.config.save_to_file("Config.toml");
-                            let _ = self.app_state.reload_config(self.config.clone());
                         }
                     }
                     if ui.add(th.secondary_button("浏览…")).clicked() {
@@ -114,19 +120,15 @@ impl SorahkGui {
                             /* ★登记完整路径 (不再截成文件名): 同名不同版本的 exe
                              * (如 A 版/B 版 DFO.exe) 可各登记一条, 按路径精确匹配。 */
                             let entry = path.to_string_lossy().to_string();
-                            if self
-                                .config
-                                .process_whitelist
+                            if whitelist
                                 .iter()
                                 .any(|x| x.eq_ignore_ascii_case(&entry))
                             {
                                 self.whitelist_error =
                                     Some(format!("「{}」已在白名单中", entry));
                             } else {
-                                self.config.process_whitelist.push(entry);
+                                let _ = self.backend.whitelist_add(&entry);
                                 self.whitelist_error = None;
-                                let _ = self.config.save_to_file("Config.toml");
-                                let _ = self.app_state.reload_config(self.config.clone());
                             }
                         }
                     }
@@ -137,7 +139,7 @@ impl SorahkGui {
                 ui.add_space(theme::SP_S);
 
                 /* 列表: 粗体进程名 + 右对齐移除按钮 */
-                if self.config.process_whitelist.is_empty() {
+                if whitelist.is_empty() {
                     ui.vertical_centered(|ui| {
                         ui.add_space(theme::SP_S);
                         widgets::status_dot(ui, th.hint, false, 4.5);
@@ -146,7 +148,7 @@ impl SorahkGui {
                     });
                 } else {
                     let mut remove: Option<usize> = None;
-                    for (i, name) in self.config.process_whitelist.iter().enumerate() {
+                    for (i, name) in whitelist.iter().enumerate() {
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 /* 路径条目: 文件名粗体 + 小字路径; 纯进程名: 只显示名字 */
@@ -185,10 +187,11 @@ impl SorahkGui {
                         ui.add_space(theme::SP_XS);
                     }
                     if let Some(i) = remove {
-                        self.config.process_whitelist.remove(i);
-                        self.whitelist_error = None;
-                        let _ = self.config.save_to_file("Config.toml");
-                        let _ = self.app_state.reload_config(self.config.clone());
+                        if let Some(name) = whitelist.get(i) {
+                            let name = name.clone();
+                            let _ = self.backend.whitelist_remove(&name);
+                            self.whitelist_error = None;
+                        }
                     }
                     ui.label(th.hint_text("移除后该进程立即恢复响应连发。"));
                 }

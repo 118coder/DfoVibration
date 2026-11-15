@@ -4,8 +4,8 @@
 //! including vibration testing, deadzone configuration, and API selection.
 
 use crate::config::DeviceApiPreference;
-use crate::rawinput::HidDeviceInfo;
-use crate::xinput::XInputDeviceInfo;
+// ★R2.14 前后端分离: 设备信息类型经 backend 转发, 枚举/重置/测试震动走 backend 透传
+use crate::backend::{HidDeviceInfo, XInputDeviceInfo};
 use crate::gui::device_info::{get_device_model, get_hid_device_type, get_vendor_name};
 use crate::i18n::CachedTranslations;
 use crate::gui::theme::Theme;
@@ -167,8 +167,8 @@ impl DeviceManagerDialog {
             return;
         }
 
-        self.xinput_devices = crate::xinput::XInputHandler::enumerate_devices();
-        self.hid_devices = crate::rawinput::enumerate_hid_devices();
+        self.xinput_devices = crate::backend::BackendService::enumerate_xinput_devices_static();
+        self.hid_devices = crate::backend::BackendService::enumerate_hid_devices_static();
         self.last_refresh = now;
         self.clear_preference_cache();
     }
@@ -287,7 +287,7 @@ impl DeviceManagerDialog {
                                     .min_size(egui::vec2(0.0, 32.0));
 
                                     if ui.add(reset_btn).clicked() {
-                                        crate::input_manager::request_xinput_reset();
+                                        crate::backend::BackendService::request_xinput_reset_static();
                                         self.refresh_devices();
                                     }
                                 },
@@ -946,31 +946,29 @@ impl DeviceManagerDialog {
 
     /// Tests vibration with given intensity.
     fn test_vibration(&mut self, user_index: u32) {
-        crate::xinput::XInputHandler::set_vibration(
+        /* ★R2.14: 直写马达 + 作废引擎缓存走 backend 透传 */
+        crate::backend::BackendService::xinput_test_vibration_static(
             user_index,
             self.vibration_left,
             self.vibration_right,
         );
-        /* ★v24.41: 直写马达绕过引擎 —— 作废引擎写入去重缓存, 否则引擎缓存与
-         * 实际马达状态不一致 (见 invalidate_xinput_write_cache 注释)。 */
-        crate::vibration::invalidate_xinput_write_cache();
         self.vibration_test_until =
             Some(std::time::Instant::now() + std::time::Duration::from_secs(1));
     }
 
     /// Stops vibration for a specific device.
     fn stop_vibration(&mut self, user_index: u32) {
-        crate::xinput::XInputHandler::set_vibration(user_index, 0, 0);
-        crate::vibration::invalidate_xinput_write_cache();
+        crate::backend::BackendService::xinput_test_vibration_static(user_index, 0, 0);
+        crate::backend::BackendService::xinput_invalidate_write_cache();
         self.vibration_test_until = None;
     }
 
     /// Stops all vibrations.
     fn stop_all_vibrations(&mut self) {
         for device in &self.xinput_devices {
-            crate::xinput::XInputHandler::set_vibration(device.user_index, 0, 0);
+            crate::backend::BackendService::xinput_test_vibration_static(device.user_index, 0, 0);
         }
-        crate::vibration::invalidate_xinput_write_cache();
+        crate::backend::BackendService::xinput_invalidate_write_cache();
         self.vibration_test_until = None;
     }
 }
@@ -982,9 +980,9 @@ impl Drop for DeviceManagerDialog {
     fn drop(&mut self) {
         if self.vibration_test_until.is_some() {
             for device in &self.xinput_devices {
-                crate::xinput::XInputHandler::set_vibration(device.user_index, 0, 0);
+                crate::backend::BackendService::xinput_test_vibration_static(device.user_index, 0, 0);
             }
-            crate::vibration::invalidate_xinput_write_cache();
+            crate::backend::BackendService::xinput_invalidate_write_cache();
         }
     }
 }

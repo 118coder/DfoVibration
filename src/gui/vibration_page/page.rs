@@ -9,9 +9,14 @@ use crate::gui::main_window::FrameState;
 impl SorahkGui {
     /// Full vibration settings page (all params + status + test).
     pub(in crate::gui) fn render_vibration_full_page(&mut self, ui: &mut egui::Ui, _frame_state: &FrameState, job_mode: bool) {
-        use std::sync::atomic::Ordering;
         let th = self.theme();
         let title_color = th.heading;
+
+        /* ★R2.14 帧首 gather: config 子结构 clone + 运行态快照各取一次,
+         * 之后整帧渲染只读局部、随时发 backend 命令 (引擎读数不再逐原子读)。 */
+        let vib = self.backend.with_config(|c| c.vibration.clone());
+        let legacy = self.backend.with_config(|c| c.vib_legacy_client);
+        let snap = self.backend.snapshot();
 
         /* 放大字号与控件: 震动页全局风格; 滑块宽度随窗口自适应, 宽屏不再挤在左侧 */
         ui.style_mut().text_styles.insert(
@@ -58,10 +63,7 @@ impl SorahkGui {
                             .color(title_color),
                     );
                     ui.add_space(20.0);
-                    let vib_on = self
-                        .app_state
-                        .vibration_enabled
-                        .load(Ordering::Relaxed);
+                    let vib_on = snap.vibration.enabled;
                     let (vtext, vcolor) = if vib_on {
                         ("震动: 开", th.good)
                     } else {
@@ -71,67 +73,62 @@ impl SorahkGui {
                         .button(egui::RichText::new(vtext).size(14.0).color(vcolor))
                         .clicked()
                     {
-                        let v = self
-                            .app_state
-                            .vibration_enabled
-                            .load(Ordering::Relaxed);
-                        self.app_state
-                            .vibration_enabled
-                            .store(!v, Ordering::Relaxed);
+                        /* ★R2.14: 总开关走 UiCommand (config → 镜像 → 立即落盘);
+                         * 旧实现只写原子不持久化, 这里统一到单一写路径 */
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
                     }
                     ui.add_space(12.0);
                     if ui
                         .button(egui::RichText::new("测试震动 1 秒").size(13.0))
                         .clicked()
                     {
-                        let until = crate::vibration::now_ms_u64() + 1000;
-                        self.app_state
-                            .vibration_test_until
-                            .store(until, Ordering::Relaxed);
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::TestVibration);
                     }
                 });
                 ui.add_space(6.0);
 
                 /* 独立测试开关 (v24.2): 控制中心主开关 */
-                Self::render_independent_test_toggle(ui, &self.app_state, &mut self.config);
+                self.render_independent_test_toggle(ui, vib.independent_test);
                 ui.add_space(6.0);
 
-                self.vib_hero_or_presets(ui, job_mode);
+                self.vib_hero_or_presets(ui, job_mode, legacy, &vib, &snap.vibration);
 
-                self.vib_status_section(ui);
+                self.vib_status_section(ui, &snap.vibration);
                 /* 标题卡「震动控制中心」在此收口 (原 778): 卡内含标题行/独立测试开关/预设行/状态 */
                 });
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                self.vib_summon_abs_freq_section(ui, job_mode);
+                self.vib_summon_abs_freq_section(ui, job_mode, &vib);
 
-                self.vib_motor_section(ui);
+                self.vib_motor_section(ui, &snap.vibration);
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                self.vib_global_gain_section(ui, job_mode);
+                self.vib_global_gain_section(ui, job_mode, &vib, &snap.vibration);
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                self.vib_damage_font_section(ui, job_mode);
+                self.vib_damage_font_section(ui, job_mode, legacy, &vib, &snap.vibration);
                 ui.add_space(10.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                self.vib_score_effect_section(ui);
+                self.vib_score_effect_section(ui, job_mode, &vib, &snap.vibration);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
 
-                self.vib_score_decay_section(ui);
+                self.vib_score_decay_section(ui, job_mode, &vib);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
-                self.vib_advanced_section(ui, job_mode);
+                self.vib_advanced_section(ui, job_mode, legacy, &vib, &snap.vibration);
                 ui.add_space(8.0);
                 ui.separator();
                 ui.add_space(8.0);
@@ -152,15 +149,13 @@ impl SorahkGui {
             /* 全职业预设页: 滑块修改后自动落盘 (快照检测) */
             if job_mode {
                 if let Some((b, c)) = self.vib_job_active.clone() {
+                    /* 本帧渲染期间的滑杆写入也要兜住: 渲染完取一次新鲜快照 */
+                    let snap_end = self.backend.snapshot();
                     let changed = self.vib_job_snapshot.len() != 60
-                        || (0..60).any(|i| {
-                            self.app_state.vibration_params[i].load(Ordering::Relaxed) != self.vib_job_snapshot[i]
-                        });
+                        || (0..60).any(|i| snap_end.vibration.params[i] != self.vib_job_snapshot[i]);
                     if changed {
-                        self.vib_job_snapshot = (0..60)
-                            .map(|i| self.app_state.vibration_params[i].load(Ordering::Relaxed))
-                            .collect();
-                        Self::save_job_vibration_state(&self.app_state, &b, &c);
+                        self.vib_job_snapshot = snap_end.vibration.params.clone();
+                        self.save_job_vibration_state(&b, &c);
                     }
                 }
             }
@@ -168,42 +163,24 @@ impl SorahkGui {
 
 
     /// vib_first_render_init — 首帧一次性初始化 (原 36-130): 全新装默认预设 + 职业预设恢复(路线判定 v24.15)
+    /// ★R2.14: 预设套用/职业恢复的 config 与原子部分走 backend
+    /// (apply_vibration_preset_by_name / restore_job_vibration_session)。
     fn vib_first_render_init(&mut self) {
-        use std::sync::atomic::Ordering;
         {
-            use std::sync::atomic::AtomicBool;
+            use std::sync::atomic::{AtomicBool, Ordering};
             static INIT_DONE: AtomicBool = AtomicBool::new(false);
             if !INIT_DONE.load(Ordering::Relaxed) {
                 INIT_DONE.store(true, Ordering::Relaxed);
                 self.ensure_act1_preset_listed();
-        let p = &self.app_state.vibration_params;
-                let pristine = self.config.vibration.master_gain == 0
-                    && self.config.vibration.attack_gain == 0;
+                /* pristine 判定走 config (权威) */
+                let pristine = self
+                    .backend
+                    .with_config(|c| c.vibration.master_gain == 0 && c.vibration.attack_gain == 0);
                 if pristine {
-                if let Some(pr) = crate::config::default_vibration_presets().first() {
-                    for (i, v) in pr.params.iter().enumerate() {
-                        p[i].store(*v, Ordering::Relaxed);
+                    if let Some(pr) = crate::config::default_vibration_presets().first() {
+                        /* 套内置默认预设 (config → 镜像 → 落盘; pristine 态节流/算法本就是默认值) */
+                        let _ = self.backend.apply_vibration_preset_by_name(&pr.name);
                     }
-                    /* 同步 L/R 权重 + 评分参数 (UI 显示与内置默认一致) */
-                    for (i, v) in pr.item_lr.iter().enumerate() {
-                        self.app_state.vibration_item_lr[i].store(*v, Ordering::Relaxed);
-                        self.config.vibration.item_lr[i] = *v;
-                    }
-                    for (i, v) in pr.rank_lr.iter().enumerate() {
-                        self.app_state.vibration_rank_lr[i].store(*v, Ordering::Relaxed);
-                        self.config.vibration.rank_lr[i] = *v;
-                    }
-                    for (i, v) in pr.rank_type_gain.iter().enumerate() {
-                        self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                        self.config.vibration.rank_type_gain[i] = *v;
-                    }
-                    self.app_state.vibration_rank_level_gain.store(pr.rank_level_gain, Ordering::Relaxed);
-                    self.app_state.vibration_rank_duration.store(pr.rank_duration, Ordering::Relaxed);
-                    self.config.vibration.rank_level_gain = pr.rank_level_gain;
-                    self.config.vibration.rank_duration = pr.rank_duration;
-                        self.app_state.vibration_out_smooth.store(pr.out_smooth, Ordering::Relaxed);
-                        self.config.vibration.out_smooth = pr.out_smooth;
-                }
                 }
                 /* 全职业预设恢复 (v21): applied=true 时覆盖默认预设; 否则绝对频率强制关闭 */
                 if let Some(jcfg) = crate::job_presets::load_job_vibration() {
@@ -211,61 +188,28 @@ impl SorahkGui {
                      * 不能因为 JobVibration.toml 记着 applied=true 就继续生效 (否则 ACT 特调
                      * 会盖在 S4 参数上, 并随保存写进 S4 的震动文件)。
                      * 只重算内存态, **不改写** JobVibration.toml: 切回原路线仍会恢复。 */
+                    let legacy = self.backend.with_config(|c| c.vib_legacy_client);
                     let route_job = crate::job_presets::find_class_for_route(
                         &jcfg.base_job,
                         &jcfg.class_name,
-                        self.config.vib_legacy_client,
+                        legacy,
                     );
                     self.vib_job_enabled = jcfg.applied && route_job.is_some();
                     if !jcfg.applied {
-                        self.app_state.vibration_abs_freq_enabled.store(false, Ordering::Relaxed);
-                        self.config.vibration.abs_freq_enabled = false;
+                        self.backend
+                            .update_vib_config_keep_params(|v| v.abs_freq_enabled = false);
                     }
                     if let Some((bi, ci, cls)) = route_job {
                         self.vib_job_base = bi;
                         self.vib_job_class = ci;
-                        let params: Vec<u32> = if jcfg.params.len() == 60 {
+                        /* 会话快照 = JobVibration 快照 (len==60) 或内置职业参数 (旧语义) */
+                        self.vib_job_snapshot = if jcfg.params.len() == 60 {
                             jcfg.params.clone()
                         } else {
                             cls.params.to_vec()
                         };
-                        self.vib_job_snapshot = params.clone();
-                        for (i, v) in params.iter().enumerate() {
-                            p[i].store(*v, Ordering::Relaxed);
-                        }
-                        for (i, v) in cls.rank_lr.iter().enumerate() {
-                            self.app_state.vibration_rank_lr[i].store(*v as u32, Ordering::Relaxed);
-                        }
-                        for (i, v) in cls.rank_type_gain.iter().enumerate() {
-                            self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                        }
-                        let dur = if jcfg.rank_duration > 0 { jcfg.rank_duration } else { cls.rank_duration };
-                        let lg = if jcfg.rank_level_gain > 0 { jcfg.rank_level_gain } else { cls.rank_level_gain };
-                        self.app_state.vibration_rank_duration.store(dur, Ordering::Relaxed);
-                        self.app_state.vibration_rank_level_gain.store(lg, Ordering::Relaxed);
-                        self.app_state.vibration_out_smooth.store(cls.out_smooth, Ordering::Relaxed);
-                        self.config.vibration.out_smooth = cls.out_smooth;
-                        self.app_state.vibration_throttle_window.store(cls.throttle_window, Ordering::Relaxed);
-                        self.app_state.vibration_throttle_max.store(cls.throttle_max, Ordering::Relaxed);
-                        self.app_state.vibration_throttle_dense_ratio.store(cls.throttle_dense_ratio, Ordering::Relaxed);
-                        /* ★v24.46 (S4 无条件对齐 1.61): 绝对频率按路线归属 ——
-                         * S4+ honor 职业预设值 (1.61 原样); S1 仍强制关 (保险A)。 */
-                        let abs_on = if self.config.vib_legacy_client {
-                            false
-                        } else {
-                            cls.abs_freq_enabled
-                        };
-                        self.app_state
-                            .vibration_abs_freq_enabled
-                            .store(abs_on, Ordering::Relaxed);
-                        self.app_state.vibration_algo_id.store(cls.algo_id as u32, Ordering::Relaxed);
-                        for (i, v) in cls.algo_params.iter().enumerate() {
-                            self.app_state.vibration_algo_ap[i].store(*v, Ordering::Relaxed);
-                        }
-                        self.config.vibration.throttle_window_ms = cls.throttle_window;
-                        self.config.vibration.throttle_max_hits = cls.throttle_max;
-                        self.config.vibration.throttle_dense_ratio = cls.throttle_dense_ratio;
-                        self.config.vibration.abs_freq_enabled = abs_on;
+                        /* 参数/权重/评分/节流/绝对频率/职业算法 → 原子 + config 内存同步 */
+                        self.backend.restore_job_vibration_session(&jcfg, &cls);
                         self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
                         self.vib_job_loaded = Some((bi, ci));
                     }
@@ -276,13 +220,18 @@ impl SorahkGui {
     }
 
     /// vib_hero_or_presets — job_mode 分叉: 职业选择 hero / 预设行+导入导出 (原 185-756)
-    fn vib_hero_or_presets(&mut self, ui: &mut egui::Ui, job_mode: bool) {
-        use std::sync::atomic::Ordering;
+    fn vib_hero_or_presets(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        legacy: bool,
+        vib: &crate::config::VibrationConfig,
+        snap: &crate::ui_api::VibSnap,
+    ) {
         let th = self.theme();
-        let p = &self.app_state.vibration_params;
         /* 全职业预设页: 应用开关 + 职业选择 (替换震动设置预设行) */
         if job_mode {
-            let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
+            let jobs = crate::job_presets::available_jobs(legacy);
             let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
             let classes = &jobs[base_sel].classes;
             let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
@@ -300,24 +249,10 @@ impl SorahkGui {
                 {
                     self.vib_job_enabled = en;
                     if en {
-                        Self::apply_job_vibration_preset_in(
-                            jobs[base_sel].base_job,
-                            cur_cls,
-                            &self.app_state,
-                            &mut self.config,
-                            &mut self.vib_job_enabled,
-                            &mut self.vib_job_active,
-                            &mut self.vib_job_snapshot,
-                        );
+                        self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
                         self.vib_job_loaded = Some((base_sel, class_sel));
                     } else {
-                        Self::disable_job_vibration_preset_in(
-                            &self.app_state,
-                            &mut self.config,
-                            &mut self.vib_job_enabled,
-                            &mut self.vib_job_active,
-                            &mut self.vib_job_loaded,
-                        );
+                        self.disable_job_vibration_preset();
                     }
                 }
             });
@@ -355,15 +290,7 @@ impl SorahkGui {
                     .button(egui::RichText::new("应用该职业").size(13.0))
                     .clicked()
                 {
-                    Self::apply_job_vibration_preset_in(
-                        jobs[base_sel].base_job,
-                        cur_cls,
-                        &self.app_state,
-                        &mut self.config,
-                        &mut self.vib_job_enabled,
-                        &mut self.vib_job_active,
-                        &mut self.vib_job_snapshot,
-                    );
+                    self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
                     self.vib_job_loaded = Some((base_sel, class_sel));
                 }
                 ui.add_space(8.0);
@@ -388,7 +315,7 @@ impl SorahkGui {
                 {
                     let files = crate::job_presets::list_export_files_for_route(
                         "job_export",
-                        self.config.vib_legacy_client,
+                        legacy,
                     );
                     let sel = self.job_import_sel.min(files.len().saturating_sub(1));
                     if let Some(f) = files.get(sel) {
@@ -399,32 +326,13 @@ impl SorahkGui {
                                 if let Some((bi, ci, _cls)) = crate::job_presets::find_class_for_route(
                                     &ij.base_job,
                                     &ij.class_name,
-                                    self.config.vib_legacy_client,
+                                    legacy,
                                 ) {
                                     self.vib_job_base = bi;
                                     self.vib_job_class = ci;
-                                    /* 导入参数覆盖 (只写 AppState; 快照检测自动落盘 JobVibration.toml) */
-                                    for (i, v) in ij.params.iter().enumerate() {
-                                        self.app_state.vibration_params[i].store(*v, Ordering::Relaxed);
-                                    }
-                                    for (i, v) in ij.rank_lr.iter().enumerate() {
-                                        self.app_state.vibration_rank_lr[i].store(*v as u32, Ordering::Relaxed);
-                                    }
-                                    for (i, v) in ij.rank_type_gain.iter().enumerate() {
-                                        self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                                    }
-                                    if ij.rank_level_gain > 0 {
-                                        self.app_state.vibration_rank_level_gain.store(ij.rank_level_gain, Ordering::Relaxed);
-                                    }
-                                    if ij.rank_duration > 0 {
-                                        self.app_state.vibration_rank_duration.store(ij.rank_duration, Ordering::Relaxed);
-                                    }
-                                    if ij.out_smooth > 0 {
-                                        self.app_state.vibration_out_smooth.store(ij.out_smooth, Ordering::Relaxed);
-                                    }
-                                    self.app_state.vibration_throttle_window.store(ij.throttle_window, Ordering::Relaxed);
-                                    self.app_state.vibration_throttle_max.store(ij.throttle_max, Ordering::Relaxed);
-                                    self.app_state.vibration_throttle_dense_ratio.store(ij.throttle_dense_ratio, Ordering::Relaxed);
+                                    /* 导入参数覆盖 (★R2.14: 只写引擎叠加层原子, 不进 config;
+                                     * 快照检测自动落盘 JobVibration.toml —— 旧语义) */
+                                    self.backend.import_job_vibration(&ij);
                                     self.vib_job_active = Some((ij.base_job.clone(), ij.class_name.clone()));
                                     self.vib_job_loaded = Some((bi, ci));
                                     self.vib_job_enabled = true;
@@ -442,15 +350,7 @@ impl SorahkGui {
             });
             /* 开关打开时, 切换职业自动应用 */
             if self.vib_job_enabled && self.vib_job_loaded != Some((base_sel, class_sel)) {
-                Self::apply_job_vibration_preset_in(
-                    jobs[base_sel].base_job,
-                    cur_cls,
-                    &self.app_state,
-                    &mut self.config,
-                    &mut self.vib_job_enabled,
-                    &mut self.vib_job_active,
-                    &mut self.vib_job_snapshot,
-                );
+                self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
                 self.vib_job_loaded = Some((base_sel, class_sel));
             }
             if let Some(m) = &self.vib_import_msg {
@@ -504,10 +404,9 @@ impl SorahkGui {
             ui.label(
                 egui::RichText::new("预设:").size(13.0).strong(),
             );
-            let entries = crate::config::visible_preset_entries(
-                &self.config.vibration_presets,
-                self.config.vib_legacy_client,
-            );
+            let entries = self.backend.with_config(|c| {
+                crate::config::visible_preset_entries(&c.vibration_presets, legacy)
+            });
             let sel_pos = entries
                 .iter()
                 .position(|(real, _)| *real == self.vib_preset_idx)
@@ -528,62 +427,15 @@ impl SorahkGui {
                         }
                     });
             }
-            let sel = self
-                .vib_preset_idx
-                .min(self.config.vibration_presets.len().saturating_sub(1));
             if ui
                 .button(egui::RichText::new("应用").size(13.0))
                 .clicked()
             {
-                if let Some(pr0) = self.config.vibration_presets.get(sel) {
-                    /* 先克隆解除 config 借用 (保险B的 disable 需要 &mut config) */
-                    let pr_name = pr0.name.clone();
-                    let user_pr = pr0.clone();
-                    /* ★保险B: 震动页应用通用预设同样自动停用全职业预设
-                     * (此路径手工拷参数、不走 apply_general_preset_in 的
-                     * 自动 disable 链, 是职业参数的隐藏复活口 —— 封堵)。
-                     * 先停用 (参数回滚内置默认), 随后本按钮拷入所选预设。 */
-                    if self.vib_job_enabled {
-                        Self::disable_job_vibration_preset_in(
-                            &self.app_state,
-                            &mut self.config,
-                            &mut self.vib_job_enabled,
-                            &mut self.vib_job_active,
-                            &mut self.vib_job_loaded,
-                        );
-                    }
-                    /* ★v18: 用户主动覆盖过同名预设 (user_modified) 才用用户版本,
-                     * 否则内置同名预设优先 (兼容旧 Config.toml 的旧快照, 也保证
-                     * "调乱了点应用回到内置保存值") */
-                    let pr = crate::config::pick_preset_for_apply(Some(&user_pr), &pr_name)
-                        .unwrap_or(user_pr);
-                    for (i, v) in pr.params.iter().enumerate() {
-                        p[i].store(*v, Ordering::Relaxed);
-                    }
-                    /* 应用预设的 L/R 权重 */
-                    for (i, v) in pr.item_lr.iter().enumerate() {
-                        self.app_state.vibration_item_lr[i].store(*v, Ordering::Relaxed);
-                        self.config.vibration.item_lr[i] = *v;
-                    }
-                    /* 应用预设的评分事件 L/R 权重 */
-                    for (i, v) in pr.rank_lr.iter().enumerate() {
-                        self.app_state.vibration_rank_lr[i].store(*v, Ordering::Relaxed);
-                        self.config.vibration.rank_lr[i] = *v;
-                    }
-                    /* 应用预设的评分特效参数 (细分强度/等级强度/时长) */
-                    for (i, v) in pr.rank_type_gain.iter().enumerate() {
-                        self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                    }
-                    self.app_state.vibration_rank_level_gain.store(pr.rank_level_gain, Ordering::Relaxed);
-                    self.app_state.vibration_rank_duration.store(pr.rank_duration, Ordering::Relaxed);
-                    self.config.vibration.rank_type_gain = pr.rank_type_gain;
-                    self.config.vibration.rank_level_gain = pr.rank_level_gain;
-                    self.config.vibration.rank_duration = pr.rank_duration;
-                self.app_state.vibration_out_smooth.store(pr.out_smooth, Ordering::Relaxed);
-                self.config.vibration.out_smooth = pr.out_smooth;
-                    /* 同步到 config.vibration 并落盘(重启保持) */
-                    Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                /* ★R2.14: 预设应用 = backend.apply_vibration_preset_by_name
+                 * (★v18 用户覆盖优先的 pick_preset_for_apply 语义在 backend 内;
+                 * ★保险B 自动停用全职业预设收敛到 apply_general_vibration_preset) */
+                if let Some((_, name)) = entries.get(sel_pos) {
+                    self.apply_general_vibration_preset(name);
                 }
             }
             ui.add_space(8.0);
@@ -592,34 +444,8 @@ impl SorahkGui {
                 .on_hover_text("把当前滑块参数写入 [vibration] 并保存 Config.toml")
                 .clicked()
             {
-                Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                for i in 0..26 {
-                    self.config.vibration.item_lr[i] = self
-                        .app_state
-                        .vibration_item_lr[i]
-                        .load(Ordering::Relaxed);
-                }
-                for i in 0..30 {
-                    self.config.vibration.rank_lr[i] = self
-                        .app_state
-                        .vibration_rank_lr[i]
-                        .load(Ordering::Relaxed);
-                }
-                for i in 0..15 {
-                    self.config.vibration.rank_type_gain[i] = self
-                        .app_state
-                        .vibration_rank_type_gain[i]
-                        .load(Ordering::Relaxed);
-                }
-                self.config.vibration.rank_level_gain = self
-                    .app_state
-                    .vibration_rank_level_gain
-                    .load(Ordering::Relaxed);
-                self.config.vibration.rank_duration = self
-                    .app_state
-                    .vibration_rank_duration
-                    .load(Ordering::Relaxed);
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                /* ★R2.14: 引擎镜像 → config → 落盘, 单次 backend 调用 */
+                let _ = self.backend.save_vib_runtime_to_config();
             }
             ui.add_space(8.0);
             ui.label(egui::RichText::new("保存为:").size(13.0).weak());
@@ -634,41 +460,48 @@ impl SorahkGui {
             {
                 let name = self.vib_preset_name.trim().to_string();
                 if !name.is_empty() {
+                    /* ★R2.14: 参数取帧首快照, out_smooth 取 config (与引擎镜像同源) */
                     let mut params = [0u32; 60];
-                    for i in 0..60 {
-                        params[i] = p[i].load(Ordering::Relaxed);
-                    }
+                    params.copy_from_slice(&snap.params);
                     let mut item_lr = [0u32; 26];
-                    for i in 0..26 {
-                        item_lr[i] = self.app_state.vibration_item_lr[i].load(Ordering::Relaxed);
-                    }
+                    item_lr.copy_from_slice(&snap.item_lr);
                     let mut rank_lr = [0u32; 30];
-                    for i in 0..30 {
-                        rank_lr[i] = self.app_state.vibration_rank_lr[i].load(Ordering::Relaxed);
-                    }
+                    rank_lr.copy_from_slice(&snap.rank_lr);
                     let mut rank_type_gain = [0u32; 15];
-                    for i in 0..15 {
-                        rank_type_gain[i] = self.app_state.vibration_rank_type_gain[i].load(Ordering::Relaxed);
-                    }
-                    let rank_level_gain = self.app_state.vibration_rank_level_gain.load(Ordering::Relaxed);
-                    let rank_duration = self.app_state.vibration_rank_duration.load(Ordering::Relaxed);
-                    let preset = crate::config::VibrationPreset { name: name.clone(), params, item_lr, rank_lr, rank_type_gain, rank_level_gain, rank_duration, out_smooth: self.app_state.vibration_out_smooth.load(Ordering::Relaxed), user_modified: true };
+                    rank_type_gain.copy_from_slice(&snap.rank_type_gain);
+                    let preset = crate::config::VibrationPreset {
+                        name: name.clone(),
+                        params,
+                        item_lr,
+                        rank_lr,
+                        rank_type_gain,
+                        rank_level_gain: snap.rank_level_gain,
+                        rank_duration: snap.rank_duration,
+                        out_smooth: vib.out_smooth,
+                        user_modified: true,
+                    };
                     // 同名替换而非追加: 追加重名预设后, 应用按名匹配会
                     // 顶替用户自存版本, 且重名项永远删不掉
                     let protected = name == "默认" || name == "测试版(全0)";
-                    if let Some(pos) = self.config.vibration_presets.iter().position(|x| x.name == name) {
-                        if !protected {
-                            self.config.vibration_presets[pos] = preset;
-                            self.vib_preset_name.clear();
-                            self.vib_preset_idx = pos;
+                    let mut new_idx: Option<usize> = None;
+                    let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
+                        match c.vibration_presets.iter().position(|x| x.name == name) {
+                            Some(pos) => {
+                                if !protected {
+                                    c.vibration_presets[pos] = preset;
+                                    new_idx = Some(pos);
+                                }
+                            }
+                            None => {
+                                c.vibration_presets.push(preset);
+                                new_idx = Some(c.vibration_presets.len() - 1);
+                            }
                         }
-                    } else {
-                        self.config.vibration_presets.push(preset);
+                    });
+                    if let Some(i) = new_idx {
                         self.vib_preset_name.clear();
-                        self.vib_preset_idx =
-                            self.config.vibration_presets.len() - 1;
+                        self.vib_preset_idx = i;
                     }
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                 }
             }
             if ui
@@ -676,13 +509,14 @@ impl SorahkGui {
                 .on_hover_text("仅\"默认\"与\"测试版(全0)\"受保护, 其余可删除")
                 .clicked()
             {
-                if let Some(pr) = self.config.vibration_presets.get(sel) {
-                    let protected =
-                        pr.name == "默认" || pr.name == "测试版(全0)";
+                if let Some((_, name)) = entries.get(sel_pos) {
+                    let protected = name == "默认" || name == "测试版(全0)";
                     if !protected {
-                        self.config.vibration_presets.remove(sel);
+                        let del = name.clone();
+                        let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
+                            c.vibration_presets.retain(|x| x.name != del);
+                        });
                         self.vib_preset_idx = 0;
-                        let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
                     }
                 }
             }
@@ -692,12 +526,9 @@ impl SorahkGui {
                 .on_hover_text("导出当前页面生效的通用震动设定 (params/评分/高级算法) 为 TOML; ACT 路线导出文件名带 -ACT")
                 .clicked()
             {
-                let content = Self::export_vibration_settings(&self.app_state, &self.config);
+                let content = Self::export_vibration_settings(&self.backend);
                 /* ★v24.14: ACT 路线导出带 -ACT (文件名 + 导入列表按路线过滤, 两路线不串档) */
-                let prefix = crate::job_presets::export_prefix(
-                    "vibration_export",
-                    self.config.vib_legacy_client,
-                );
+                let prefix = crate::job_presets::export_prefix("vibration_export", legacy);
                 let fname = Self::save_export_file(&content, &prefix);
                 self.vib_export_msg = Some(fname);
             }
@@ -706,7 +537,7 @@ impl SorahkGui {
             {
                 let files = crate::job_presets::list_export_files_for_route(
                     "vibration_export",
-                    self.config.vib_legacy_client,
+                    legacy,
                 );
                 let sel = self.vib_import_sel.min(files.len().saturating_sub(1));
                 if !files.is_empty() {
@@ -728,48 +559,14 @@ impl SorahkGui {
                 {
                     let route_files = crate::job_presets::list_export_files_for_route(
                         "vibration_export",
-                        self.config.vib_legacy_client,
+                        legacy,
                     );
                     if let Some(f) = route_files.get(self.vib_import_sel) {
                         if let Some(iv) = crate::job_presets::parse_vibration_export(f) {
-                            for (i, v) in iv.params.iter().enumerate() {
-                                self.app_state.vibration_params[i].store(*v, Ordering::Relaxed);
-                            }
-                            for (i, v) in iv.item_lr.iter().enumerate() {
-                                self.app_state.vibration_item_lr[i].store(*v, Ordering::Relaxed);
-                                self.config.vibration.item_lr[i] = *v;
-                            }
-                            for (i, v) in iv.rank_lr.iter().enumerate() {
-                                self.app_state.vibration_rank_lr[i].store(*v, Ordering::Relaxed);
-                                self.config.vibration.rank_lr[i] = *v;
-                            }
-                            for (i, v) in iv.rank_type_gain.iter().enumerate() {
-                                self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                                self.config.vibration.rank_type_gain[i] = *v;
-                            }
-                            self.app_state.vibration_rank_level_gain.store(iv.rank_level_gain, Ordering::Relaxed);
-                            self.app_state.vibration_rank_duration.store(iv.rank_duration, Ordering::Relaxed);
-                            self.app_state.vibration_out_smooth.store(iv.out_smooth, Ordering::Relaxed);
-                            self.app_state.vibration_throttle_window.store(iv.throttle_window_ms, Ordering::Relaxed);
-                            self.app_state.vibration_throttle_max.store(iv.throttle_max_hits, Ordering::Relaxed);
-                            self.app_state.vibration_throttle_dense_ratio.store(iv.throttle_dense_ratio, Ordering::Relaxed);
-                            self.app_state.vibration_independent_test.store(iv.independent_test, Ordering::Relaxed);
-                            self.app_state.vibration_move_independent.store(iv.move_independent, Ordering::Relaxed);
-                            self.app_state.vibration_random_gain.store(iv.random_gain, Ordering::Relaxed);
-                            self.app_state.vibration_motor_l_gain.store(iv.motor_l_gain, Ordering::Relaxed);
-                            self.app_state.vibration_motor_r_gain.store(iv.motor_r_gain, Ordering::Relaxed);
-                            self.config.vibration.rank_level_gain = iv.rank_level_gain;
-                            self.config.vibration.rank_duration = iv.rank_duration;
-                            self.config.vibration.out_smooth = iv.out_smooth;
-                            self.config.vibration.throttle_window_ms = iv.throttle_window_ms;
-                            self.config.vibration.throttle_max_hits = iv.throttle_max_hits;
-                            self.config.vibration.throttle_dense_ratio = iv.throttle_dense_ratio;
-                            self.config.vibration.independent_test = iv.independent_test;
-                            self.config.vibration.move_independent = iv.move_independent;
-                            self.config.vibration.random_gain = iv.random_gain;
-                            self.config.vibration.motor_l_gain = iv.motor_l_gain;
-                            self.config.vibration.motor_r_gain = iv.motor_r_gain;
-                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                            /* ★R2.14: 参数+权重+标量写进 config 并全量镜像 + 落盘
+                             * (旧实现 60 槽只写原子不进 config, 重启即丢; 新世界
+                             * config 为唯一权威, 与导出"往返一致规范"对齐) */
+                            self.backend.import_vib_export(&iv);
                             self.vib_import_msg = Some(f.clone());
                         } else {
                             self.vib_import_msg = Some(format!("{} 解析失败 (规范不符)", f));
@@ -783,36 +580,16 @@ impl SorahkGui {
                 .on_hover_text("把预设恢复为出厂内置 (误删后一键还原)")
                 .clicked()
             {
-                self.config.vibration_presets =
-                    crate::config::default_vibration_presets();
+                let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
+                    c.vibration_presets = crate::config::default_vibration_presets();
+                });
                 self.vib_preset_idx = 0;
-                /* 若当前为空或损坏, 同时把参数复位为默认预设 */
-                if let Some(pr) = self.config.vibration_presets.first() {
-                    if p[0].load(Ordering::Relaxed) == 0 {
-                        for (i, v) in pr.params.iter().enumerate() {
-                            p[i].store(*v, Ordering::Relaxed);
-                        }
-                        for (i, v) in pr.item_lr.iter().enumerate() {
-                            self.app_state.vibration_item_lr[i].store(*v, Ordering::Relaxed);
-                            self.config.vibration.item_lr[i] = *v;
-                        }
-                        for (i, v) in pr.rank_lr.iter().enumerate() {
-                            self.app_state.vibration_rank_lr[i].store(*v, Ordering::Relaxed);
-                            self.config.vibration.rank_lr[i] = *v;
-                        }
-                        for (i, v) in pr.rank_type_gain.iter().enumerate() {
-                            self.app_state.vibration_rank_type_gain[i].store(*v, Ordering::Relaxed);
-                            self.config.vibration.rank_type_gain[i] = *v;
-                        }
-                        self.app_state.vibration_rank_level_gain.store(pr.rank_level_gain, Ordering::Relaxed);
-                        self.app_state.vibration_rank_duration.store(pr.rank_duration, Ordering::Relaxed);
-                        self.config.vibration.rank_level_gain = pr.rank_level_gain;
-                        self.config.vibration.rank_duration = pr.rank_duration;
-                self.app_state.vibration_out_smooth.store(pr.out_smooth, Ordering::Relaxed);
-                self.config.vibration.out_smooth = pr.out_smooth;
+                /* 若当前为空或损坏 (60 槽第一格为 0), 同时把参数复位为默认预设 */
+                if snap.params[0] == 0 {
+                    if let Some(pr) = crate::config::default_vibration_presets().first() {
+                        let _ = self.backend.apply_vibration_preset_by_name(&pr.name);
                     }
                 }
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
             }
         });
         ui.add_space(6.0);
@@ -826,7 +603,7 @@ impl SorahkGui {
         }
         ui.add(
             egui::Label::new(
-                egui::RichText::new(if self.config.vib_legacy_client {
+                egui::RichText::new(if legacy {
                     "内置: 默认/ACT1 特供/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)\nACT 专属: 各预设的「-ACT」变体 (事件强度/衰减按 ACT 档位特调) 紧随其后"
                 } else {
                     "内置: 默认/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)"
@@ -855,16 +632,12 @@ impl SorahkGui {
     }
 
     /// vib_status_section — 状态卡 (原 757-777)
-    fn vib_status_section(&mut self, ui: &mut egui::Ui) {
-        use std::sync::atomic::Ordering;
+    fn vib_status_section(&mut self, ui: &mut egui::Ui, snap: &crate::ui_api::VibSnap) {
         let th = self.theme();
         /* 状态 */
         {
-            let connected = self.app_state.vibration_connected.load(Ordering::Relaxed);
-            let events = self
-                .app_state
-                .vibration_events_received
-                .load(Ordering::Relaxed);
+            let connected = snap.connected;
+            let events = snap.events_received;
             let (ctext, ccolor) = if connected {
                 (
                     format!("● 已连接游戏 (累计 {} 事件)", events),
@@ -881,10 +654,14 @@ impl SorahkGui {
     }
 
     /// vib_summon_abs_freq_section — 召唤专属绝对震动频率 (v26.3, 原 783-847)
-    fn vib_summon_abs_freq_section(&mut self, ui: &mut egui::Ui, job_mode: bool) {
-        use std::sync::atomic::Ordering;
+    fn vib_summon_abs_freq_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        vib: &crate::config::VibrationConfig,
+    ) {
         /* 召唤专属: 绝对震动频率 (v26.3, 置顶显示在马达区上方, 仅召唤职业) */
-        if job_mode && self.app_state.vibration_abs_freq_enabled.load(Ordering::Relaxed) {
+        if job_mode && vib.abs_freq_enabled{
             Self::vib_section(ui, self.dark_mode, "【召唤专属】绝对震动频率 (置顶)", |ui| {
                 ui.label(
                     egui::RichText::new(
@@ -896,10 +673,7 @@ impl SorahkGui {
                     .weak(),
                 );
                 ui.add_space(4.0);
-                let mut ae = self
-                    .app_state
-                    .vibration_abs_freq_enabled
-                    .load(Ordering::Relaxed);
+                let mut ae = vib.abs_freq_enabled;
                                             let resp = Self::with_hint(
                         ui
                         .checkbox(&mut ae, "绝对震动频率 (3 秒最多 6 次)"),
@@ -907,41 +681,23 @@ impl SorahkGui {
                     );
                     if resp.changed()
                 {
-                    self.app_state
-                        .vibration_abs_freq_enabled
-                        .store(ae, Ordering::Relaxed);
-                    self.config.vibration.abs_freq_enabled = ae;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_enabled = ae);
                 }
-                let mut aw = self
-                    .app_state
-                    .vibration_abs_freq_window
-                    .load(Ordering::Relaxed) as f32;
+                let mut aw = vib.abs_freq_window_ms as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut aw, 1000.0..=10000.0).text("绝对频率窗口 ms")),
                     "绝对频率窗口 ms",
                 );
                 if resp.changed() {
-                    self.app_state
-                        .vibration_abs_freq_window
-                        .store(aw as u32, Ordering::Relaxed);
-                    self.config.vibration.abs_freq_window_ms = aw as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_window_ms = aw as u32);
                 }
-                let mut am = self
-                    .app_state
-                    .vibration_abs_freq_max
-                    .load(Ordering::Relaxed) as f32;
+                let mut am = vib.abs_freq_max as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut am, 1.0..=20.0).text("窗口内最大震动次数")),
                     "窗口内最大震动次数",
                 );
                 if resp.changed() {
-                    self.app_state
-                        .vibration_abs_freq_max
-                        .store(am as u32, Ordering::Relaxed);
-                    self.config.vibration.abs_freq_max = am as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_max = am as u32);
                 }
             });
             ui.add_space(10.0);
@@ -951,8 +707,7 @@ impl SorahkGui {
     }
 
     /// vib_motor_section — 马达区实时输出 (原 849-901)
-    fn vib_motor_section(&mut self, ui: &mut egui::Ui) {
-        use std::sync::atomic::Ordering;
+    fn vib_motor_section(&mut self, ui: &mut egui::Ui, snap: &crate::ui_api::VibSnap) {
         let th = self.theme();
         /* 马达区: 实时输出检测 (增益已并入各基础功能的 L/R 调控) */
         Self::vib_section(
@@ -967,8 +722,8 @@ impl SorahkGui {
                 .size(11.0)
                 .weak(),
             );
-            let out_l = self.app_state.vibration_out_l.load(Ordering::Relaxed);
-            let out_r = self.app_state.vibration_out_r.load(Ordering::Relaxed);
+            let out_l = snap.out_l;
+            let out_r = snap.out_r;
             let pct_l = out_l as f32 / 65535.0;
             let pct_r = out_r as f32 / 65535.0;
             ui.add_space(2.0);
@@ -1010,10 +765,19 @@ impl SorahkGui {
     }
 
     /// vib_global_gain_section — 全局总调整 (原 906-1043)
-    fn vib_global_gain_section(&mut self, ui: &mut egui::Ui, job_mode: bool) {
-        use std::sync::atomic::Ordering;
+    fn vib_global_gain_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        vib: &crate::config::VibrationConfig,
+        snap: &crate::ui_api::VibSnap,
+    ) {
         let th = self.theme();
-        let p = &self.app_state.vibration_params;
+        let params_arr: [u32; 60] = snap.params.as_slice().try_into().unwrap();
+        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
+        let rank_lr_arr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
+        let rank_out_arr: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
         /* 全局总调整 */
         Self::vib_section(
             ui,
@@ -1048,24 +812,19 @@ impl SorahkGui {
                                     .size(13.0)
                                     .color(th.text),
                             );
-                            let mut v = p[pidx].load(Ordering::Relaxed) as f32;
+                            let mut v = params_arr[pidx] as f32;
                             if ui
                                 .add(egui::Slider::new(&mut v, 0.0..=max).suffix(suffix))
                                 .changed()
                             {
-                                p[pidx].store(v as u32, Ordering::Relaxed);
-                                /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
-                                if !job_mode {
-                                    Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                                    self.vib_params_dirty_since = Some(std::time::Instant::now());
-                                }
+                                Self::vib_slot_update(&self.backend, job_mode, pidx, v as u32);
                             }
                             ui.label(egui::RichText::new(hint).size(11.0).weak());
                             /* ★v16.3: 仅「全局总调整」行保留 L/R (item0 = 左右马达
                              * 总闸, 引擎实消费); 攻击频率/强度上限的 L/R 为无消费
                              * 死端口 (审计结论), 不再渲染 —— 消除"调了没感知" */
                             if item == 0 {
-                                Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, item);
+                                Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, item);
                             }
                             ui.add_space(6.0);
                         }
@@ -1073,10 +832,7 @@ impl SorahkGui {
                 }
             });
             /* 震动随机性 (独立参数, 不占 60 槽) */
-            let mut rg = self
-                .app_state
-                .vibration_random_gain
-                .load(Ordering::Relaxed) as f32;
+            let mut rg = vib.random_gain as f32;
                                             let resp = Self::with_hint(
                             ui
                     .add(
@@ -1087,11 +843,7 @@ impl SorahkGui {
                         );
                         if resp.changed()
             {
-                self.app_state
-                    .vibration_random_gain
-                    .store(rg as u32, Ordering::Relaxed);
-                self.config.vibration.random_gain = rg as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.random_gain = rg as u32);
             }
             ui.label(
                 egui::RichText::new(
@@ -1108,7 +860,7 @@ impl SorahkGui {
             ui.add_space(8.0);
             ui.vertical(|ui| {
             /* 移动独立开关 (v24.5): 默认开, 移动一直在走, 不吃全局强度 */
-            let mut mi = self.app_state.vibration_move_independent.load(Ordering::Relaxed);
+            let mut mi = vib.move_independent;
                                     let resp = Self::with_hint(
                     ui
                     .checkbox(&mut mi, "移动持续震动独立于全局强度 (默认开)")
@@ -1120,33 +872,29 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                self.app_state.vibration_move_independent.store(mi, Ordering::Relaxed);
-                self.config.vibration.move_independent = mi;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.move_independent = mi);
             }
             ui.set_width(ui.available_width());
-            let cnt = self.app_state.vibration_rank_type_events[11].load(Ordering::Relaxed);
+            let cnt = snap.rank_type_events[11];
             ui.label(
                 egui::RichText::new(format!("移动 (持续震动) ({})", cnt))
                     .size(13.0)
                     .color(th.text),
             );
-            let mut g = self.app_state.vibration_rank_type_gain[11].load(Ordering::Relaxed) as f32;
+            let mut g = snap.rank_type_gain[11] as f32;
             let resp = Self::with_hint(
             ui.add(egui::Slider::new(&mut g, 0.0..=100.0).suffix("").text("移动持续震动强度")),
                 "移动持续震动强度",
             );
             if resp.changed() {
-                self.app_state.vibration_rank_type_gain[11].store(g as u32, Ordering::Relaxed);
-                self.config.vibration.rank_type_gain[11] = g as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_type_gain[11] = g as u32);
             }
             ui.label(
                 egui::RichText::new("角色移动持续震动 (0 停)。与高级调校「走路质感与走位能量」配合。")
                     .size(11.0)
                     .weak(),
             );
-            Self::render_rank_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.rank_lr, 11);
+            Self::render_rank_lr(&self.backend, ui, self.dark_mode, &rank_lr_arr, &rank_out_arr, 11);
             ui.add_space(4.0);
             ui.separator();
             ui.add_space(4.0);
@@ -1155,10 +903,18 @@ impl SorahkGui {
     }
 
     /// vib_damage_font_section — 伤害飘字 (原 1048-1215)
-    fn vib_damage_font_section(&mut self, ui: &mut egui::Ui, job_mode: bool) {
-        use std::sync::atomic::Ordering;
+    fn vib_damage_font_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        legacy: bool,
+        vib: &crate::config::VibrationConfig,
+        snap: &crate::ui_api::VibSnap,
+    ) {
         let th = self.theme();
-        let p = &self.app_state.vibration_params;
+        let params_arr: [u32; 60] = snap.params.as_slice().try_into().unwrap();
+        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
         /* 伤害飘字 */
         Self::vib_section(
             ui,
@@ -1172,10 +928,7 @@ impl SorahkGui {
                 .size(11.0)
                 .weak(),
             );
-            let mut font_on = self
-                .app_state
-                .vibration_font_hits
-                .load(Ordering::Relaxed);
+            let mut font_on = snap.font_hits;
                                     let resp = Self::with_hint(
                     ui
                     .checkbox(&mut font_on, "启用伤害飘字震动 (默认开启)"),
@@ -1183,16 +936,14 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                self.app_state
-                    .vibration_font_hits
-                    .store(font_on, Ordering::Relaxed);
+                self.backend.set_vib_font_hits(font_on);
             }
             ui.label(
                 egui::RichText::new("关闭后命中/受击/技能等伤害飘字不再震动; 评分特效与移动走路不受此开关影响")
                     .size(11.0)
                     .weak(),
             );
-            let mut fs = p[10].load(Ordering::Relaxed) as f32;
+            let mut fs = snap.params[10] as f32;
                                     let resp = Self::with_hint(
                     ui
                     .add(egui::Slider::new(&mut fs, 0.0..=100.0).text("通用飘字强度")),
@@ -1200,7 +951,7 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                p[10].store(fs as u32, Ordering::Relaxed);
+                Self::vib_slot_update(&self.backend, job_mode, 10, fs as u32);
             }
             ui.label(
                 egui::RichText::new(
@@ -1209,8 +960,8 @@ impl SorahkGui {
                 .size(11.0)
                 .weak(),
             );
-            Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, 6);
-            let mut fi = p[11].load(Ordering::Relaxed) as f32;
+            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, 6);
+            let mut fi = snap.params[11] as f32;
                                     let resp = Self::with_hint(
                     ui
                     .add(egui::Slider::new(&mut fi, 10.0..=500.0).text("飘字最小间隔 ms")),
@@ -1218,7 +969,7 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                p[11].store(fi as u32, Ordering::Relaxed);
+                Self::vib_slot_update(&self.backend, job_mode, 11, fi as u32);
             }
             ui.label(
                 egui::RichText::new("同类型事件最短触发间隔, 防止高频连打过度震动")
@@ -1241,7 +992,7 @@ impl SorahkGui {
                     "装备特效反馈 (0x04)".to_string(),
                     15,
                     8,
-                    if self.config.vib_legacy_client {
+                    if legacy {
                         "装备触发效果 (ACT 版本: 此通道事件已由下方怪物异常反馈承载, 此滑块暂不影响震动)".to_string()
                     } else {
                         "装备触发效果(特效等), 例如天域之类的".to_string()
@@ -1256,7 +1007,7 @@ impl SorahkGui {
                 ("玩家受击反馈 (0x02)".to_string(), 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉
 调高：挨打更有感觉；调低：更容易忽略挨打；0 = 挨打不震。".to_string()),
             ];
-            if self.config.vib_legacy_client {
+            if legacy {
                 rows.insert(
                     2,
                     (
@@ -1283,22 +1034,15 @@ impl SorahkGui {
                                         .size(13.0)
                                         .color(th.text),
                                 );
-                                let mut ma = self
-                                    .app_state
-                                    .vibration_monster_abnormal
-                                    .load(Ordering::Relaxed) as f32;
+                                let mut ma = vib.monster_abnormal_gain as f32;
                                 if ui
                                     .add(egui::Slider::new(&mut ma, 0.0..=100.0))
                                     .changed()
                                 {
-                                    self.app_state
-                                        .vibration_monster_abnormal
-                                        .store(ma as u32, Ordering::Relaxed);
-                                    self.config.vibration.monster_abnormal_gain = ma as u32;
-                                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                                    Self::vib_slider_update(&self.backend, job_mode, |v| v.monster_abnormal_gain = ma as u32);
                                 }
                                 ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
-                                Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, *item);
+                                Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, *item);
                                 ui.add_space(6.0);
                                 continue;
                             }
@@ -1307,20 +1051,15 @@ impl SorahkGui {
                                     .size(13.0)
                                     .color(th.text),
                             );
-                            let mut v = p[*pidx].load(Ordering::Relaxed) as f32;
+                            let mut v = params_arr[*pidx] as f32;
                             if ui
                                 .add(egui::Slider::new(&mut v, 0.0..=100.0))
                                 .changed()
                             {
-                                p[*pidx].store(v as u32, Ordering::Relaxed);
-                                /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
-                                if !job_mode {
-                                    Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                                    self.vib_params_dirty_since = Some(std::time::Instant::now());
-                                }
+                                Self::vib_slot_update(&self.backend, job_mode, *pidx, v as u32);
                             }
                             ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
-                            Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, *item);
+                            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, *item);
                             ui.add_space(6.0);
                         }
                     });
@@ -1330,9 +1069,16 @@ impl SorahkGui {
     }
 
     /// vib_score_effect_section — 评分特效震动 (原 1220-1349)
-    fn vib_score_effect_section(&mut self, ui: &mut egui::Ui) {
-        use std::sync::atomic::Ordering;
+    fn vib_score_effect_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        _vib: &crate::config::VibrationConfig,
+        snap: &crate::ui_api::VibSnap,
+    ) {
         let th = self.theme();
+        let rank_lr_arr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
+        let rank_out_arr: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
         /* 评分特效震动 (DLL 已采集: 评分等级/击杀点/闪避/暴击/破招/背击等) */
         Self::vib_section(ui, self.dark_mode, "评分特效震动 (等级 + 细分事件)", |ui| {
             ui.label(
@@ -1345,8 +1091,8 @@ impl SorahkGui {
             );
             ui.add_space(4.0);
             /* 状态: 最近等级 + 事件计数 */
-            let rl = self.app_state.vibration_rank_last.load(Ordering::Relaxed);
-            let re = self.app_state.vibration_rank_events.load(Ordering::Relaxed);
+            let rl = snap.rank_last;
+            let re = snap.rank_events;
             let (rtext, rcolor) = if rl >= 8 {
                 (
                     format!("★ 最近评分: 等级 {} (特殊动作!)  累计 {} 次", rl, re),
@@ -1366,7 +1112,7 @@ impl SorahkGui {
             ui.label(egui::RichText::new(rtext).size(12.0).color(rcolor).strong());
             ui.add_space(4.0);
             /* 评分等级强度 + 满幅时长 */
-            let mut lvl_gain = self.app_state.vibration_rank_level_gain.load(Ordering::Relaxed) as f32;
+            let mut lvl_gain = snap.rank_level_gain as f32;
                                     let resp = Self::with_hint(
                     ui
                     .add(egui::Slider::new(&mut lvl_gain, 0.0..=100.0).text("评分等级强度 % (等级 F~SSS)")),
@@ -1374,19 +1120,15 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                self.app_state.vibration_rank_level_gain.store(lvl_gain as u32, Ordering::Relaxed);
-                self.config.vibration.rank_level_gain = lvl_gain as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_level_gain = lvl_gain as u32);
             }
-            let mut rank_dur = self.app_state.vibration_rank_duration.load(Ordering::Relaxed) as f32;
+            let mut rank_dur = snap.rank_duration as f32;
             let resp = Self::with_hint(
             ui.add(egui::Slider::new(&mut rank_dur, 20.0..=1000.0).text("满幅脉冲时长 ms (所有评分事件)")),
                 "满幅脉冲时长 ms (所有评分事件)",
             );
             if resp.changed() {
-                self.app_state.vibration_rank_duration.store(rank_dur as u32, Ordering::Relaxed);
-                self.config.vibration.rank_duration = rank_dur as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_duration = rank_dur as u32);
             }
             ui.add_space(4.0);
             ui.label(
@@ -1434,24 +1176,22 @@ impl SorahkGui {
                         ui.set_max_width(col_w);
                         for (name, idx, hint) in chunk.iter().copied() {
                         /* 名称(计数) 独立标签在数值上方 (与飘字类型强度一致) */
-                        let cnt = self.app_state.vibration_rank_type_events[idx].load(Ordering::Relaxed);
+                        let cnt = snap.rank_type_events[idx];
                         ui.label(
                             egui::RichText::new(format!("{} ({})", name, cnt))
                                 .size(13.0)
                                 .color(th.text),
                         );
-                        let mut g = self.app_state.vibration_rank_type_gain[idx].load(Ordering::Relaxed) as f32;
+                        let mut g = snap.rank_type_gain[idx] as f32;
                         if ui
                             .add(egui::Slider::new(&mut g, 0.0..=100.0))
                             .changed()
                         {
-                            self.app_state.vibration_rank_type_gain[idx].store(g as u32, Ordering::Relaxed);
-                            self.config.vibration.rank_type_gain[idx] = g as u32;
-                            let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                            Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_type_gain[idx] = g as u32);
                         }
                         ui.label(egui::RichText::new(hint).size(11.0).weak());
                         /* 每个评分事件的独立 L/R 马达权重 */
-                        Self::render_rank_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.rank_lr, idx);
+                        Self::render_rank_lr(&self.backend, ui, self.dark_mode, &rank_lr_arr, &rank_out_arr, idx);
                         ui.add_space(6.0);
                         }
                     });
@@ -1460,17 +1200,22 @@ impl SorahkGui {
             ui.add_space(4.0);
             if ui.add(th.secondary_button("测试评分震动 (模拟等级 8)")).clicked()
             {
-                self.app_state.vibration_rank_test.store(true, Ordering::Relaxed);
+                self.backend
+                    .dispatch(crate::ui_api::UiCommand::TestRank);
             }
         });
     }
 
     /// vib_score_decay_section — 评分动态衰减 类鬼泣 v29 (原 1354-1474)
-    fn vib_score_decay_section(&mut self, ui: &mut egui::Ui) {
-        use std::sync::atomic::Ordering;
+    fn vib_score_decay_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        vib: &crate::config::VibrationConfig,
+    ) {
         /* 评分动态衰减 (类鬼泣, v29): 独立卡片, 位于评分特效震动下方 */
         Self::vib_section(ui, self.dark_mode, "评分动态衰减 (类鬼泣): 越打越猛, 停手跌分", |ui| {
-            let rd = self.app_state.vibration_rank_decay_enabled.load(Ordering::Relaxed);
+            let rd = vib.rank_decay_enabled;
             ui.label(
                 egui::RichText::new(
                     "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n\
@@ -1492,16 +1237,9 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                self.app_state
-                    .vibration_rank_decay_enabled
-                    .store(rd_on, Ordering::Relaxed);
-                self.config.vibration.rank_decay_enabled = rd_on;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_enabled = rd_on);
             }
-            let mut rdd = self
-                .app_state
-                .vibration_rank_decay_delay
-                .load(Ordering::Relaxed) as f32;
+            let mut rdd = vib.rank_decay_delay_ms as f32;
                                 let resp = Self::with_hint(
                 ui
                     .add_enabled(
@@ -1514,16 +1252,9 @@ impl SorahkGui {
             );
             if resp.changed()
             {
-                self.app_state
-                    .vibration_rank_decay_delay
-                    .store(rdd as u32, Ordering::Relaxed);
-                self.config.vibration.rank_decay_delay_ms = rdd as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_delay_ms = rdd as u32);
             }
-            let mut rds = self
-                .app_state
-                .vibration_rank_decay_speed
-                .load(Ordering::Relaxed) as f32;
+            let mut rds = vib.rank_decay_speed as f32;
             /* ★审计修复: 载体是 u32, 浮点滑块的小数档位 (如 4.5) 会被截成 4
              * —— 改为整数步进, 滑块档位与实际生效值一致 */
                                 let resp = Self::with_hint(
@@ -1538,16 +1269,9 @@ impl SorahkGui {
             );
             if resp.changed()
             {
-                self.app_state
-                    .vibration_rank_decay_speed
-                    .store(rds as u32, Ordering::Relaxed);
-                self.config.vibration.rank_decay_speed = rds as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_speed = rds as u32);
             }
-            let mut rdmin = self
-                .app_state
-                .vibration_rank_decay_min
-                .load(Ordering::Relaxed) as f32;
+            let mut rdmin = vib.rank_decay_min_mul as f32;
                                 let resp = Self::with_hint(
                 ui
                     .add_enabled(
@@ -1560,16 +1284,9 @@ impl SorahkGui {
             );
             if resp.changed()
             {
-                self.app_state
-                    .vibration_rank_decay_min
-                    .store(rdmin as u32, Ordering::Relaxed);
-                self.config.vibration.rank_decay_min_mul = rdmin as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_min_mul = rdmin as u32);
             }
-            let mut rdmax = self
-                .app_state
-                .vibration_rank_decay_max
-                .load(Ordering::Relaxed) as f32;
+            let mut rdmax = vib.rank_decay_max_mul as f32;
                                 let resp = Self::with_hint(
                 ui
                     .add_enabled(
@@ -1582,20 +1299,23 @@ impl SorahkGui {
             );
             if resp.changed()
             {
-                self.app_state
-                    .vibration_rank_decay_max
-                    .store(rdmax as u32, Ordering::Relaxed);
-                self.config.vibration.rank_decay_max_mul = rdmax as u32;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_max_mul = rdmax as u32);
             }
         });
     }
 
     /// vib_advanced_section — 高级震动调校 CollapsingHeader (群怪不打手/连击自适应/走路质感/输出质感/预留槽位, 原 1478-2748)
-    fn vib_advanced_section(&mut self, ui: &mut egui::Ui, job_mode: bool) {
-        use std::sync::atomic::Ordering;
+    fn vib_advanced_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        legacy: bool,
+        vib: &crate::config::VibrationConfig,
+        snap: &crate::ui_api::VibSnap,
+    ) {
         let th = self.theme();
-        let p = &self.app_state.vibration_params;
+        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
 
 /* 高级震动调校 (六类 L/R 比例已并入基础区每项权重, 此处不再重复) */
         Self::vib_section(
@@ -1613,10 +1333,7 @@ impl SorahkGui {
             let mut adv_on = if job_mode {
                 self.vib_job_adv_on
             } else {
-                self.app_state
-                    .vibration_advanced_enabled
-                    .load(Ordering::Relaxed)
-            };
+                vib.advanced_enabled};
             ui.horizontal(|ui| {
                 if ui
                     .checkbox(&mut adv_on, "允许高级调校")
@@ -1629,11 +1346,7 @@ impl SorahkGui {
                     if job_mode {
                         self.vib_job_adv_on = adv_on;
                     } else {
-                        self.app_state
-                            .vibration_advanced_enabled
-                            .store(adv_on, Ordering::Relaxed);
-                        self.config.vibration.advanced_enabled = adv_on;
-                        let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                        Self::vib_slider_update(&self.backend, job_mode, |v| v.advanced_enabled = adv_on);
                     }
                 }
                 ui.label(
@@ -1687,12 +1400,8 @@ impl SorahkGui {
 
             /* ★S1 输出引擎模式 (v20, 用户定稿): 经典 / S4 纯 / S4+不丢震动。
              * 置于高级区顶部 (而非输出质感深处), 便于玩家找到这个"引擎级"选择。 */
-            let s1_route = self.config.vib_legacy_client;
-            let s1_mode = self
-                .app_state
-                .vibration_legacy_output_mode
-                .load(Ordering::Relaxed)
-                .min(2);
+            let s1_route = legacy;
+            let s1_mode = vib.legacy_output_mode.min(2);
             if s1_route {
                 ui.separator();
                 ui.add_space(2.0);
@@ -1717,20 +1426,16 @@ impl SorahkGui {
                     ui.selectable_value(&mut sel, 2, "S4+不丢震动");
                 });
                 if sel != s1_mode {
-                    self.app_state
-                        .vibration_legacy_output_mode
-                        .store(sel, Ordering::Relaxed);
-                    self.config.vibration.legacy_output_mode = sel;
-                    let _ = self.config.save_vibration_to_file(
-                        crate::config::AppConfig::vibration_path_for("Config.toml"),
-                    );
+                    Self::vib_slider_update(&self.backend, job_mode, |v| {
+                        v.legacy_output_mode = sel;
+                    });
                 }
                 ui.add_space(2.0);
             }
 
         /* ★S1 群怪不打手 (v14.1-v16 治理算法): 高级调校区内小节 (v16.5 用户定稿) */
         /* ── 群怪不打手 (S1 命中治理) ── */
-        if self.config.vib_legacy_client {
+        if legacy {
             ui.label(egui::RichText::new("群怪不打手 (命中治理, 仅 ACT1 路线)").size(12.0).strong());
             ui.add_enabled_ui(adv_on, |ui| {
                 ui.label(
@@ -1745,22 +1450,17 @@ impl SorahkGui {
                         .size(12.0)
                         .strong(),
                 );
-                let mut _t = self.app_state.vibration_merge_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.merge_enabled;
                 if ui
                     .checkbox(&mut _t, "启用一刀多怪合并 (关=回到旧行为, 下方滑块不生效)")
                     .on_hover_text("关掉后: 命中聚合窗/合并记账/补发全部回到旧行为 (不做合并, 不补发)。默认开。
 开：群怪一刀只震一下（推荐，默认开）；关：回到旧行为：一刀多怪各震各的、更吵。")
                     .changed()
                 {
-                    self.app_state.vibration_merge_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.merge_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_enabled = _t);
                 }
                 /* ★命中聚合窗 (v15.2): 群怪一刀多条命中事件合并, 一刀一震 */
-                let mut hmz = self
-                    .app_state
-                    .vibration_hitmerge_ms
-                    .load(Ordering::Relaxed) as f32;
+                let mut hmz = vib.hitmerge_ms as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut hmz, 10.0..=200.0)
@@ -1771,18 +1471,11 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_hitmerge_ms
-                        .store(hmz as u32, Ordering::Relaxed);
-                    self.config.vibration.hitmerge_ms = hmz as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitmerge_ms = hmz as u32);
                 }
                 /* ★v20 专家参数: 合并保留/封顶/补发窗口 (低频微调) */
                 if show_expert {
-                let mut mk = self
-                    .app_state
-                    .vibration_merge_keep
-                    .load(Ordering::Relaxed) as f32;
+                let mut mk = vib.merge_keep as f32;
                                         let resp = Self::with_hint(
                     ui
                         .add(
@@ -1794,16 +1487,9 @@ impl SorahkGui {
                 );
                 if resp.changed()
                 {
-                    self.app_state
-                        .vibration_merge_keep
-                        .store(mk as u32, Ordering::Relaxed);
-                    self.config.vibration.merge_keep = mk as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_keep = mk as u32);
                 }
-                let mut mc = self
-                    .app_state
-                    .vibration_merge_cap
-                    .load(Ordering::Relaxed) as f32;
+                let mut mc = vib.merge_cap as f32;
                 if ui
                     .add(
                         egui::Slider::new(&mut mc, 20.0..=150.0)
@@ -1813,16 +1499,9 @@ impl SorahkGui {
 调高：群怪合成的那一下更重；调低：群怪合成的那一下更轻。")
                     .changed()
                 {
-                    self.app_state
-                        .vibration_merge_cap
-                        .store(mc as u32, Ordering::Relaxed);
-                    self.config.vibration.merge_cap = mc as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_cap = mc as u32);
                 }
-                let mut mh = self
-                    .app_state
-                    .vibration_merge_hold
-                    .load(Ordering::Relaxed) as f32;
+                let mut mh = vib.merge_hold as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut mh, 0.0..=300.0)
@@ -1833,11 +1512,7 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_merge_hold
-                        .store(mh as u32, Ordering::Relaxed);
-                    self.config.vibration.merge_hold = mh as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_hold = mh as u32);
                 }
                 } /* show_expert */
                 ui.add_space(4.0);
@@ -1847,23 +1522,18 @@ impl SorahkGui {
                         .size(12.0)
                         .strong(),
                 );
-                let mut _t = self.app_state.vibration_hitcap_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.hitcap_enabled;
                 if ui
                     .checkbox(&mut _t, "启用命中限频 (关=回到旧行为, 下方滑块不生效)")
                     .on_hover_text("关掉后: 命中不再受每秒次数上限约束 (超额不再记账合并)。默认开。
 开：群怪每秒最多震几下（更安静、更耐听，默认开）；关：不限制：群怪可能连成一片。")
                     .changed()
                 {
-                    self.app_state.vibration_hitcap_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.hitcap_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_enabled = _t);
                 }
                 /* ★命中限频 (v14.2): 仅普通命中通道的秒级限频, 超额命中
                  * 全额记账进聚合能量 —— 频率上限转化为厚度, 每击必震 */
-                let mut hm = self
-                    .app_state
-                    .vibration_hitcap_max
-                    .load(Ordering::Relaxed) as f32;
+                let mut hm = vib.hitcap_max as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut hm, 0.0..=30.0)
@@ -1874,17 +1544,10 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_hitcap_max
-                        .store(hm as u32, Ordering::Relaxed);
-                    self.config.vibration.hitcap_max = hm as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_max = hm as u32);
                 }
                 if show_expert {
-                let mut hw = self
-                    .app_state
-                    .vibration_hitcap_win
-                    .load(Ordering::Relaxed) as f32;
+                let mut hw = vib.hitcap_win_ms as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut hw, 200.0..=5000.0)
@@ -1895,11 +1558,7 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_hitcap_win
-                        .store(hw as u32, Ordering::Relaxed);
-                    self.config.vibration.hitcap_win_ms = hw as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_win_ms = hw as u32);
                 }
                 } /* show_expert */
                 ui.add_space(4.0);
@@ -1909,21 +1568,16 @@ impl SorahkGui {
                         .size(12.0)
                         .strong(),
                 );
-                let mut _t = self.app_state.vibration_storm_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.storm_enabled;
                 if ui
                     .checkbox(&mut _t, "启用命中风暴抽样 (关=只检测不抽样, 下方静音开关仍有效)")
                     .on_hover_text("关掉后: 命中不再被抽样丢弃 (每一击都震), 但「风暴期」检测继续运行, 两个静音开关照常可用。默认开。
 开：命中暴增时自动抽稀（防连成一串，默认开）；关：每一击都震（更吵，但风暴静音仍可用）。")
                     .changed()
                 {
-                    self.app_state.vibration_storm_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.storm_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_enabled = _t);
                 }
-                let mut st_thr = self
-                    .app_state
-                    .vibration_storm_thr
-                    .load(Ordering::Relaxed) as f32;
+                let mut st_thr = vib.storm_thr as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut st_thr, 2.0..=30.0).integer()
@@ -1934,16 +1588,9 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_storm_thr
-                        .store(st_thr as u32, Ordering::Relaxed);
-                    self.config.vibration.storm_thr = st_thr as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_thr = st_thr as u32);
                 }
-                let mut st_keep = self
-                    .app_state
-                    .vibration_storm_keep_pct
-                    .load(Ordering::Relaxed) as f32;
+                let mut st_keep = vib.storm_keep_pct as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut st_keep, 10.0..=100.0).integer()
@@ -1954,16 +1601,9 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_storm_keep_pct
-                        .store(st_keep as u32, Ordering::Relaxed);
-                    self.config.vibration.storm_keep_pct = st_keep as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_keep_pct = st_keep as u32);
                 }
-                let mut st_pause = self
-                    .app_state
-                    .vibration_storm_pause_ms
-                    .load(Ordering::Relaxed) as f32;
+                let mut st_pause = vib.storm_pause_ms as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut st_pause, 100.0..=2000.0).integer()
@@ -1975,17 +1615,10 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_storm_pause_ms
-                        .store(st_pause as u32, Ordering::Relaxed);
-                    self.config.vibration.storm_pause_ms = st_pause as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_pause_ms = st_pause as u32);
                 }
                 if show_expert {
-                let mut st_win = self
-                    .app_state
-                    .vibration_storm_win_ms
-                    .load(Ordering::Relaxed) as f32;
+                let mut st_win = vib.storm_win_ms as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut st_win, 200.0..=5000.0).integer()
@@ -1996,35 +1629,21 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_storm_win_ms
-                        .store(st_win as u32, Ordering::Relaxed);
-                    self.config.vibration.storm_win_ms = st_win as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_win_ms = st_win as u32);
                 }
                 } /* show_expert */
                 /* ★统合衰减期 (v17): 风暴期每一击重新起振, 旧包络瞬间消亡 */
-                let mut sue = self
-                    .app_state
-                    .vibration_storm_unified_enabled
-                    .load(Ordering::Relaxed);
+                let mut sue = vib.storm_unified_enabled;
                 if ui
                     .checkbox(&mut sue, "启用统合衰减期 (风暴期每一击重新起振, 旧的瞬间消失)")
                     .on_hover_text("风暴期普通命中改用一条统合包络: 每命中一次就把旧包络瞬间清零、重新起振, 衰减时间统一固定, 到点硬归零。\n连续命中 = 一击接一击的干净持续震动 (旧尾巴不再叠糊)。\n开启时风暴抽样与命中限频对该通道让路 (每一击都重新起振)。默认不勾选。
 开：风暴期一击是一击、更干净（默认关）；关：风暴期保留原来的叠加尾巴。")
                     .changed()
                 {
-                    self.app_state
-                        .vibration_storm_unified_enabled
-                        .store(sue, Ordering::Relaxed);
-                    self.config.vibration.storm_unified_enabled = sue;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_unified_enabled = sue);
                 }
                 if show_expert {
-                let mut sum_ms = self
-                    .app_state
-                    .vibration_storm_unified_ms
-                    .load(Ordering::Relaxed) as f32;
+                let mut sum_ms = vib.storm_unified_ms as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut sum_ms, 40.0..=400.0).integer()
@@ -2035,48 +1654,30 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_storm_unified_ms
-                        .store(sum_ms as u32, Ordering::Relaxed);
-                    self.config.vibration.storm_unified_ms = sum_ms as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_unified_ms = sum_ms as u32);
                 }
                 } /* show_expert */
                 /* ★风暴静音怪物异常 (v16.6, 可选): 风暴期间暂时关掉
                  * 0x04 出血/中毒跳字反馈, 风暴结束自动恢复 */
-                let mut sma = self
-                    .app_state
-                    .vibration_storm_mute_abnormal
-                    .load(Ordering::Relaxed);
+                let mut sma = vib.storm_mute_abnormal;
                 if ui
                     .checkbox(&mut sma, "风暴期间暂时关闭怪物异常反馈 (出血/中毒跳字)")
                     .on_hover_text("勾选后: 命中风暴期间, 怪物出血/中毒等跳字的震动暂时关掉 (完全不震、也不抢节奏);\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n适合狂战士这类每次攻击都挂出血、出血跳字一直抢震动的场景。默认不勾选。
 开：风暴期出血跳字静音（更干净，默认关）；关：出血跳字照常参与。")
                     .changed()
                 {
-                    self.app_state
-                        .vibration_storm_mute_abnormal
-                        .store(sma, Ordering::Relaxed);
-                    self.config.vibration.storm_mute_abnormal = sma;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_abnormal = sma);
                 }
                 /* ★风暴静音评分点系统 (v16.7, 可选): 风暴期间评分族事件
                  * (评分点/闪避/暴击/击杀/第一击/怪物死亡等) 暂时关掉 */
-                let mut smr = self
-                    .app_state
-                    .vibration_storm_mute_rank
-                    .load(Ordering::Relaxed);
+                let mut smr = vib.storm_mute_rank;
                 if ui
                     .checkbox(&mut smr, "风暴期间暂时关闭评分点系统 (评分/击杀/怪物死亡等)")
                     .on_hover_text("勾选后: 命中风暴期间, 评分点系统整族事件 (评分等级脉冲/评分点/闪避/暴击/破招/背击/最终击杀/凌空追击/命中第一击/增益叠加/释放技能/镜头震动/技能震动/暴击特写/怪物死亡) 暂时不震;\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n移动持续震动不属于评分点系统, 不受影响。默认不勾选。
 开：风暴期评分族整族静音（更干净，默认关）；关：评分族照常参与。")
                     .changed()
                 {
-                    self.app_state
-                        .vibration_storm_mute_rank
-                        .store(smr, Ordering::Relaxed);
-                    self.config.vibration.storm_mute_rank = smr;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_rank = smr);
                 }
                 ui.add_space(4.0);
                 /* ── 持续降温 ── */
@@ -2085,23 +1686,18 @@ impl SorahkGui {
                         .size(12.0)
                         .strong(),
                 );
-                let mut _t = self.app_state.vibration_sustain_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.sustain_enabled;
                 if ui
                     .checkbox(&mut _t, "启用持续降温 (关=回到旧行为, 下方两个滑块不生效)")
                     .on_hover_text("关掉后: 打久了不再自动变轻 (持续压制关闭)。默认开。
 开：一直打群怪会自动变轻（默认开）；关：一直打也不会变轻（下方两个滑块不生效）。")
                     .changed()
                 {
-                    self.app_state.vibration_sustain_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.sustain_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_enabled = _t);
                 }
                 /* ★持续压制 (v15.3): 一直打群怪 (限频持续顶满) 超过几秒后,
                  * 命中震动自动再降一档; 停手或怪少了自动恢复 */
-                let mut sus_s = self
-                    .app_state
-                    .vibration_sustain_secs
-                    .load(Ordering::Relaxed) as f32;
+                let mut sus_s = vib.sustain_secs as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut sus_s, 0.0..=10.0).integer()
@@ -2112,16 +1708,9 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_sustain_secs
-                        .store(sus_s as u32, Ordering::Relaxed);
-                    self.config.vibration.sustain_secs = sus_s as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_secs = sus_s as u32);
                 }
-                let mut sus_r = self
-                    .app_state
-                    .vibration_sustain_reduce
-                    .load(Ordering::Relaxed) as f32;
+                let mut sus_r = vib.sustain_reduce as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut sus_r, 10.0..=80.0)
@@ -2132,29 +1721,20 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_sustain_reduce
-                        .store(sus_r as u32, Ordering::Relaxed);
-                    self.config.vibration.sustain_reduce = sus_r as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_reduce = sus_r as u32);
                 }
-                let mut _t = self.app_state.vibration_tail_land_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.tail_land_enabled;
                 if ui
                     .checkbox(&mut _t, "启用脉冲落地 (关=回到自然衰减尾巴, 下方滑块不生效)")
                     .on_hover_text("关掉后: 每下的余震不再被提前切断 (保持自然余音)。默认开。
 开：余震提前切断（一击更干脆，默认开）；关：保留自然余音（余震更长）。")
                     .changed()
                 {
-                    self.app_state.vibration_tail_land_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.tail_land_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.tail_land_enabled = _t);
                 }
                 /* ★脉冲落地 (v15): 高负载期衰减尾巴提前归零, 脉冲间真静音 */
                 if show_expert {
-                let mut tl_pct = self
-                    .app_state
-                    .vibration_tail_land_pct
-                    .load(Ordering::Relaxed) as f32;
+                let mut tl_pct = vib.tail_land_pct as f32;
                                         if ui
                         .add(
                             egui::Slider::new(&mut tl_pct, 0.0..=60.0)
@@ -2165,11 +1745,7 @@ impl SorahkGui {
                         
                                             .changed()
                 {
-                    self.app_state
-                        .vibration_tail_land_pct
-                        .store(tl_pct as u32, Ordering::Relaxed);
-                    self.config.vibration.tail_land_pct = tl_pct as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.tail_land_pct = tl_pct as u32);
                 }
                 } /* show_expert */
             });
@@ -2192,7 +1768,7 @@ impl SorahkGui {
             ui.add_space(4.0);
             /* 连击密度自适应 (v22): 短时间连击暴增窗口期自动降强度
              * 高连击职业专属算法 (召唤/精灵骑士/剑魂/蓝拳等), 全职业页仅该职业显示 */
-            let d_thr = p[29].load(Ordering::Relaxed);
+            let d_thr = snap.params[29];
             if job_mode && d_thr >= 100 {
                 ui.label(
                     egui::RichText::new("连击密度自适应: 该职业无此专属算法 (仅高连击职业启用)")
@@ -2205,16 +1781,14 @@ impl SorahkGui {
                         .size(12.0)
                         .strong(),
                 );
-                let mut _t = self.app_state.vibration_density_enabled.load(Ordering::Relaxed);
+                let mut _t = vib.density_enabled;
                 if ui
                     .checkbox(&mut _t, "启用连击密度自适应 (关=回到旧行为, 下方滑块不生效)")
                     .on_hover_text("关掉后: 连击暴增时不再自动降强度 (等效阈值 100)。默认开。
 开：连击暴增时自动降强度（防越打越吵，默认开）；关：不降强度（下方四个滑块不生效）。")
                     .changed()
                 {
-                    self.app_state.vibration_density_enabled.store(_t, Ordering::Relaxed);
-                    self.config.vibration.density_enabled = _t;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.density_enabled = _t);
                 }
                 if job_mode {
                     ui.label(
@@ -2237,17 +1811,13 @@ impl SorahkGui {
                     if !show_expert && matches!(idx, 30 | 32 | 34) {
                         continue;
                     }
-                    let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                    let mut v = snap.params[idx] as f32;
                     let resp = Self::with_hint(
                     ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                         name,
                     );
                     if resp.changed() {
-                        p[idx].store(v as u32, Ordering::Relaxed);
-                        if !job_mode {
-                            Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                            self.vib_params_dirty_since = Some(std::time::Instant::now());
-                        }
+                        Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                     }
                 }
             }
@@ -2260,7 +1830,7 @@ impl SorahkGui {
                     .size(12.0)
                     .strong(),
             );
-            let mut _t = self.app_state.vibration_adapt_enabled.load(Ordering::Relaxed);
+            let mut _t = vib.adapt_enabled;
                                     let resp = Self::with_hint(
                     ui
                     .checkbox(&mut _t, "启用命中自适应 (关=回到旧行为, 下方滑块不生效)")
@@ -2269,9 +1839,7 @@ impl SorahkGui {
                 );
                 if resp.changed()
             {
-                self.app_state.vibration_adapt_enabled.store(_t, Ordering::Relaxed);
-                self.config.vibration.adapt_enabled = _t;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.adapt_enabled = _t);
             }
             let adapt_rows = [
                 ("连击加成的上限 (倍数×100)", 47, 100.0, 500.0),
@@ -2287,17 +1855,13 @@ impl SorahkGui {
                 if !show_expert && matches!(idx, 48 | 49 | 52 | 53) {
                     continue;
                 }
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
         });
@@ -2323,17 +1887,13 @@ impl SorahkGui {
                 ("移动最低输出阈值 % (低于归0, 消除沙沙声)", 28, 0.0, 20.0),
             ];
             for (name, idx, lo, hi) in m_rows {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
             ui.add_space(4.0);
@@ -2346,19 +1906,17 @@ impl SorahkGui {
                     .size(12.0)
                     .strong(),
             );
-            let mut _t = self.app_state.vibration_move_charge_enabled.load(Ordering::Relaxed);
+            let mut _t = vib.move_charge_enabled;
             if ui
                 .checkbox(&mut _t, "启用走位能量积累 (关=回到旧行为, 下方滑块不生效)")
                 .on_hover_text("关掉后: 长时间走位不再积累攻击增强 (等效速率 0)。默认开。
 开：走位越久攻击越强（默认开）；关：走位不积累强度。")
                 .changed()
             {
-                self.app_state.vibration_move_charge_enabled.store(_t, Ordering::Relaxed);
-                self.config.vibration.move_charge_enabled = _t;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.move_charge_enabled = _t);
             }
             if job_mode {
-                let m_rate = p[21].load(Ordering::Relaxed);
+                let m_rate = snap.params[21];
                 if m_rate >= 12 {
                     ui.label(
                         egui::RichText::new("【走位职业】移动积累快, 停手窗口内攻击增强明显")
@@ -2380,17 +1938,13 @@ impl SorahkGui {
                 ("增强窗口 ms (停手后有效)", 39, 0.0, 3000.0),
             ];
             for (name, idx, lo, hi) in c_rows2 {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
         });
@@ -2412,25 +1966,18 @@ impl SorahkGui {
                 ("右马达曲线 %", 20, 30.0, 300.0),
             ];
             for (name, idx, lo, hi) in a_rows {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
             /* 输出平滑 (v22.3: 独立参数, 一阶低通抑制低频嗡嗡声) */
             {
-                let mut v = self
-                    .app_state
-                    .vibration_out_smooth
-                    .load(Ordering::Relaxed) as f32;
+                let mut v = vib.out_smooth as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add(
@@ -2441,11 +1988,7 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_out_smooth
-                        .store(v as u32, Ordering::Relaxed);
-                    self.config.vibration.out_smooth = v as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |vc| vc.out_smooth = v as u32);
                 }
             }
             /* 节奏感 (从总闸卡迁入; 原 L/R item5 为死端口已移除) */
@@ -2455,16 +1998,12 @@ impl SorahkGui {
                         .size(13.0)
                         .color(th.text),
                 );
-                let mut v = p[18].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[18] as f32;
                 if ui
                     .add(egui::Slider::new(&mut v, 0.0..=100.0))
                     .changed()
                 {
-                    p[18].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, 18, v as u32);
                 }
                 ui.label(
                     egui::RichText::new("右马达强度占比: 50 = 均衡, 高 = 右重左轻")
@@ -2476,17 +2015,10 @@ impl SorahkGui {
              * ★v24.41: 经典 ACT1 管线不参与分工 (引擎已按路线关闭) ——
              * 该路线的左右手感靠各项 L/R 权重调, 分工会把"左右差异"抹平成单马达。 */
             {
-                let split_active = !self.config.vib_legacy_client
-                    || self
-                        .app_state
-                        .vibration_legacy_output_mode
-                        .load(Ordering::Relaxed)
-                        .min(2)
+                let split_active = !legacy
+                    || vib.legacy_output_mode.min(2)
                         != 0;
-                let mut sp = self
-                    .app_state
-                    .vibration_split_enabled
-                    .load(Ordering::Relaxed);
+                let mut sp = vib.split_enabled;
                 if ui
                     .add_enabled(
                         split_active,
@@ -2500,16 +2032,9 @@ impl SorahkGui {
                     )
                     .changed()
                 {
-                    self.app_state
-                        .vibration_split_enabled
-                        .store(sp, Ordering::Relaxed);
-                    self.config.vibration.split_enabled = sp;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.split_enabled = sp);
                 }
-                let mut spt = self
-                    .app_state
-                    .vibration_split_thr
-                    .load(Ordering::Relaxed) as f32;
+                let mut spt = vib.split_thr as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2521,11 +2046,7 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_split_thr
-                        .store(spt as u32, Ordering::Relaxed);
-                    self.config.vibration.split_thr = spt as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.split_thr = spt as u32);
                 }
             }
             ui.add_space(4.0);
@@ -2537,16 +2058,14 @@ impl SorahkGui {
                     .size(12.0)
                     .strong(),
             );
-            let mut _t = self.app_state.vibration_decay_enabled.load(Ordering::Relaxed);
+            let mut _t = vib.decay_enabled;
             if ui
                 .checkbox(&mut _t, "启用自定义衰减时长 (关=使用内置默认衰减: 命中25/特殊55/受击25/状态60)")
                 .on_hover_text("关掉后: 四个衰减滑块不生效, 改用内置「默认」预设的衰减时长。默认开。
 开：用下面四个衰减时长（默认开）；关：改用内置「默认」预设的衰减时长。")
                 .changed()
             {
-                self.app_state.vibration_decay_enabled.store(_t, Ordering::Relaxed);
-                self.config.vibration.decay_enabled = _t;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.decay_enabled = _t);
             }
             let dec_rows = [
                 ("普通命中衰减 ms", 35, 0.0, 150.0),
@@ -2555,17 +2074,13 @@ impl SorahkGui {
                 ("状态变化衰减 ms", 38, 0.0, 150.0),
             ];
             for (name, idx, lo, hi) in dec_rows {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
             /* 衰减时长 L/R 权重 (item3, 从总闸卡"衰减时间"行迁入 —— 滑块本身是
@@ -2575,7 +2090,7 @@ impl SorahkGui {
                     .size(11.0)
                     .weak(),
             );
-            Self::render_item_lr(ui, self.dark_mode, &self.app_state, &mut self.config.vibration.item_lr, 3);
+            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, 3);
             ui.label(
                 egui::RichText::new(
                     "衰减 0-5ms = 单帧脉冲 (命中帧全幅直出、下一帧硬归零, 最脆的\"一顿一顿\"); \
@@ -2602,10 +2117,7 @@ impl SorahkGui {
             );
             /* 输出低强度死区 (v29.4: ERM 转子马达启动区高死区, 低于归 0 消除转子嗡声) */
             {
-                let mut v = self
-                    .app_state
-                    .vibration_out_threshold
-                    .load(Ordering::Relaxed) as f32;
+                let mut v = vib.out_threshold as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2617,19 +2129,12 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_out_threshold
-                        .store(v as u32, Ordering::Relaxed);
-                    self.config.vibration.out_threshold = v as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |vc| vc.out_threshold = v as u32);
                 }
             }
             /* 输出动态范围重映射 (v30, ERM/Xbox360: 非零必转, 轻反馈不被死区吞掉) */
             {
-                let mut rm = self
-                    .app_state
-                    .vibration_remap_enabled
-                    .load(Ordering::Relaxed);
+                let mut rm = vib.remap_enabled;
                 if ui
                     .add_enabled(
                         s4_shape_on,
@@ -2644,16 +2149,9 @@ impl SorahkGui {
                     )
                     .changed()
                 {
-                    self.app_state
-                        .vibration_remap_enabled
-                        .store(rm, Ordering::Relaxed);
-                    self.config.vibration.remap_enabled = rm;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.remap_enabled = rm);
                 }
-                let mut rmn = self
-                    .app_state
-                    .vibration_remap_min
-                    .load(Ordering::Relaxed) as f32;
+                let mut rmn = vib.remap_min as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2665,11 +2163,7 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_remap_min
-                        .store(rmn as u32, Ordering::Relaxed);
-                    self.config.vibration.remap_min = rmn as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.remap_min = rmn as u32);
                 }
             }
             /* 震动节流 (v24: 限定时间窗口内最大注入次数, 防狂震) */
@@ -2683,7 +2177,7 @@ impl SorahkGui {
                         .weak(),
                     );
                 } else if job_mode
-                    && self.app_state.vibration_throttle_window.load(Ordering::Relaxed) > 0
+                    && vib.throttle_window_ms> 0
                 {
                     ui.label(
                         egui::RichText::new("【当前职业专属】狂震节流: 窗口内只震几次, 杜绝狂震")
@@ -2692,10 +2186,7 @@ impl SorahkGui {
                             .strong(),
                     );
                 }
-                let mut tw = self
-                    .app_state
-                    .vibration_throttle_window
-                    .load(Ordering::Relaxed) as f32;
+                let mut tw = vib.throttle_window_ms as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2707,16 +2198,9 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_throttle_window
-                        .store(tw as u32, Ordering::Relaxed);
-                    self.config.vibration.throttle_window_ms = tw as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_window_ms = tw as u32);
                 }
-                let mut tm = self
-                    .app_state
-                    .vibration_throttle_max
-                    .load(Ordering::Relaxed) as f32;
+                let mut tm = vib.throttle_max_hits as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2728,16 +2212,9 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_throttle_max
-                        .store(tm as u32, Ordering::Relaxed);
-                    self.config.vibration.throttle_max_hits = tm as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_max_hits = tm as u32);
                 }
-                let mut tr = self
-                    .app_state
-                    .vibration_throttle_dense_ratio
-                    .load(Ordering::Relaxed) as f32;
+                let mut tr = vib.throttle_dense_ratio as f32;
                                                     let resp = Self::with_hint(
                                 ui
                         .add_enabled(
@@ -2749,11 +2226,7 @@ impl SorahkGui {
                             );
                             if resp.changed()
                 {
-                    self.app_state
-                        .vibration_throttle_dense_ratio
-                        .store(tr as u32, Ordering::Relaxed);
-                    self.config.vibration.throttle_dense_ratio = tr as u32;
-                    let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_dense_ratio = tr as u32);
                 }
             }
         });
@@ -2768,7 +2241,7 @@ impl SorahkGui {
                     .strong(),
             );
             {
-                let mut v = p[5].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[5] as f32;
                                             let resp = Self::with_hint(
                         ui
                         .add_enabled(adv_on, egui::Slider::new(&mut v, 0.0..=500.0).suffix("ms").text("衰减时间 (预留)")),
@@ -2776,11 +2249,7 @@ impl SorahkGui {
                     );
                     if resp.changed()
                 {
-                    p[5].store(v as u32, Ordering::Relaxed);
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, 5, v as u32);
                 }
             }
             ui.add_space(4.0);
@@ -2792,16 +2261,14 @@ impl SorahkGui {
                     .size(12.0)
                     .strong(),
             );
-            let mut _t = self.app_state.vibration_algo_windows_enabled.load(Ordering::Relaxed);
+            let mut _t = vib.algo_windows_enabled;
             if ui
                 .checkbox(&mut _t, "启用自定义算法窗口 (关=使用内置默认窗口)")
                 .on_hover_text("关掉后: 本组七个窗口滑块不生效, 改用内置「默认」预设的窗口值。默认开。
 开：用下面七个窗口时长（默认开）；关：改用内置「默认」预设的窗口值。")
                 .changed()
             {
-                self.app_state.vibration_algo_windows_enabled.store(_t, Ordering::Relaxed);
-                self.config.vibration.algo_windows_enabled = _t;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.algo_windows_enabled = _t);
             }
             let d_rows = [
                 ("DOT 持续反馈时长 ms", 40, 50.0, 1000.0),
@@ -2813,18 +2280,13 @@ impl SorahkGui {
                 ("空闲判定 ms (回战斗前状态)", 46, 1000.0, 10000.0),
             ];
             for (name, idx, lo, hi) in d_rows {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
             ui.add_space(4.0);
@@ -2837,16 +2299,14 @@ impl SorahkGui {
                     .size(12.0)
                     .strong(),
             );
-            let mut _t = self.app_state.vibration_pulse_enabled.load(Ordering::Relaxed);
+            let mut _t = vib.pulse_enabled;
             if ui
                 .checkbox(&mut _t, "启用静默/反击/脉冲 (关=不再静默/不再反击加成/不再发脉冲)")
                 .on_hover_text("关掉后: 特殊攻击后不再静默、受击后不再反击加成、唤醒/里程碑/连击收尾脉冲全部关闭 (测试震动强度不受影响)。默认开。
 开：静默/反击/脉冲全开（默认开）；关：全关：更平、更连续（测试强度不受影响）。")
                 .changed()
             {
-                self.app_state.vibration_pulse_enabled.store(_t, Ordering::Relaxed);
-                self.config.vibration.pulse_enabled = _t;
-                let _ = self.config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.pulse_enabled = _t);
             }
             let f_rows = [
                 ("特殊攻击后静默 ms (突显暴击破招)", 54, 0.0, 500.0),
@@ -2857,18 +2317,13 @@ impl SorahkGui {
                 ("测试震动强度 %", 59, 1.0, 100.0),
             ];
             for (name, idx, lo, hi) in f_rows {
-                let mut v = p[idx].load(Ordering::Relaxed) as f32;
+                let mut v = snap.params[idx] as f32;
                 let resp = Self::with_hint(
                 ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
                     name,
                 );
                 if resp.changed() {
-                    p[idx].store(v as u32, Ordering::Relaxed);
-                    /* ★v16.2 自动落盘: 镜像进 config + 打脏标 (主循环去抖 1s 写盘) */
-                    if !job_mode {
-                        Self::sync_vib_config_from_params(&mut self.config.vibration, p);
-                        self.vib_params_dirty_since = Some(std::time::Instant::now());
-                    }
+                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
                 }
             }
             ui.label(

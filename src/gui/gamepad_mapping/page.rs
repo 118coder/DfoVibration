@@ -10,14 +10,18 @@ impl SorahkGui {
     /// 输入边沿 (手柄实时按键 / 键盘捕获) 在 `handle_gamepad_flow` 里处理, 本函数只渲染。
     pub(in crate::gui) fn render_gamepad_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         /* ★v24.0: 首次进入手柄页 → 把旧备注 (`手柄·X`) 迁移为系统备注 (`手柄X（系统）`),
-         * 触发键/目标键原样保留 (会话内一次)。 */
+         * 触发键/目标键原样保留 (会话内一次)。
+         * ★R2.14: 迁移写 backend 权威配置, 有变更才落盘热重载 (与旧一致)。 */
         if !self.gp_cleanup_done {
             self.gp_cleanup_done = true;
-            if migrate_slot_notes(&mut self.config) {
-                let _ = self.config.save_to_file("Config.toml");
-                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                    eprintln!("Failed to reload config after slot note migration: {e}");
-                }
+            let changed = self
+                .backend
+                .update_config(crate::ui_api::Commit::Memory, migrate_slot_notes)
+                .unwrap_or(false);
+            if changed {
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Reload, |_| {});
             }
         }
         /* ★v24.36 性能: 正常由启动预热线程备好 (首帧零成本); 主题切换期间沿用旧
@@ -214,12 +218,16 @@ impl SorahkGui {
             });
         if let Some(key) = pick {
             /* ★v24.0: 映射必须已由校对创建 */
-            if find_slot_mapping_index(&self.config, slot).is_some() {
-                crate::gui::gamepad_mapping::add_slot_target(&mut self.config, slot, key.to_string());
-                let _ = self.config.save_to_file("Config.toml");
-                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                    eprintln!("Failed to reload config after mouse map: {e}");
-                }
+            let mapped = self
+                .backend
+                .with_config(|c| find_slot_mapping_index(c, slot).is_some());
+            if mapped {
+                /* ★R2.14: 一次 Reload 提交 (追加目标 + 落盘 + 热重载) */
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Reload, |c| {
+                        crate::gui::gamepad_mapping::add_slot_target(c, slot, key.to_string());
+                    });
                 self.set_gamepad_toast(format!("已设置: {} → {key}", slot.label));
             } else {
                 self.set_gamepad_warn("这个键还没校对 — 请先点「快速校对手柄按键」");
@@ -251,7 +259,7 @@ impl SorahkGui {
         }
 
         /* ① 识别状态条: 一眼看到"现在识别的是哪台手柄", 并显式提供停止入口 */
-        let identified = self.app_state.live_hid_pad().is_some();
+        let identified = self.backend.live_hid_pad().is_some();
         let device_name = self
             .live_pad()
             .map(|p| p.device_name)
@@ -260,10 +268,13 @@ impl SorahkGui {
             ui.horizontal(|ui| {
                 if identified {
                     let name = device_name.unwrap_or_else(|| "手柄".to_string());
-                    /* ★v24.0: 已校对过 (存在系统备注映射) 的设备直接标绿, 方便识别 */
-                    let calibrated = crate::gui::gamepad_mapping::SLOTS
-                        .iter()
-                        .any(|s| find_slot_mapping_index(&self.config, s).is_some());
+                    /* ★v24.0: 已校对过 (存在系统备注映射) 的设备直接标绿, 方便识别
+                     * ★R2.14: 从 backend 现查 (一次只读借用) */
+                    let calibrated = self.backend.with_config(|c| {
+                        crate::gui::gamepad_mapping::SLOTS
+                            .iter()
+                            .any(|s| find_slot_mapping_index(c, s).is_some())
+                    });
                     let text = if calibrated {
                         format!("🎮 已校对 · 识别中: {name}")
                     } else {
@@ -358,18 +369,22 @@ impl SorahkGui {
     /// 已配置手柄映射 chips 总览 (点击可跳选对应槽位)。
     /// ★v21.7d: 只列"已设目标键"的槽位 (真正生效的映射), 避免一堆未设目标的空映射把卡片撑爆;
     /// 已绑定触发键但还没设目标键的数量用一行提示带过。
+    /// ★R2.14: 已配置槽位与目标键帧首从 backend 一次收集。
     pub(super) fn render_gamepad_overview(&mut self, ui: &mut egui::Ui, th: &Theme) {
-        let mut configured: Vec<&GamepadSlot> = Vec::new();
-        let mut pending_target = 0usize;
-        for s in SLOTS {
-            if let Some(i) = find_slot_mapping_index(&self.config, s) {
-                if self.config.mappings[i].target_keys.is_empty() {
-                    pending_target += 1;
-                } else {
-                    configured.push(s);
+        let (configured, pending_target) = self.backend.with_config(|c| {
+            let mut configured: Vec<(usize, &'static str, String)> = Vec::new();
+            let mut pending_target = 0usize;
+            for s in SLOTS {
+                if let Some(i) = find_slot_mapping_index(c, s) {
+                    if c.mappings[i].target_keys.is_empty() {
+                        pending_target += 1;
+                    } else {
+                        configured.push((s.id, s.label, c.mappings[i].target_keys.join("+")));
+                    }
                 }
             }
-        }
+            (configured, pending_target)
+        });
 
         let title = if configured.is_empty() {
             "我设好的映射".to_string()
@@ -399,15 +414,18 @@ impl SorahkGui {
                 }
                 /* ★v24.8: **手动按可见宽度分行** —— `horizontal_wrapped` 在父级宽度不受限时不会换行,
                  * 实机表现为 chips 一路向右溢出、被窗口裁掉。这里用 `clip_rect` 的有限宽度自行分行,
-                 * 保证超出的 chip 一定落到下一行。 */
+                 * 保证超出的 chip 一定落到下一行。 (★R2.14: 数据取自帧首收集) */
                 let mut chips: Vec<(usize, String, String, bool)> = configured
                     .iter()
-                    .map(|slot| {
-                        let idx = find_slot_mapping_index(&self.config, slot).unwrap();
-                        let m = &self.config.mappings[idx];
-                        let full = format!("{} → {}", slot.label, m.target_keys.join("+"));
+                    .map(|(slot_id, slot_label, targets)| {
+                        let full = format!("{slot_label} → {targets}");
                         let label = theme::truncate_chars(&full, 14);
-                        (slot.id, label, full, self.gp_selected_slot() == Some(slot.id))
+                        (
+                            *slot_id,
+                            label,
+                            full,
+                            self.gp_selected_slot() == Some(*slot_id),
+                        )
                     })
                     .collect();
 
@@ -541,7 +559,7 @@ impl SorahkGui {
 
         let mut clicked = None;
         let selected_id = self.gp_selected_slot();
-        let live_state = self.app_state.live_hid_state();
+        let live_state = self.backend.live_hid_state();
         /* ★v22.0: 捕获高亮来自状态机 (AwaitKb/AwaitPad) */
         let capture_slot = match &self.gp_flow {
             GpFlow::AwaitKb { slot, .. } | GpFlow::AwaitPad { slot } => Some(*slot),
@@ -565,7 +583,10 @@ impl SorahkGui {
             let is_capturing = matches!(capture_slot, Some(cid) if cid == slot.id);
             let (base_r, base_g, base_b) = slot.kind.base_rgb();
             let slot_col = |a: u8| egui::Color32::from_rgba_unmultiplied(base_r, base_g, base_b, a);
-            let configured = find_slot_mapping_index(&self.config, slot).is_some();
+            /* ★R2.14: 槽位是否已配置从 backend 现查 (每槽一次只读借用, 无写) */
+            let configured = self
+                .backend
+                .with_config(|c| find_slot_mapping_index(c, slot).is_some());
             let is_click = matches!(slot.kind, SlotKind::StickClick);
 
             // 悬停/选中/捕获的放大动画 (150ms 缓动)

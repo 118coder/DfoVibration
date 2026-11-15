@@ -56,6 +56,16 @@ fn ease_out(t: f32) -> f32 {
 impl SorahkGui {
     /* ═════════════════ 每帧驱动 ═════════════════ */
 
+    /// config.update.last_check_unix 短借读 (tick 节流判断用)。
+    fn last_check_unix_cached(&self) -> i64 {
+        self.backend.with_config(|c| c.update.last_check_unix)
+    }
+
+    /// config.update.skipped_version 短借读 (浮窗抑制判断用)。
+    fn skipped_version_cached(&self) -> String {
+        self.backend.with_config(|c| c.update.skipped_version.clone())
+    }
+
     /// 拉快照 + 启动自动检查 + 触发浮窗 (逻辑与绘制分离, 绘制在 `render_update_overlay`)。
     pub(crate) fn tick_update(&mut self) {
         if !self.update_started {
@@ -63,25 +73,26 @@ impl SorahkGui {
             /* 启动自动检查: 只在开关打开、距上次成功超过 4 小时、且不在失败退避期时跑
              * (省流量, 也避免频繁启动时把 GitHub 的匿名额度烧光)。失败不提示 —— 静默。
              * ★R2.12 (优化 10): 用 manager 自带的 auto_check_due, 断网时按指数退避。 */
-            if self.config.update.auto_check && self.update.auto_check_due() {
-                self.update
-                    .check(self.config.update.manifest_url.clone());
+            if self.backend.with_config(|c| c.update.auto_check) && self.backend.update_auto_check_due()
+            {
+                self.backend.update_check();
             }
         }
 
-        let snap = self.update.snapshot();
+        let snap = self.backend.update_snapshot_raw();
 
         /* 成功检查的时间戳回写配置 (节流用; 只在变化时落盘) */
-        if snap.last_check_unix > 0 && snap.last_check_unix != self.config.update.last_check_unix {
-            self.config.update.last_check_unix = snap.last_check_unix;
-            let _ = self.config.save_to_file("Config.toml");
+        if snap.last_check_unix > 0 && snap.last_check_unix != self.last_check_unix_cached() {
+            let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+                c.update.last_check_unix = snap.last_check_unix;
+            });
         }
 
         /* 发现更新的浮窗: 同一版本每个会话只弹一次, 且尊重"忽略此版本"
          * (★R2.12: 版本比较走 same_version, `R2.11` / `vR2.11` / `2.11` 视为同一版本) */
         if let Some(rel) = &snap.latest
             && crate::update::is_newer(&rel.version, APP_VERSION)
-            && !same_version(&rel.version, &self.config.update.skipped_version)
+            && !same_version(&rel.version, &self.skipped_version_cached())
             && self.update_toast_ver.as_deref() != Some(rel.version.as_str())
         {
             self.update_toast_ver = Some(rel.version.clone());
@@ -114,7 +125,7 @@ impl SorahkGui {
             self.update_toast_at = None;
             return;
         };
-        if same_version(&rel.version, &self.config.update.skipped_version)
+        if same_version(&rel.version, &self.skipped_version_cached())
             || self.update_state.phase == Phase::Downloading
         {
             self.update_toast_at = None;
@@ -459,13 +470,15 @@ impl SorahkGui {
                                 });
                             });
                         if start {
-                            let dir = crate::update::resolve_download_dir(
-                                &self.config.update.download_dir,
-                            );
-                            self.config.update.channel = ch.key().to_string();
-                            let _ = self.config.save_to_file("Config.toml");
-                            self.update
-                                .download(rel.version.clone(), pkg.clone(), dir);
+                            /* ★R2.14: 渠道选择落盘 + 下载都走 backend */
+                            let configured =
+                                self.backend.with_config(|c| c.update.download_dir.clone());
+                            let dir = crate::update::resolve_download_dir(&configured);
+                            let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+                                c.update.channel = ch.key().to_string();
+                            });
+                            self.backend
+                                .update_download(rel.version.clone(), pkg.clone(), dir);
                         }
                         ui.add_space(6.0);
                     }
@@ -488,7 +501,7 @@ impl SorahkGui {
                             ));
                             ui.add_sized([ui.available_width() - 78.0, 16.0], bar);
                             if ui.button("取消").clicked() {
-                                self.update.cancel_download();
+                                self.backend.update_cancel_download();
                             }
                         });
                     }
@@ -531,22 +544,22 @@ impl SorahkGui {
                 ui.add_space(6.0);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    let mut auto = self.config.update.auto_check;
+                    let mut auto = self.backend.with_config(|c| c.update.auto_check);
                     if ui
                         .checkbox(&mut auto, "启动时自动检查")
                         .on_hover_text("4 小时内最多检查一次；关闭后仍可点「立即检查」")
                         .changed()
                     {
-                        self.config.update.auto_check = auto;
-                        let _ = self.config.save_to_file("Config.toml");
+                        let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+                            c.update.auto_check = auto;
+                        });
                     }
 
                     if ui
                         .add_enabled(!busy_check && !busy_download, egui::Button::new("立即检查"))
                         .clicked()
                     {
-                        self.update
-                            .check(self.config.update.manifest_url.clone());
+                        self.backend.update_check();
                     }
 
                     if let Some(rel) = &latest
@@ -556,8 +569,10 @@ impl SorahkGui {
                             .on_hover_text("本版本不再弹浮窗；换新版本或手动检查时仍会显示")
                             .clicked()
                     {
-                        self.config.update.skipped_version = rel.version.clone();
-                        let _ = self.config.save_to_file("Config.toml");
+                        let ver = rel.version.clone();
+                        let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+                            c.update.skipped_version = ver;
+                        });
                         self.update_toast_at = None;
                     }
 
@@ -587,7 +602,7 @@ impl SorahkGui {
 
     /* ═════════════════ 设置面板入口 ═════════════════ */
 
-    /// 「设置 → 检查更新」区 (与白名单区同口径: 直接改 self.config 并即时落盘)。
+    /// 「设置 → 检查更新」区 (★R2.14: 配置读写走 backend, 快照读 self.update_state)。
     pub(super) fn settings_section_update(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
         let snap = self.update_state.clone();
@@ -635,34 +650,35 @@ impl SorahkGui {
                         .add_enabled(!busy, egui::Button::new("立即检查"))
                         .clicked()
                     {
-                        self.update
-                            .check(self.config.update.manifest_url.clone());
+                        self.backend.update_check();
                     }
                 });
             });
 
             ui.add_space(4.0);
-            let mut auto = self.config.update.auto_check;
+            let mut auto = self.backend.with_config(|c| c.update.auto_check);
             if ui
                 .checkbox(&mut auto, "启动时自动检查（只弹提示，不强制更新）")
                 .changed()
             {
-                self.config.update.auto_check = auto;
-                let _ = self.config.save_to_file("Config.toml");
+                let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+                    c.update.auto_check = auto;
+                });
             }
 
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.label(th.hint_text("自定义清单地址"));
-                let mut url = self.config.update.manifest_url.clone();
+                let mut url = self.backend.with_config(|c| c.update.manifest_url.clone());
                 let edit = ui.add(
                     egui::TextEdit::singleline(&mut url)
                         .hint_text("留空 = 内置源（jsDelivr / GitHub）")
                         .desired_width(300.0),
                 );
                 if edit.changed() {
-                    self.config.update.manifest_url = url;
-                    self.audio_params_dirty_since = Some(std::time::Instant::now());
+                    /* ★R2.14: 改内存 + 配置文件脏标 (调度线程静默 1s 落盘,
+                     * 与旧「写 config + 打脏标」去抖语义一致) */
+                    self.backend.update_config_debounced(|c| c.update.manifest_url = url);
                 }
             });
             if let Some(err) = &snap.error {

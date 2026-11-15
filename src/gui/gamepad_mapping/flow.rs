@@ -15,8 +15,8 @@ impl SorahkGui {
         /* ★v22.7: 校准抑制标志与状态机保持同步 (任何异常路径都不会漏关) ——
          * 校准期间输入线程不派发任何映射, 但实时状态照常发布。 */
         let calibrating = matches!(self.gp_flow, GpFlow::Calibrate { .. });
-        if self.app_state.is_gp_calibrating() != calibrating {
-            self.app_state.set_gp_calibrating(calibrating);
+        if self.backend.is_gp_calibrating() != calibrating {
+            self.backend.set_gp_calibrating(calibrating);
         }
         /* ★v22.0: 只在手柄页生效 —— 旧版切到别的页面后仍会吃键盘/手柄输入 (bug)。
          * 离开页面时结束进行中的捕获 (回退一层并关通道), 避免捕获卡在半路。 */
@@ -32,8 +32,8 @@ impl SorahkGui {
             return;
         }
         /* ① 识别态: 手柄实时按键边沿 */
-        if self.app_state.live_hid_pad().is_some() {
-            if let Some(now) = self.app_state.live_hid_state() {
+        if self.backend.live_hid_pad().is_some() {
+            if let Some(now) = self.backend.live_hid_state() {
                 let prev = self.gamepad_live_prev.clone();
                 if matches!(self.gp_flow, GpFlow::AwaitPad { .. }) {
                     /* ★v22.3 校键改走"连发同款原始通道" (见下面 ③, 按下后松开才完成),
@@ -65,7 +65,7 @@ impl SorahkGui {
          * ★v24.6: 走 live 位图而**不启用捕获模式** —— 捕获模式会跳过正常 XInput 派发,
          * 导致奔跑阈值不注册 / 方向不派发 (实机回归: 进游戏后奔跑失效)。 */
         {
-            let now_x = self.app_state.live_xinput_state();
+            let now_x = self.backend.live_xinput_state();
             let prev_x = self.gp_prev_xinput;
             if self.gp_quick_listen
                 && ctx.input(|i| i.focused)
@@ -86,7 +86,9 @@ impl SorahkGui {
             GpFlow::AwaitKb { .. } | GpFlow::AwaitChordKb { .. }
         ) {
             self.capture_pressed_keys.retain(|vk| !is_mouse_vk(*vk));
-            let current: std::collections::HashSet<u32> = Self::poll_all_pressed_keys()
+            let current: std::collections::HashSet<u32> = self
+                .backend
+                .poll_pressed_keys()
                 .into_iter()
                 .filter(|vk| !is_mouse_vk(*vk))
                 .collect();
@@ -114,7 +116,7 @@ impl SorahkGui {
         {
             match get_slot(slot).map(|s| pick_calibration_device(s, &cands)) {
                 Some(Ok(device)) => {
-                    self.app_state.set_raw_input_capture_mode(false);
+                    self.backend.set_pad_capture(false);
                     self.gp_flow = self
                         .gp_flow
                         .transition(GpEvent::PadCaptured(device.to_string()));
@@ -130,28 +132,32 @@ impl SorahkGui {
             && let Some(cands) = self.poll_pad_capture()
         {
             match pick_chord_device(&cands) {
-                Ok((vid, ids)) => match validate_chord_trigger(&self.config, vid, &ids) {
-                    Ok(()) => {
-                        crate::vibration::vib_log(&format!(
-                            "[chord] capture-ok | vid={vid:04X} | ids={ids:?}"
-                        ));
-                        self.app_state.set_raw_input_capture_mode(false);
-                        self.app_state
-                            .capture_prefers_max_inputs
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
-                        self.gp_flow = self
-                            .gp_flow
-                            .transition(GpEvent::ChordPadCaptured { vid, ids });
+                Ok((vid, ids)) => {
+                    /* ★R2.14: 冲突校验读 backend (闭包外取结果, 闭包内无写) */
+                    let validation =
+                        self.backend
+                            .with_config(|c| validate_chord_trigger(c, vid, &ids));
+                    match validation {
+                        Ok(()) => {
+                            crate::backend::BackendService::log(&format!(
+                                "[chord] capture-ok | vid={vid:04X} | ids={ids:?}"
+                            ));
+                            self.backend.set_pad_capture(false);
+                            self.backend.set_capture_prefers_max_inputs(false);
+                            self.gp_flow = self
+                                .gp_flow
+                                .transition(GpEvent::ChordPadCaptured { vid, ids });
+                        }
+                        Err(msg) => {
+                            crate::backend::BackendService::log(&format!(
+                                "[chord] capture-reject | ids={ids:?} | {msg}"
+                            ));
+                            self.set_gamepad_warn(msg);
+                        }
                     }
-                    Err(msg) => {
-                        crate::vibration::vib_log(&format!(
-                            "[chord] capture-reject | ids={ids:?} | {msg}"
-                        ));
-                        self.set_gamepad_warn(msg);
-                    }
-                },
+                }
                 Err(msg) => {
-                    crate::vibration::vib_log(&format!(
+                    crate::backend::BackendService::log(&format!(
                         "[chord] capture-failed | raw_channel={} | {msg}",
                         cands.raw.is_some()
                     ));
@@ -177,7 +183,7 @@ impl SorahkGui {
     /// 返回 `None` = 窗口还没到期。
     pub(super) fn poll_pad_capture(&mut self) -> Option<PadCaptureCandidates> {
         let now = std::time::Instant::now();
-        while let Some(device) = self.app_state.try_recv_raw_input_capture() {
+        while let Some(device) = self.backend.poll_pad_capture() {
             if let Some(done) = self.gp_pad_capture.feed(device, now) {
                 return Some(done);
             }
@@ -235,7 +241,15 @@ impl SorahkGui {
         };
         let name = device.to_string();
         /* 写触发键; 旧数据串位 (该键已被别的槽位占用) 会被自动移到当前槽位 */
-        if let Some(prev_label) = set_slot_trigger_moving(&mut self.config, slot, name) {
+        /* ★R2.14: 改内存 + gp_save_and_reload 统一落盘热重载 (与旧事务形状一致) */
+        let moved = self
+            .backend
+            .update_config(crate::ui_api::Commit::Memory, |c| {
+                set_slot_trigger_moving(c, slot, name.clone())
+            })
+            .ok()
+            .flatten();
+        if let Some(prev_label) = moved {
             self.set_gamepad_toast(format!(
                 "该键原属「{prev_label}」(旧数据串位), 已改记到「{}」",
                 slot.label
@@ -244,8 +258,8 @@ impl SorahkGui {
         /* 顺便把这只手柄设为"实时识别目标" → SVG 按下即亮 */
         if let crate::state::InputDevice::GenericDevice { button_id, .. } = device {
             let stable = (button_id >> 32) as u32;
-            if let Some(info) = crate::rawinput::get_device_display_info(stable as u64) {
-                self.app_state
+            if let Some(info) = crate::backend::BackendService::get_device_display_info(stable as u64) {
+                self.backend
                     .set_live_hid_pad(Some((info.vendor_id, info.product_id)));
             }
         }
@@ -264,13 +278,13 @@ impl SorahkGui {
             .transition(GpEvent::StartCalibration {
                 total: CALIBRATION_ORDER.len(),
             });
-        self.app_state.set_raw_input_capture_mode(true);
+        self.backend.set_pad_capture(true);
     }
 
     /// 结束校准向导 (完成/取消): 关通道 + 关抑制 + 提示。
     pub(super) fn end_calibration(&mut self, msg: &str) {
-        self.app_state.set_raw_input_capture_mode(false);
-        self.app_state.set_gp_calibrating(false);
+        self.backend.set_pad_capture(false);
+        self.backend.set_gp_calibrating(false);
         self.gp_pad_capture.reset();
         self.gp_prev_xinput = None;
         self.set_gamepad_toast(msg);

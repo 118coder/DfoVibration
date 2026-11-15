@@ -17,42 +17,50 @@ impl SorahkGui {
         default_duration: u64,
     ) {
         let th = self.theme();
-        let Some(mapping) = self.config.mappings.get_mut(idx) else {
+        /* ★R2.14: 帧首从 backend 取整条映射的局部可编辑副本 (变更写回副本;
+         * 帧末按动作一次性提交 —— 保存/取消/删除走 Reload, 其余 Memory 回写,
+         * 与旧行为一致: 未点保存前不落盘) */
+        let Some(mut m) = self
+            .backend
+            .with_config(|c| c.mappings.get(idx).cloned())
+        else {
             self.edit_mapping_idx = None;
             return;
         };
 
-        // 局部可编辑副本 (变更即回写 config; 取消由快照还原)
-        let trigger = mapping.trigger_key.clone();
-        let targets: Vec<String> = mapping.target_keys.to_vec();
-        let mut interval = mapping.interval.unwrap_or(default_interval) as f64;
-        let mut duration = mapping.event_duration.unwrap_or(default_duration) as f64;
-        let mut turbo = mapping.turbo_enabled;
+        // 局部可编辑副本 (变更即写副本; 取消由快照还原)
+        let trigger = m.trigger_key.clone();
+        let targets: Vec<String> = m.target_keys.to_vec();
+        let mut interval = m.interval.unwrap_or(default_interval) as f64;
+        let mut duration = m.event_duration.unwrap_or(default_duration) as f64;
+        let mut turbo = m.turbo_enabled;
         /* ★v21.5 简易奔跑 ↔ 重推奔跑互斥: 数据双真时重推奔跑优先 (引擎侧本就压制
          * 简易奔跑), 局部副本先按互斥取, 避免两项同时勾选后 UI 双双灰死 */
-        let mut double_tap = mapping.double_tap_enabled && !mapping.run_enabled;
+        let mut double_tap = m.double_tap_enabled && !m.run_enabled;
         /* ★v21.0 奔跑行局部副本 (二次敲击间隔与 简易奔跑共用 double_tap_gap_ms) */
-        let mut run_enabled = mapping.run_enabled;
-        let mut run_recheck = mapping.run_recheck;
-        let mut run_threshold = mapping.run_threshold as f32;
-        let mut run_gap = mapping.double_tap_gap_ms as f32;
-        let mut move_speed = mapping.move_speed as f32;
+        let mut run_enabled = m.run_enabled;
+        let mut run_recheck = m.run_recheck;
+        let mut run_threshold = m.run_threshold as f32;
+        let mut run_gap = m.double_tap_gap_ms as f32;
+        let mut move_speed = m.move_speed as f32;
         /* 滚动映射的移动速度上限更高 (与设置弹窗一致: 普通 100 / 滚动 1200) */
         let speed_hi = if targets.iter().any(|k| k.starts_with("SCROLL")) {
             1200.0
         } else {
             100.0
         };
-        let mut note = mapping.note.clone();
+        let mut note = m.note.clone();
         /* ★v21.5 互斥自愈: 历史数据双真时清掉简易奔跑 (重推奔跑优先), 防灰死锁 */
-        if mapping.double_tap_enabled && mapping.run_enabled {
-            self.config.mappings[idx].double_tap_enabled = false;
+        if m.double_tap_enabled && m.run_enabled {
+            m.double_tap_enabled = false;
         }
         let mut remove_target: Option<usize> = None;
+        let mut request_save = false;
+        let mut request_cancel = false;
         let mut request_delete = false;
         /* ★v24.35 序列接管明示: 序列非空时目标键/连发/双击/奔跑/锁定 在引擎侧
          * 全部被压制, GUI 必须同步灰掉并提示, 消除「设置了却悄悄不生效」的双轨状态 */
-        let seq_active = !self.config.mappings[idx].sequence_text.trim().is_empty();
+        let seq_active = !m.sequence_text.trim().is_empty();
 
         egui::Frame::NONE
             .fill(th.card_alt)
@@ -151,8 +159,7 @@ impl SorahkGui {
                 /* ★v24.31 抬起映射: 触发键抬起时额外发送的键 (可选) */
                 ui.horizontal_wrapped(|ui| {
                     ui.label(th.weak("抬起时发送"));
-                    let release_targets: Vec<String> =
-                        self.config.mappings[idx].release_targets.to_vec();
+                    let release_targets: Vec<String> = m.release_targets.to_vec();
                     for (_i, t) in release_targets.iter().enumerate() {
                         let short = truncate_chars(t, 35);
                         let (fg, bg) = match utils::key_kind(t) {
@@ -162,7 +169,7 @@ impl SorahkGui {
                         };
                         let chip = th.badge_clickable(ui, &format!("{}  ✕", short), fg, bg);
                         if chip.clicked() {
-                            self.config.mappings[idx].remove_release_key(t);
+                            m.remove_release_key(t);
                         }
                         chip.on_hover_text(format!("{}
 点击移除", t));
@@ -195,7 +202,7 @@ impl SorahkGui {
                     if ui.add(th.secondary_button(btn_text)).clicked() && !capturing {
                         self.key_capture_mode = KeyCaptureMode::MappingRelease(idx);
                         self.capture_pressed_keys.clear();
-                        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                        self.capture_initial_pressed = self.backend.poll_pressed_keys();
                         self.just_captured_input = true;
                     }
                     if !release_targets.is_empty()
@@ -204,7 +211,7 @@ impl SorahkGui {
                             .on_hover_text("移除全部抬起映射目标 (恢复旧行为)")
                             .clicked()
                     {
-                        self.config.mappings[idx].clear_release_keys();
+                        m.clear_release_keys();
                     }
                 });
                 ui.add_space(theme::SP_S);
@@ -219,7 +226,7 @@ impl SorahkGui {
                         .add(egui::DragValue::new(&mut interval).range(1.0..=5000.0).speed(1.0))
                         .changed()
                     {
-                        self.config.mappings[idx].interval = Some(interval.max(1.0) as u64);
+                        m.interval = Some(interval.max(1.0) as u64);
                     }
                     ui.label(th.weak("ms"));
                     ui.add_space(theme::SP_L);
@@ -228,14 +235,14 @@ impl SorahkGui {
                         .add(egui::DragValue::new(&mut duration).range(1.0..=5000.0).speed(1.0))
                         .changed()
                     {
-                        self.config.mappings[idx].event_duration = Some(duration.max(1.0) as u64);
+                        m.event_duration = Some(duration.max(1.0) as u64);
                     }
                     ui.label(th.weak("ms"));
                     ui.add_space(theme::SP_L);
                     /* ★v24.35 序列接管: 序列模式下连发不生效, 灰掉 */
                     ui.add_enabled_ui(!seq_active, |ui| {
                         if ui.checkbox(&mut turbo, "连发").changed() {
-                            self.config.mappings[idx].turbo_enabled = turbo;
+                            m.turbo_enabled = turbo;
                         }
                     });
                     if seq_active {
@@ -252,7 +259,7 @@ impl SorahkGui {
                     /* ★v24.31 锁定 Lock: 按一下=按住不松, 再按一下=松开; 可与连发叠加。
                      * 与 简易奔跑/重推奔跑 互斥 (奔跑有自身的按住语义, 引擎侧同样压制)。 */
                     ui.add_enabled_ui(!run_enabled && !double_tap && !seq_active, |ui| {
-                        let mut lock = self.config.mappings[idx].lock_enabled;
+                        let mut lock = m.lock_enabled;
                         let resp = ui
                             .checkbox(&mut lock, "锁定")
                             .on_hover_text(
@@ -261,7 +268,7 @@ impl SorahkGui {
                                  与 简易奔跑/重推奔跑 互斥 (勾选奔跑时此项不可用)",
                             );
                         if resp.changed() {
-                            self.config.mappings[idx].lock_enabled = lock;
+                            m.lock_enabled = lock;
                         }
                     });
                     ui.add_space(theme::SP_L);
@@ -278,7 +285,7 @@ impl SorahkGui {
                                  与设置弹窗里的「简易奔跑」是同一开关"
                             });
                         if resp.changed() {
-                            self.config.mappings[idx].double_tap_enabled = double_tap;
+                            m.double_tap_enabled = double_tap;
                         }
                     });
                 });
@@ -315,7 +322,7 @@ impl SorahkGui {
                         ))
                         .changed()
                     {
-                        self.config.mappings[idx].move_speed = move_speed.round().max(1.0) as i32;
+                        m.move_speed = move_speed.round().max(1.0) as i32;
                     }
                 });
                 ui.add_space(theme::SP_S);
@@ -338,7 +345,7 @@ impl SorahkGui {
                                  勾选后本条映射的 连发/简易奔跑 不生效 (奔跑改写按键节奏)"
                             });
                         if resp.changed() {
-                            self.config.mappings[idx].run_enabled = run_enabled;
+                            m.run_enabled = run_enabled;
                         }
                     });
                     if run_enabled {
@@ -357,8 +364,7 @@ impl SorahkGui {
                             )
                             .changed()
                         {
-                            self.config.mappings[idx].run_threshold =
-                                run_threshold.round().clamp(50.0, 95.0) as u8;
+                            m.run_threshold = run_threshold.round().clamp(50.0, 95.0) as u8;
                         }
                         ui.add_space(theme::SP_L);
                         ui.label(th.weak("二次敲击间隔"));
@@ -376,8 +382,7 @@ impl SorahkGui {
                             )
                             .changed()
                         {
-                            self.config.mappings[idx].double_tap_gap_ms =
-                                run_gap.round().clamp(20.0, 200.0) as u64;
+                            m.double_tap_gap_ms = run_gap.round().clamp(20.0, 200.0) as u64;
                         }
                         ui.add_space(theme::SP_L);
                         /* ★v21.1 重推阈值再检测: 完整双击序列 (DNF 实测定案) */
@@ -392,7 +397,7 @@ impl SorahkGui {
                             )
                             .changed()
                         {
-                            self.config.mappings[idx].run_recheck = run_recheck;
+                            m.run_recheck = run_recheck;
                         }
                     }
                 });
@@ -410,6 +415,7 @@ impl SorahkGui {
                 ui.add_space(theme::SP_M);
 
                 // 保存/取消 + 删除 (★v21.4: 删除从标题行右端移到底部最右端, 防误触)
+                /* ★R2.14: 动作改为标记, 帧末统一提交 (副本在此期间持续累积本帧改动) */
                 ui.horizontal(|ui| {
                     /* ★v24.3: 未捕获触发键时不允许保存 (避免落一条永远不触发的空映射) */
                     let can_save = !trigger.trim().is_empty();
@@ -418,32 +424,11 @@ impl SorahkGui {
                         .on_disabled_hover_text("请先点「捕获触发键」设一个触发键")
                         .clicked()
                     {
-                        self.config.mappings[idx].note = note.clone();
-                        let _ = self.config.save_to_file("Config.toml");
-                        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                            eprintln!("Failed to reload config after mapping edit: {}", e);
-                        }
-                        self.edit_mapping_idx = None;
-                        self.edit_mapping_snapshot = None;
-                        self.edit_mapping_is_new = false;
+                        request_save = true;
                     }
                     ui.add_space(theme::SP_S);
                     if ui.add(th.secondary_button("取消")).clicked() {
-                        if self.edit_mapping_is_new {
-                            self.config.mappings.remove(idx);
-                        } else if let Some(snap) = self.edit_mapping_snapshot.take() {
-                            if let Some(m) = self.config.mappings.get_mut(idx) {
-                                *m = snap;
-                            }
-                        }
-                        self.edit_mapping_idx = None;
-                        self.edit_mapping_is_new = false;
-                        /* ★v24.38: 序列编辑是即时生效的 (apply_sequence_text 边改边落盘)
-                         * → 取消必须把快照写回文件并热重载, 否则引擎里还留着已取消的序列 */
-                        let _ = self.config.save_to_file("Config.toml");
-                        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                            eprintln!("Failed to reload config after mapping edit cancel: {e}");
-                        }
+                        request_cancel = true;
                     }
                     /* 删除推到操作行最右端: 与保存/取消拉开距离,
                      * 消除"点完编辑按钮后同位置再点即误删"的隐患 */
@@ -459,32 +444,78 @@ impl SorahkGui {
                 });
             });
 
-        // 移除目标键 (需在 Frame 闭包外执行, 避免借用冲突)
-        if let Some(i) = remove_target {
-            if i < self.config.mappings[idx].target_keys.len() {
-                let key = self.config.mappings[idx].target_keys[i].clone();
-                self.config.mappings[idx].remove_target_key(&key);
+        /* ★R2.14: 帧末统一提交 (原「移除目标键/回写文本/删除请求」三段合一) */
+        if request_save || request_cancel || request_delete {
+            /* 保存前把本帧移除目标键也并入副本 (旧代码 save 后补写, 引擎同帧生效) */
+            if let Some(i) = remove_target {
+                if i < m.target_keys.len() {
+                    let key = m.target_keys[i].clone();
+                    m.remove_target_key(&key);
+                }
+            }
+            if m.note != note {
+                m.note = note;
+            }
+        } else {
+            /* 无终态动作: 移除目标键只进副本 (Memory 回写, 与旧"改动即回写不落盘"一致) */
+            if let Some(i) = remove_target {
+                if i < m.target_keys.len() {
+                    let key = m.target_keys[i].clone();
+                    m.remove_target_key(&key);
+                }
+            }
+            if m.note != note {
+                m.note = note;
             }
         }
-        // 回写文本字段
-        if self.edit_mapping_idx == Some(idx) {
-            if self.config.mappings[idx].trigger_key != trigger {
-                self.config.mappings[idx].trigger_key = trigger;
-            }
-            if self.config.mappings[idx].note != note {
-                self.config.mappings[idx].note = note;
-            }
-        }
-        // 删除请求
-        if request_delete && self.edit_mapping_idx == Some(idx) {
-            self.config.mappings.remove(idx);
+        if request_save {
+            /* ★R2.14: 保存 = 整条写回 + 落盘 + 热重载 (一次 Reload 提交);
+             * sequence_text 保留 backend 里的最新值 (序列编辑器本帧可能已即时写入) */
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Reload, |c| {
+                    if let Some(slot) = c.mappings.get_mut(idx) {
+                        let seq = std::mem::take(&mut slot.sequence_text);
+                        *slot = m.clone();
+                        slot.sequence_text = seq;
+                    }
+                });
             self.edit_mapping_idx = None;
             self.edit_mapping_snapshot = None;
             self.edit_mapping_is_new = false;
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after mapping delete: {}", e);
+        } else if request_cancel {
+            /* ★v24.38: 序列编辑是即时生效的 (apply_sequence_text 边改边落盘)
+             * → 取消必须把快照写回文件并热重载, 否则引擎里还留着已取消的序列 */
+            if self.edit_mapping_is_new {
+                let _ = self.backend.delete_mapping(idx);
+            } else if let Some(snap) = self.edit_mapping_snapshot.take() {
+                let _ =
+                    self.backend
+                        .update_config(crate::ui_api::Commit::Reload, |c| {
+                            if let Some(slot) = c.mappings.get_mut(idx) {
+                                *slot = snap;
+                            }
+                        });
             }
+            self.edit_mapping_idx = None;
+            self.edit_mapping_is_new = false;
+        } else if request_delete && self.edit_mapping_idx == Some(idx) {
+            let _ = self.backend.delete_mapping(idx);
+            self.edit_mapping_idx = None;
+            self.edit_mapping_snapshot = None;
+            self.edit_mapping_is_new = false;
+        } else if self.edit_mapping_idx == Some(idx) {
+            /* 常规回写: 只进内存不落盘 (与旧行为一致, 保存时才落盘热重载);
+             * sequence_text 同样保留 backend 最新值 */
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Memory, |c| {
+                    if let Some(slot) = c.mappings.get_mut(idx) {
+                        let seq = std::mem::take(&mut slot.sequence_text);
+                        *slot = m;
+                        slot.sequence_text = seq;
+                    }
+                });
         }
     }
 
@@ -497,9 +528,9 @@ impl SorahkGui {
             KeyCaptureMode::MappingTarget(idx)
         };
         self.capture_pressed_keys.clear();
-        self.capture_initial_pressed = Self::poll_all_pressed_keys();
+        self.capture_initial_pressed = self.backend.poll_pressed_keys();
         if is_trigger {
-            self.app_state.set_raw_input_capture_mode(true);
+            self.backend.set_pad_capture(true);
         }
         self.just_captured_input = true;
     }
@@ -523,14 +554,14 @@ impl SorahkGui {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
-            self.app_state.set_raw_input_capture_mode(false);
+            self.backend.set_pad_capture(false);
             return;
         }
 
         let mut captured: Option<String> = None;
 
         // 键盘 (触发与目标均可)
-        let current_pressed = Self::poll_all_pressed_keys();
+        let current_pressed = self.backend.poll_pressed_keys();
         current_pressed
             .iter()
             .filter(|&&vk| !self.capture_initial_pressed.contains(&vk))
@@ -566,27 +597,33 @@ impl SorahkGui {
 
         // 手柄原始输入 (仅触发键)
         if captured.is_none() && is_trigger {
-            if let Some(device) = self.app_state.try_recv_raw_input_capture() {
+            if let Some(device) = self.backend.poll_pad_capture() {
                 captured = Some(device.to_string());
             }
         }
 
         if let Some(name) = captured {
-            if is_trigger {
-                /* ★v21.7d: 触发键组合去重+规范排序 (上+上+空格 → 上+空格; 下+上+空格 → 上+下+空格) */
-                self.config.mappings[idx].trigger_key = crate::util::normalize_key_combo(&name);
-            } else {
-                self.config.mappings[idx].add_target_key(name);
+            /* ★R2.14: 捕获即落盘+热重载 (与手柄页快速捕获一致, 一次 Reload 提交) */
+            let write = self.backend.update_config(
+                crate::ui_api::Commit::Reload,
+                |c| {
+                    if let Some(m) = c.mappings.get_mut(idx) {
+                        if is_trigger {
+                            /* ★v21.7d: 触发键组合去重+规范排序 (上+上+空格 → 上+空格; 下+上+空格 → 上+下+空格) */
+                            m.trigger_key = crate::util::normalize_key_combo(&name);
+                        } else {
+                            m.add_target_key(name.clone());
+                        }
+                    }
+                },
+            );
+            if let Err(e) = write {
+                eprintln!("Failed to reload config after mapping capture: {}", e);
             }
             self.key_capture_mode = KeyCaptureMode::None;
             self.capture_pressed_keys.clear();
-            self.app_state.set_raw_input_capture_mode(false);
+            self.backend.set_pad_capture(false);
             self.just_captured_input = false;
-            // 捕获即持久化 (与手柄页快速捕获一致)
-            let _ = self.config.save_to_file("Config.toml");
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after mapping capture: {}", e);
-            }
         } else if self.just_captured_input {
             self.just_captured_input = false;
         }
@@ -604,11 +641,15 @@ impl SorahkGui {
     /// 删步改时长 / 高级文本** 都只改 GUI 内存 —— 手柄页没有「保存修改」按钮,
     /// 录完的序列永远到不了引擎, 触发键仍然按旧目标键 (如 A)。
     pub(crate) fn apply_sequence_text(&mut self, idx: usize, text: String) {
-        if let Some(m) = self.config.mappings.get_mut(idx) {
-            m.sequence_text = text;
-        }
-        let _ = self.config.save_to_file("Config.toml");
-        if let Err(e) = self.app_state.reload_config(self.config.clone()) {
+        /* ★R2.14: 即存即热重载 (一次 Reload 提交, 引擎立即接管) */
+        if let Err(e) =
+            self.backend
+                .update_config(crate::ui_api::Commit::Reload, |c| {
+                    if let Some(m) = c.mappings.get_mut(idx) {
+                        m.sequence_text = text.clone();
+                    }
+                })
+        {
             eprintln!("Failed to reload config after sequence edit: {e}");
         }
     }
@@ -618,21 +659,28 @@ impl SorahkGui {
         ui: &mut egui::Ui,
         idx: usize,
         th: &Theme,
-    ) {        let macros: std::collections::HashMap<String, String> = self
-            .config
-            .universal_macros
-            .iter()
-            .map(|m| (m.name.to_lowercase(), m.text.clone()))
-            .collect();
-        let seq_now = self.config.mappings[idx].sequence_text.clone();
+    ) {
+        /* ★R2.14: 宏表/当前序列/默认时长帧首从 backend 收集 */
+        let (macros, seq_now, default_hold) = self.backend.with_config(|c| {
+            (
+                c.universal_macros
+                    .iter()
+                    .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                    .collect::<std::collections::HashMap<String, String>>(),
+                c.mappings
+                    .get(idx)
+                    .map(|m| m.sequence_text.clone())
+                    .unwrap_or_default(),
+                c.mappings
+                    .get(idx)
+                    .and_then(|m| m.event_duration)
+                    .unwrap_or(20),
+            )
+        });
         let parse_result = crate::sequence::parse_sequence(&seq_now, &macros);
         let parse_ok = parse_result.is_ok();
         let mut steps = parse_result.clone().unwrap_or_default();
-        let default_hold = self.config.mappings[idx].event_duration.unwrap_or(20);
-        let recording = self
-            .app_state
-            .key_record_active
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let recording = self.backend.key_record_active();
         let capturing_step = matches!(
             self.key_capture_mode,
             KeyCaptureMode::SequenceStepKey(i, _, _) if i == idx
@@ -655,7 +703,7 @@ impl SorahkGui {
                     );
                 }
             }
-            /* ● 录制 / ■ 停止 (GetAsyncKeyState 轮询线程, 不依赖 LL 钩子) */
+            /* ● 录制 / ■ 停止 (GetAsyncKeyState 轮询线程在后端, 不依赖 LL 钩子) */
             if recording {
                 ui.label(
                     egui::RichText::new("● 录制中… (按键盘按键, 完了点右边停止)")
@@ -663,21 +711,25 @@ impl SorahkGui {
                         .color(th.bad),
                 );
                 if ui.add(th.secondary_button("■ 停止并填入")).clicked() {
-                    if let Some(events) = self.app_state.stop_key_record() {
-                        let text = crate::sequence::recorded_to_sequence(
-                            &events,
-                            &crate::sequence::vk_to_seq_name,
-                        );
-                        if text.is_empty() {
-                            let ime_hits = events.iter().filter(|e| e.vk == 0xE5).count();
+                    /* ★R2.14: 录制通道归 backend (轮询线程由 start_key_record 拉起) */
+                    match self.backend.stop_key_record_with_diagnostics() {
+                        /* 旧「录制状态丢失」分支: 没在录制 / 状态已取走 */
+                        None => {
+                            self.seq_record_hint = Some((
+                                "✗ 录制状态丢失 (再录一次即可)".to_string(),
+                                std::time::Instant::now(),
+                            ));
+                        }
+                        Some((None, ime_hits)) => {
                             let msg = if ime_hits > 0 {
                                 "✗ 没录到按键: 按键被中文输入法接管了 —— 请切到英文输入法再重新录制".to_string()
                             } else {
                                 "✗ 没有录到任何按键 —— 请按【键盘】键录制 (手柄按键无法录: 序列的输出就是键盘动作)".to_string()
                             };
                             self.seq_record_hint = Some((msg, std::time::Instant::now()));
-                        } else {
-                            let existing = self.config.mappings[idx].sequence_text.clone();
+                        }
+                        Some((Some(text), _)) => {
+                            let existing = seq_now.clone();
                             let combined = if existing.trim().is_empty() {
                                 text
                             } else {
@@ -690,11 +742,6 @@ impl SorahkGui {
                                 std::time::Instant::now(),
                             ));
                         }
-                    } else {
-                        self.seq_record_hint = Some((
-                            "✗ 录制状态丢失 (再录一次即可)".to_string(),
-                            std::time::Instant::now(),
-                        ));
                     }
                 }
             } else if ui
@@ -705,11 +752,7 @@ impl SorahkGui {
                 )
                 .clicked()
             {
-                self.app_state.start_key_record();
-                let st = self.app_state.clone();
-                let _ = std::thread::Builder::new()
-                    .name("key-record-poller".into())
-                    .spawn(move || crate::sequence::run_key_record_poller(st));
+                self.backend.start_key_record();
                 self.seq_record_hint = None;
             }
 
@@ -728,7 +771,7 @@ impl SorahkGui {
                 self.key_capture_mode =
                     KeyCaptureMode::SequenceStepKey(idx, steps.len(), crate::state::SeqStepMode::Tap);
                 self.capture_pressed_keys.clear();
-                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.capture_initial_pressed = self.backend.poll_pressed_keys();
                 self.just_captured_input = true;
             }
 
@@ -745,7 +788,7 @@ impl SorahkGui {
                     crate::state::SeqStepMode::PressHold,
                 );
                 self.capture_pressed_keys.clear();
-                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.capture_initial_pressed = self.backend.poll_pressed_keys();
                 self.just_captured_input = true;
             }
 
@@ -762,7 +805,7 @@ impl SorahkGui {
                     crate::state::SeqStepMode::Release,
                 );
                 self.capture_pressed_keys.clear();
-                self.capture_initial_pressed = Self::poll_all_pressed_keys();
+                self.capture_initial_pressed = self.backend.poll_pressed_keys();
                 self.just_captured_input = true;
             }
 
@@ -784,7 +827,7 @@ impl SorahkGui {
             }
 
             /* ＋ 引用通用宏: 展开通用宏列表, 点一个就插入 */
-            if !self.config.universal_macros.is_empty()
+            if !macros.is_empty()
                 && ui
                     .add(th.secondary_button("＋ 引用通用宏"))
                     .on_hover_text("把保存过的通用宏插入为一步 (如 宏(觉醒连招))")
@@ -828,32 +871,45 @@ impl SorahkGui {
         });
 
         /* 通用宏引用列表 (展开时) */
-        if self.seq_macro_picker_open && !self.config.universal_macros.is_empty() {
-            ui.horizontal_wrapped(|ui| {
-                ui.label(th.weak("选一个通用宏:"));
-                let mut picked: Option<usize> = None;
-                for (i, m) in self.config.universal_macros.iter().enumerate() {
-                    if ui
-                        .add(th.secondary_button(&format!("宏({})", m.name)))
-                        .on_hover_text(format!("插入: {}", truncate_chars(&m.text, 40)))
-                        .clicked()
-                    {
-                        picked = Some(i);
+        if self.seq_macro_picker_open {
+            /* ★R2.14: 宏列表从 backend 现取 (可能刚在本帧被增删) */
+            let macro_list = self
+                .backend
+                .with_config(|c| c.universal_macros.clone());
+            if !macro_list.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(th.weak("选一个通用宏:"));
+                    let mut picked: Option<usize> = None;
+                    for (i, m) in macro_list.iter().enumerate() {
+                        if ui
+                            .add(th.secondary_button(&format!("宏({})", m.name)))
+                            .on_hover_text(format!("插入: {}", truncate_chars(&m.text, 40)))
+                            .clicked()
+                        {
+                            picked = Some(i);
+                        }
                     }
-                }
-                if let Some(i) = picked {
-                    let m = &self.config.universal_macros[i];
-                    let existing = self.config.mappings[idx].sequence_text.clone();
-                    let combined = if existing.trim().is_empty() {
-                        format!("宏({})", m.name)
-                    } else {
-                        format!("{existing}»宏({})", m.name)
-                    };
-                    /* ★v24.38: 即时生效 */
-                    self.apply_sequence_text(idx, combined);
-                    self.seq_macro_picker_open = false;
-                }
-            });
+                    if let Some(i) = picked {
+                        let m = &macro_list[i];
+                        let existing = self
+                            .backend
+                            .with_config(|c| {
+                                c.mappings
+                                    .get(idx)
+                                    .map(|x| x.sequence_text.clone())
+                                    .unwrap_or_default()
+                            });
+                        let combined = if existing.trim().is_empty() {
+                            format!("宏({})", m.name)
+                        } else {
+                            format!("{existing}»宏({})", m.name)
+                        };
+                        /* ★v24.38: 即时生效 */
+                        self.apply_sequence_text(idx, combined);
+                        self.seq_macro_picker_open = false;
+                    }
+                });
+            }
         }
 
         match parse_result {
@@ -1024,7 +1080,7 @@ impl SorahkGui {
         }
 
         let mut captured: Option<String> = None;
-        let current_pressed = Self::poll_all_pressed_keys();
+        let current_pressed = self.backend.poll_pressed_keys();
         current_pressed
             .iter()
             .filter(|&&vk| !self.capture_initial_pressed.contains(&vk))
@@ -1040,18 +1096,25 @@ impl SorahkGui {
         }
 
         if let Some(name) = captured {
-            let default_hold = self.config.mappings[idx].event_duration.unwrap_or(20);
-            let macros: std::collections::HashMap<String, String> = self
-                .config
-                .universal_macros
-                .iter()
-                .map(|m| (m.name.to_lowercase(), m.text.clone()))
-                .collect();
-            let mut steps = crate::sequence::parse_sequence(
-                &self.config.mappings[idx].sequence_text,
-                &macros,
-            )
-            .unwrap_or_default();
+            /* ★R2.14: 目标映射现状 + 宏表从 backend 现取 (序列文本是即时生效通道) */
+            let (default_hold, macros, seq_text) = self.backend.with_config(|c| {
+                (
+                    c.mappings
+                        .get(idx)
+                        .and_then(|m| m.event_duration)
+                        .unwrap_or(20),
+                    c.universal_macros
+                        .iter()
+                        .map(|m| (m.name.to_lowercase(), m.text.clone()))
+                        .collect::<std::collections::HashMap<String, String>>(),
+                    c.mappings
+                        .get(idx)
+                        .map(|m| m.sequence_text.clone())
+                        .unwrap_or_default(),
+                )
+            });
+            let mut steps =
+                crate::sequence::parse_sequence(&seq_text, &macros).unwrap_or_default();
             let upper = name.to_uppercase();
             match steps.get_mut(step) {
                 Some(st) => {

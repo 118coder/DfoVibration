@@ -1,3 +1,45 @@
+R2.14 — 前后端分离架构：后端 API 门面 + GUI 全面切换 (2026-11-16)
+=================================================================================
+> 目标：「后端的所有功能实现重构为可通过接口（API）调用的形式，实现前后端分离。
+> 后端提供清晰稳定的接口层，前端 UI 只通过调用这些接口与后端交互，
+> 日后重做或修改 UI 时不会影响后端逻辑。」
+> 约束：不破坏现有后端功能与代码；config.rs 字段名零改动（TOML 契约冻结，
+> 用户配置 100% 兼容）。
+
+- **新增 `src/ui_api` 契约层**：UI↔后端之间唯一的类型契约 ——
+  `UiSnapshot`（运行态快照，按 core/input/vibration/audio/update/counts 分域聚合，
+  全部 serde 化）、`UiEvent`（托盘请求/预设切换/捕获结果等异步事件）、
+  `UiCommand`（带参命令枚举，id 字符串与归档 WebUI action 命名兼容，为将来
+  HTTP/WS 传输适配器免费铺路）、`Commit`（Memory/Save/SaveConfigOnly/SaveVib/
+  Reload 五档提交语义）。UI 重做时只需换渲染器，契约不动。
+- **新增 `src/backend` 服务门面**：`BackendService`（Arc 句柄，UI 唯一后端入口）——
+  ① 配置权威归位：`AppConfig` 从 GUI 移入 `RwLock`，GUI 的 137 处散落保存
+  全部收编；② 保存调度线程：静默 1 秒去抖原子落盘 + 退出兜底（旧 main_window
+  两段去抖逻辑下沉）；③ 捕获会话（键盘轮询/手柄捕获/序列录制/HID 激活）、
+  设备管理、检查更新管理器归位；④ 领域 API：映射 CRUD/预设/宏/白名单/
+  震动 60 槽参数/职业预设/S1↔S4 路线切换/音频参数/音频白名单/音频预设。
+- **单一写路径**：震动参数改动统一「config → apply_vibration_config 镜像 →
+  去抖落盘」（替代旧 GUI 的「写 config + 写原子 + 手工脏标」三连双写）；
+  音频参数同法（config → apply_config 镜像）。震动总开关改走
+  `SetVibrationEnabled`（config+镜像+落盘，修掉旧"只翻原子不落盘"的回滚隐患）。
+- **GUI 全面切换**（22 个文件，约 1.5 万行强耦合全部改造）：
+  `SorahkGui` 删除 `config`/`app_state`/`UpdateManager` 三个直持字段，
+  只剩 `backend` 句柄 + 纯 UI 会话状态；设置弹窗 Save 路径改三档提交
+  （新增 `SaveConfigOnly` 档保住 S1/S4 路线切换的"只写 Config.toml"语义）；
+  预设快切/极简/经典模式/首次向导/窗口几何/主题/托盘请求全部走 backend。
+  **GUI 真实数据写路径归零**（grep 验证）。
+- **架构守卫收紧**（tests/architecture_tests.rs）：
+  rawinput / xinput / vibration / auto_inject / input_manager 移出 GUI 依赖
+  允许清单 —— 输入层/引擎/系统层对 GUI **全面断供**，设备枚举/马达测试/日志/
+  时间基准/HID 激活/注入查询一律走 backend 门面；清单内剩余模块仅契约词汇
+  类型与纯函数；后端对 gui 的反向依赖由既有守卫看住。
+- **其它**：`state/types.rs` 五个类型补 serde derive（InputDevice/DeviceType/
+  LiveHidState/PresetSwitchBinding/MouseButton，纯属性添加）；KeyMapping 补
+  Default derive；KeyKind/key_kind 从 gui/utils 移入 state/key_names（后端
+  预设绑定重建需要，gui 留转发垫片）；vib_legacy_client 路线标记切换后即时落盘
+  （旧版等下次保存，崩溃会丢）。
+- 验证：lib 465 + bin 493 + 集成测试 + 架构守卫 5/5 全绿；云端编译待发版流程。
+
 R2.13 — 输入修复：打字连发根因 + 手柄期键盘卡顿 + 性能优化 (2026-11-13)
 =================================================================================
 > 反馈：「非白名单的程序打字，按一下 M 变成 MMMMM 连发」「连接手柄的时候键盘卡顿」

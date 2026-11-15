@@ -20,6 +20,8 @@ pub mod auto_inject;
 pub mod rawinput;
 pub mod sequence;
 pub mod state;
+/// ★v24.55 检查更新 (WinHTTP + 多源清单, 不强制、不自动替换 exe)
+pub mod update;
 pub mod util;
 pub mod vibration;
 pub mod xinput;

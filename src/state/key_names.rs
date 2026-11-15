@@ -10,31 +10,41 @@ impl AppState {
     /// Parse and cache switch key configuration
     #[inline]
     pub(super) fn update_switch_key_cache(cache: &SwitchKeyCache, key_name: &str) -> anyhow::Result<()> {
-        cache.clear();
-
+        /* ★R2.12 (优化 2): 先解析、后写入 —— 原来第一行就 `cache.clear()`,
+         * 解析失败时留下一个**空缓存** (切换键直接失灵), 属于"改设置改坏就半残"。
+         * 现在解析失败的路径一个字节都不动。 */
         let device = Self::input_name_to_device(key_name)
             .ok_or_else(|| anyhow::anyhow!("Invalid switch key: {}", key_name))?;
 
+        let mut keyboard_vk = 0u32;
+        let mut xinput_button_mask = 0u32;
+        let mut xinput_device_hash = 0u32;
+        let mut generic_button_id = 0u64;
         match &device {
-            InputDevice::Keyboard(vk) => {
-                cache.keyboard_vk.store(*vk, Ordering::Relaxed);
-            }
+            InputDevice::Keyboard(vk) => keyboard_vk = *vk,
             InputDevice::XInputCombo {
                 device_type,
                 button_ids,
             } => {
-                let mask = Self::inputs_to_bitset(button_ids);
-                cache.xinput_button_mask.store(mask, Ordering::Relaxed);
-
-                let hash = Self::hash_device_type(device_type);
-                cache.xinput_device_hash.store(hash, Ordering::Relaxed);
+                xinput_button_mask = Self::inputs_to_bitset(button_ids);
+                xinput_device_hash = Self::hash_device_type(device_type);
             }
-            InputDevice::GenericDevice { button_id, .. } => {
-                cache.generic_button_id.store(*button_id, Ordering::Relaxed);
-            }
+            InputDevice::GenericDevice { button_id, .. } => generic_button_id = *button_id,
             InputDevice::KeyCombo(_) | InputDevice::Mouse(_) => {}
         }
 
+        /* ---- 解析全部成功, 开始整体切换 ---- */
+        cache.clear();
+        if keyboard_vk != 0 {
+            cache.keyboard_vk.store(keyboard_vk, Ordering::Relaxed);
+        }
+        if xinput_button_mask != 0 {
+            cache.xinput_button_mask.store(xinput_button_mask, Ordering::Relaxed);
+            cache.xinput_device_hash.store(xinput_device_hash, Ordering::Relaxed);
+        }
+        if generic_button_id != 0 {
+            cache.generic_button_id.store(generic_button_id, Ordering::Relaxed);
+        }
         *util::write_guard(&cache.full_device) = Some(device);
         Ok(())
     }

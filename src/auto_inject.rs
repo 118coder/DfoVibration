@@ -55,7 +55,15 @@ use windows::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};
 
 use crate::state::AppState;
 
-const POLL_MS: u64 = 1500;
+/* ★R2.12 (优化 4) 轮询节奏 —— 原来固定 1500ms 做一次全系统进程快照,
+ * 软件挂着什么都不开时也在持续枚举几百个进程。现在:
+ * - 空闲 (没有客户端在场) → 全表扫描间隔从 1.5s 指数退避到 8s;
+ * - 前台窗口一变成客户端 (玩家双击游戏) → 最多 TICK_MS 内立刻补扫并注入;
+ * - 客户端在场但还没注入成功 → 400ms 快速重试 (原来要等 1.5s)。 */
+const TICK_MS: u64 = 250;
+const ACTIVE_POLL_MS: u64 = 400;
+const IDLE_POLL_MIN_MS: u64 = 1500;
+const IDLE_POLL_MAX_MS: u64 = 8000;
 
 /// 客户端进程名表 (★v24.23: 不绑定路线/DLL 名 —— 身份与 DLL 选择见 `pick_dll_to_inject`)
 struct Client {
@@ -215,12 +223,32 @@ pub fn run(state: Arc<AppState>) {
     }
     thread::Builder::new()
         .name("auto_inject".to_string())
-        .spawn(move || loop {
-            if state.should_exit.load(std::sync::atomic::Ordering::Relaxed) {
-                break;
+        .spawn(move || {
+            /* ★R2.12 (优化 4): 分片轮询 —— 每 250ms 只做一次"前台是不是游戏"的廉价判断,
+             * 真正耗时的全表枚举按退避节奏才做。 */
+            let mut backoff = IDLE_POLL_MIN_MS;
+            let mut since_scan = u64::MAX; // 首轮立刻扫一次
+            let mut first_round = true;
+            loop {
+                if state.should_exit.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let fg_client = foreground_is_client(&state);
+                let due = first_round || fg_client || since_scan >= backoff;
+                if due {
+                    let present = step_once(&state);
+                    since_scan = 0;
+                    first_round = false;
+                    backoff = if present {
+                        ACTIVE_POLL_MS
+                    } else {
+                        (backoff.saturating_mul(2)).min(IDLE_POLL_MAX_MS)
+                    };
+                } else {
+                    since_scan = since_scan.saturating_add(TICK_MS);
+                }
+                thread::sleep(Duration::from_millis(TICK_MS));
             }
-            step_once(&state);
-            thread::sleep(Duration::from_millis(POLL_MS));
         })
         .ok();
 }
@@ -236,12 +264,14 @@ static WARNED_PIDS: std::sync::Mutex<Vec<u32>> = std::sync::Mutex::new(Vec::new(
 /// 错误变化 (如权限问题→路径问题) 或换客户端才再记。
 static LAST_FAIL: std::sync::Mutex<Option<(u32, String)>> = std::sync::Mutex::new(None);
 
-fn step_once(state: &Arc<AppState>) {
+/// 扫一轮: 找客户端 → 注入 → 裁剪退场记录。
+/// 返回 true 表示本轮**有**客户端在场 (调用方据此决定要不要快速重试)。
+fn step_once(state: &Arc<AppState>) -> bool {
     let legacy = state
         .vib_legacy_client
         .load(std::sync::atomic::Ordering::Relaxed);
     let Ok(exe_self) = std::env::current_exe() else {
-        return;
+        return false;
     };
     let host_dir = exe_self.parent().unwrap_or(std::path::Path::new("."));
     let host_dir_has_old = host_dir.join("DfoVibration_OLD.dll").exists();
@@ -404,6 +434,26 @@ fn step_once(state: &Arc<AppState>) {
     if let Ok(mut v) = WARNED_PIDS.lock() {
         v.retain(|p| present.contains(p));
     }
+    !present.is_empty()
+}
+
+/// 前台进程名是否就是我们要注入的客户端之一 (★R2.12 优化 4)。
+///
+/// 这是"要不要做全盘进程枚举"的廉价前置判断: 读的是连发白名单那份前台缓存
+/// (按 HWND 命中, 窗口没切就只有一个原子读), 比 Toolhelp 全表枚举便宜两个量级。
+fn foreground_is_client(state: &Arc<AppState>) -> bool {
+    let Some(probe) = state.foreground_probe_cached() else {
+        return false;
+    };
+    let Some(name) = probe.name.as_deref().or_else(|| {
+        probe
+            .path
+            .as_deref()
+            .and_then(|p| p.rsplit(['\\', '/']).next())
+    }) else {
+        return false;
+    };
+    CLIENTS.iter().any(|c| c.process.eq_ignore_ascii_case(name))
 }
 
 fn find_pid_by_name(name: &str) -> Option<u32> {

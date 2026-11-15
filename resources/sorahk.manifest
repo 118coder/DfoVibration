@@ -2,13 +2,14 @@
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity name="DfoVibration.Sorahk" processorArchitecture="*" version="1.0.0.0" type="win32"/>
   <description>DfoVibration-V3 Turbo &amp; Mapping Tool</description>
-  <!-- ★v24.20 highestAvailable: 与最高可提权客户端 (如 90CN 的 DNF.exe 外挂 manifest) 权限对齐 ——
-       管理员账户下宿主静默随权 (实测无 UAC 弹窗), 标准账户下不提权、绝无强制管理员;
-       否则对已提权客户端 OpenProcess(5) 注入失败 + SendInput 被 UIPI 静默丢弃 (连发/映射失效)。 -->
+  <!-- ★R2.12: 默认 asInvoker —— 普通双击不再因 highestAvailable 弹 UAC,
+       headless 渲染 / CI 自动化也能直接运行 (实测 non-elevated 启动曾报 os error 740)。
+       90CN 这类已提权客户端仍需管理员权限: 由用户右键「以管理员身份运行」(使用说明已写),
+       或构建时显式 SORAHK_MANIFEST=admin 嵌入 sorahk_admin.manifest。 -->
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <requestedExecutionLevel level="highestAvailable" uiAccess="false"/>
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

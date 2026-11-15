@@ -4,10 +4,9 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 
-use crate::util::likely;
 use crate::util;
 
-use windows::Win32::Foundation::MAX_PATH;
+use windows::Win32::Foundation::{CloseHandle, MAX_PATH};
 use windows::Win32::System::Threading::{
     OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
@@ -16,8 +15,131 @@ use windows::core::PWSTR;
 
 use super::*;
 
+/// ★v24.52 前台进程探测结果。
+/// `path` 需要 OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION) 成功;
+/// 管理员权限/受保护进程可能拿不到 → 退回 Toolhelp 拿 exe 文件名 (`name`)。
+/// 只要 PID 拿得到, 白名单就不会"莫名失效": 先按名匹配, 有路径再按路径匹配。
+#[derive(Debug, Clone)]
+pub struct ForegroundProbe {
+    pub pid: u32,
+    pub path: Option<String>,
+    pub name: Option<String>,
+    /// 拿路径失败的原因 (空 = 正常); 只用于日志/界面提示
+    pub note: String,
+}
+
+/// ★R2.12 (优化 8) 前台探测缓存条目: 按窗口句柄命中, 不再按固定 50ms 重查。
+/// `probe = None` 也是一种结果 (取不到前台窗口), 同样缓存, 避免空转重试。
+pub(crate) struct ForegroundCache {
+    /// 缓存对应的前台窗口句柄 (0 = 当时没有前台窗口)
+    pub(crate) hwnd: isize,
+    pub(crate) probe: Option<ForegroundProbe>,
+    /// 上次真正探测的时刻 (2s 兜底用)
+    pub(crate) at: Instant,
+}
+
+impl Default for ForegroundCache {
+    fn default() -> Self {
+        Self {
+            hwnd: -1,
+            probe: None,
+            at: Instant::now(),
+        }
+    }
+}
+
 impl AppState {
-/// Get the process name of the foreground window
+    /// ★v24.52 音频白名单专用: 取前台进程 PID + (路径或文件名)。
+    /// 独立于 `is_process_whitelisted` —— 不读连发白名单开关/列表/缓存,
+    /// 也不写任何连发状态。
+    pub fn foreground_probe() -> Option<ForegroundProbe> {
+        unsafe {
+            let hwnd = GetForegroundWindow();
+            if hwnd.0.is_null() {
+                return None;
+            }
+            let mut pid: u32 = 0;
+            GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+            if pid == 0 {
+                return None;
+            }
+            let mut note = String::new();
+            let path = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(h) if !h.is_invalid() => {
+                    let mut buffer = [0u16; MAX_PATH as usize];
+                    let mut size = buffer.len() as u32;
+                    let res = QueryFullProcessImageNameW(
+                        h,
+                        PROCESS_NAME_WIN32,
+                        PWSTR(buffer.as_mut_ptr()),
+                        &mut size,
+                    );
+                    let _ = CloseHandle(h);
+                    if res.is_ok() {
+                        Some(String::from_utf16_lossy(&buffer[..size as usize]))
+                    } else {
+                        note = "QueryFullProcessImageName 失败(高权限/受保护进程)".to_string();
+                        None
+                    }
+                }
+                Ok(h) => {
+                    let _ = CloseHandle(h);
+                    note = "OpenProcess 返回无效句柄".to_string();
+                    None
+                }
+                Err(e) => {
+                    note = format!("OpenProcess 失败: {e}");
+                    None
+                }
+            };
+            let name = path
+                .as_deref()
+                .and_then(|p| p.rsplit(['\\', '/']).next().map(|s| s.to_string()))
+                .or_else(|| Self::process_name_by_pid(pid));
+            Some(ForegroundProbe { pid, path, name, note })
+        }
+    }
+
+    /// Toolhelp 枚举 PID → exe 文件名 (不需要打开目标进程句柄,
+    /// 因此对管理员运行/高完整性进程也能拿到名字)。
+    pub fn process_name_by_pid(pid: u32) -> Option<String> {
+        use windows::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+            TH32CS_SNAPPROCESS,
+        };
+        unsafe {
+            let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
+            let mut pe = PROCESSENTRY32W::default();
+            pe.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+            let mut found = None;
+            if Process32FirstW(snap, &mut pe).is_ok() {
+                loop {
+                    if pe.th32ProcessID == pid {
+                        let len = pe
+                            .szExeFile
+                            .iter()
+                            .position(|&c| c == 0)
+                            .unwrap_or(pe.szExeFile.len());
+                        found = Some(String::from_utf16_lossy(&pe.szExeFile[..len]));
+                        break;
+                    }
+                    if Process32NextW(snap, &mut pe).is_err() {
+                        break;
+                    }
+                }
+            }
+            let _ = CloseHandle(snap);
+            found
+        }
+    }
+
+    /// ★v24.52 音频白名单复用连发白名单: 只读快照 (绝不修改连发状态)。
+    /// 快照需要独立 Vec (音频线程持有期间不随配置变化) —— 低频路径 (500ms 一次), 克隆无妨。
+    pub(crate) fn process_whitelist_snapshot(&self) -> Vec<String> {
+        util::read_guard(&self.process_whitelist).as_ref().clone()
+    }
+
+    /// Get the process name of the foreground window
     pub(super) fn get_foreground_process_name() -> Option<String> {
         unsafe {
             let hwnd = GetForegroundWindow();
@@ -99,6 +221,37 @@ impl AppState {
         Self::whitelist_entry_matches_in(false, entry, full_path)
     }
 
+    /// 前台窗口句柄 (GetForegroundWindow 是微秒级廉价调用, 用来判断"要不要重新探测")。
+    fn foreground_hwnd() -> isize {
+        unsafe { GetForegroundWindow().0 as isize }
+    }
+
+    /// ★R2.12 (优化 8) 带缓存的前台探测 —— 连发白名单与音频白名单**共用同一份判定**。
+    ///
+    /// 原来 `is_process_whitelisted` 每 50ms 就 OpenProcess + QueryFullProcessImageName,
+    /// 高连发时一小时几万次系统调用; 音频震动侧另有一套 `foreground_probe()` 各探一遍,
+    /// 于是出现过「连发放行、震动不放行」的怪事。现在:
+    /// - 只有前台窗口变了 (HWND 不同) 才真正探测;
+    /// - 同一窗口内有 2s 兜底 (窗口标题/权限变化时兜一下);
+    /// - 两份白名单读同一份缓存, 结论必然一致。
+    pub(crate) fn foreground_probe_cached(&self) -> Option<ForegroundProbe> {
+        const BACKSTOP: Duration = Duration::from_secs(2);
+        let hwnd = Self::foreground_hwnd();
+        {
+            let cache = util::read_guard(&self.cached_process_info);
+            if cache.hwnd == hwnd && cache.at.elapsed() < BACKSTOP {
+                return cache.probe.clone();
+            }
+        }
+        let probe = Self::foreground_probe();
+        *util::write_guard(&self.cached_process_info) = ForegroundCache {
+            hwnd,
+            probe: probe.clone(),
+            at: Instant::now(),
+        };
+        probe
+    }
+
     /// Check if current foreground process is in whitelist (empty whitelist = all allowed)
     #[inline]
     pub(crate) fn is_process_whitelisted(&self) -> bool {
@@ -106,41 +259,27 @@ impl AppState {
         if !self.whitelist_enabled.load(Ordering::Relaxed) {
             return true;
         }
-        // 防中毒: 锁内只做轻量 clone, 绝不持锁调用 WinAPI(OpenProcess 等)
-        let whitelist = util::lock_guard(&self.process_whitelist).clone();
+        // 防中毒 + 零分配: 只 clone Arc 引用计数 (热路径 ~1200 次/秒, 旧实现每次
+        // 锁内克隆整个 Vec<String> = 10 次堆分配/次, 且与鼠标移动 worker 的 1kHz
+        // 轮询在同一个 Mutex 上互抢 —— 键盘钩子线程偶发等锁)。
+        let whitelist = Arc::clone(&util::read_guard(&self.process_whitelist));
         if whitelist.is_empty() {
             return true;
         }
 
-        const CACHE_DURATION_MS: u64 = 50;
-        let now = Instant::now();
-
-        let process_path = {
-            let cache = util::read_guard(&self.cached_process_info);
-            let (cached_path, cached_time) = &*cache;
-
-            if likely(now.duration_since(*cached_time) < Duration::from_millis(CACHE_DURATION_MS)) {
-                // Cache hit: return cached path without write lock
-                cached_path.clone()
-            } else {
-                // Cache miss: need refresh
-                drop(cache);
-                let new_path = Self::get_foreground_process_name();
-                *util::write_guard(&self.cached_process_info) = (new_path.clone(), now);
-
-                new_path
-            }
+        /* ★R2.12 (优化 8): 走缓存, 不再每次注入都开进程查系统 */
+        let Some(info) = self.foreground_probe_cached() else {
+            // 拿不到前台窗口 (桌面切换/锁屏瞬间): 放行, 不要把用户按键吞掉
+            return true;
         };
-
-        // Check if process is in whitelist (任一条目命中即放行)
+        // 先按完整路径比, 拿不到路径 (高权限/受保护进程) 退回文件名比 —— 与音频侧同口径
+        let target = info.path.clone().or_else(|| info.name.clone());
+        let Some(path) = target else {
+            return true;
+        };
         let simple = self.whitelist_simple_mode.load(Ordering::Relaxed);
-        if let Some(path) = process_path {
-            whitelist
-                .iter()
-                .any(|p| Self::whitelist_entry_matches_in(simple, p, Some(&path)))
-        } else {
-            // If we can't get process path, allow by default
-            true
-        }
+        whitelist
+            .iter()
+            .any(|p| Self::whitelist_entry_matches_in(simple, p, Some(&path)))
     }
 }

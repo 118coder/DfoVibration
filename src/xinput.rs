@@ -274,6 +274,13 @@ struct XInputDeviceState {
     /// ★v24.49 当前设备的组合掩码表 (供 [`Self::inputs_complete_any_chord`] 用;
     /// 与 `combo_masks` 同生命周期 —— 切换键检测早于 `combo_masks` 重建, 需要独立可查)。
     chord_masks_cache: SmallVec<[ComboMask; 16]>,
+    /// ★R2.12 挂起中的**预设切换键**: (预设名, 截止时刻, 该切换键的位图)。
+    /// 与全局切换键的 `pending_switch` 同一套仲裁: 组合成立则取消,
+    /// 单独点按/宽限到期才真正切预设 (修 v24.49 只补了全局切换键的漏)。
+    pending_preset_switch: Option<(String, std::time::Instant, u32)>,
+    /// ★R2.12 由 [`Self::process_pending_solos`] 结算出来、等待 `poll_device` 取走的预设名。
+    /// 单独放一个字段是为了不改 `process_pending_solos` 的返回签名 (测试大量调用)。
+    preset_switch_ready: Option<String>,
 }
 
 /// XInput handler for Xbox controller input.
@@ -338,6 +345,8 @@ pending_solos: SmallVec::new(),
 pending_switch: None,
 pending_switch_mask: 0,
 chord_masks_cache: SmallVec::new(),
+pending_preset_switch: None,
+preset_switch_ready: None,
                     });
 
                     // Register device display info
@@ -527,7 +536,8 @@ chord_masks_cache: SmallVec::new(),
                      * 这里去掉暂停条件, 改在推导时按状态分别处理。 */
                     if !self.state.is_raw_input_capture_active()
                         && (!device_state.pending_solos.is_empty()
-                            || device_state.pending_switch.is_some())
+                            || device_state.pending_switch.is_some()
+                            || device_state.pending_preset_switch.is_some())
                         && let Some(pool) = self.state.get_worker_pool()
                     {
                         let do_switch = Self::process_pending_solos(
@@ -539,6 +549,10 @@ chord_masks_cache: SmallVec::new(),
                         );
                         if do_switch {
                             self.state.handle_switch_key_toggle();
+                        }
+                        /* ★R2.12: 预设切换键结算结果由这里取走 (输入线程 → GUI 线程队列) */
+                        if let Some(name) = device_state.preset_switch_ready.take() {
+                            self.state.request_preset_switch(&name);
                         }
                     }
                 } else if self.device_states[idx].is_none() {
@@ -573,6 +587,8 @@ pending_solos: SmallVec::new(),
 pending_switch: None,
 pending_switch_mask: 0,
 chord_masks_cache: SmallVec::new(),
+pending_preset_switch: None,
+preset_switch_ready: None,
                         });
                     }
                 }
@@ -754,7 +770,19 @@ chord_masks_cache: SmallVec::new(),
                     let now_active = (current_bits & mask) == mask;
                     let was_active = (device_state.last_input_bits & mask) == mask;
                     if now_active && !was_active {
-                        state.request_preset_switch(&b.preset_name);
+                        /* ★R2.12: 预设切换键同时是某组合的成员时, 按下那一帧组合还没凑齐,
+                         * 不能立刻切预设 —— 与全局切换键 (v24.49) 走同一套挂起仲裁。
+                         * v24.49 只补了全局切换键, 这条分支一直是「命中即切」。 */
+                        if state.preset_switch_binding_may_form_chord(&device_type, mask) {
+                            device_state.pending_preset_switch = Some((
+                                b.preset_name.clone(),
+                                std::time::Instant::now()
+                                    + std::time::Duration::from_millis(CHORD_SOLO_GRACE_MS),
+                                mask,
+                            ));
+                        } else {
+                            state.request_preset_switch(&b.preset_name);
+                        }
                     }
                 }
             }
@@ -853,6 +881,21 @@ chord_masks_cache: SmallVec::new(),
             .cloned()
             .collect();
 
+        /* ★R2.12: 共享修饰键的一族组合允许共存后, 同时按住三键会让多条多键组合
+         * 一起命中 (位图是子集匹配) —— 这里做确定性仲裁, 每帧最多派发一条组合。 */
+        {
+            let before = new_active_combos.len();
+            let current_vec: Vec<u32> = current_inputs.iter().copied().collect();
+            let after = Self::arbitrate_matched_combos(&current_vec, new_active_combos.to_vec());
+            if after.len() < before {
+                crate::vibration::vib_log(&format!(
+                    "[chord] arbitrate | inputs={current_vec:?} | {before} -> {} 条命中",
+                    after.len()
+                ));
+            }
+            new_active_combos = after.into_iter().collect();
+        }
+
         // Compare with previously active combos
         // (★v24.37: 克隆成局部 —— 派发循环里要写 pending_solos, 不能持有借用)
         let prev_active = device_state.active_combos.clone();
@@ -865,7 +908,7 @@ chord_masks_cache: SmallVec::new(),
                  * 独占是"这个键的单独功能整份让位给组合", 宽限期满也不补发。
                  * 用户语义: 牺牲 LB 单键功能, 换 LB+X/Y/A/B 四个组合键。 */
                 if combo.len() == 1
-                    && device_state.chord_exclusive_bits & (1u32 << (combo[0] & 31)) != 0
+                    && device_state.chord_exclusive_bits & (Self::xinput_bit(combo[0])) != 0
                 {
                     continue;
                 }
@@ -875,7 +918,7 @@ chord_masks_cache: SmallVec::new(),
                  * ★v24.49: 独占成员已在上面 continue 掉, 走不到这里 —— 独占键永不挂起,
                  * 因此也不会通过"到期补发"复活 (两者的关键差别)。 */
                 if combo.len() == 1
-                    && device_state.chord_solo_bits & (1u32 << (combo[0] & 31)) != 0
+                    && device_state.chord_solo_bits & (Self::xinput_bit(combo[0])) != 0
                 {
                     /* 挂起期间 [X] 不进 active_combos → 每帧都会重新命中"新激活",
                      * 靠这里的去重保证只挂起一次; 到期补发后 [X] 才进 active_combos */
@@ -927,7 +970,7 @@ chord_masks_cache: SmallVec::new(),
             .into_iter()
             .filter(|combo| {
                 combo.len() != 1
-                    || (device_state.chord_exclusive_bits & (1u32 << (combo[0] & 31)) == 0
+                    || (device_state.chord_exclusive_bits & (Self::xinput_bit(combo[0])) == 0
                         && !device_state
                             .pending_solos
                             .iter()
@@ -1032,7 +1075,7 @@ chord_masks_cache: SmallVec::new(),
             /* ★v24.49 防御: 独占成员不得从挂起路径补发 —— 正常流程里它根本不会入队
              * (派发循环已 continue), 但配置热重载可能让某键在"挂起中"变成独占,
              * 这里丢掉即可, 避免单键功能意外复活。 */
-            if device_state.chord_exclusive_bits & (1u32 << (button_id & 31)) != 0 {
+            if device_state.chord_exclusive_bits & (Self::xinput_bit(button_id)) != 0 {
                 continue;
             }
             /* ★v24.49: 暂停态下不补发单键 (与旧行为一致: 暂停 = 不注入任何映射);
@@ -1060,26 +1103,60 @@ chord_masks_cache: SmallVec::new(),
         device_state.pending_solos = still_pending;
 
         /* ★v24.49 挂起的切换键结算 */
-        let Some(deadline) = device_state.pending_switch else {
-            return false;
+        let global_switch = if let Some(deadline) = device_state.pending_switch {
+            if Self::inputs_complete_any_chord(current_inputs, device_state) {
+                /* 组合成立 → 组合优先, 本次不切换 */
+                device_state.pending_switch = None;
+                false
+            } else {
+                /* ★v24.49: "切换键本身已松开" 也算独立意图 —— 用户快速点按切换键就是
+                 * 要切, 不必等满宽限期 (否则每次切都要拖 150ms, 手感变钝)。
+                 * 判据 = 切换键的掩码位已全部抬起 (组合成员键是否还按着无关紧要)。 */
+                let released = {
+                    let mask = device_state.pending_switch_mask;
+                    mask != 0 && (Self::inputs_to_bitset(current_inputs) & mask) != mask
+                };
+                if released || now >= deadline {
+                    device_state.pending_switch = None;
+                    true
+                } else {
+                    false
+                }
+            }
+        } else {
+            false
         };
-        if Self::inputs_complete_any_chord(current_inputs, device_state) {
-            /* 组合成立 → 组合优先, 本次不切换 */
-            device_state.pending_switch = None;
-            return false;
+
+        /* ★R2.12 挂起的预设切换键结算 (与全局切换键同一套判据, 但不动返回值:
+         * 结果放进 preset_switch_ready, 由 poll_device 取走后 request_preset_switch)。 */
+        if let Some((name, deadline, mask)) = device_state.pending_preset_switch.clone() {
+            if Self::inputs_complete_any_chord(current_inputs, device_state) {
+                device_state.pending_preset_switch = None;
+                crate::vibration::vib_log(&format!(
+                    "[chord] preset-switch cancelled by chord | preset={name}"
+                ));
+            } else {
+                let bits = Self::inputs_to_bitset(current_inputs);
+                let released = mask != 0 && (bits & mask) != mask;
+                if released || now >= deadline {
+                    device_state.pending_preset_switch = None;
+                    device_state.preset_switch_ready = Some(name);
+                }
+            }
         }
-        /* ★v24.49: "切换键本身已松开" 也算独立意图 —— 用户快速点按切换键就是
-         * 要切, 不必等满宽限期 (否则每次切都要拖 150ms, 手感变钝)。
-         * 判据 = 切换键的掩码位已全部抬起 (组合成员键是否还按着无关紧要)。 */
-        let released = {
-            let mask = device_state.pending_switch_mask;
-            mask != 0 && (Self::inputs_to_bitset(current_inputs) & mask) != mask
-        };
-        if released || now >= deadline {
-            device_state.pending_switch = None;
-            return true;
+        global_switch
+    }
+
+    /// ★R2.12 统一位图位宽判据: id ≥ 32 一律返回 0 (不参与任何位运算)。
+    /// 旧代码有的地方用 `id < 32` 丢弃、有的地方用 `id & 31`, 后者会把 id=32
+    /// 错位映射成 bit 0, 属于潜在的串键; 现在全部走这一个函数。
+    #[inline(always)]
+    pub fn xinput_bit(id: u32) -> u32 {
+        if id < 32 {
+            1u32 << id
+        } else {
+            0
         }
-        false
     }
 
     /// Converts input IDs to bitset representation
@@ -1088,9 +1165,7 @@ chord_masks_cache: SmallVec::new(),
     fn inputs_to_bitset(inputs: &[u32]) -> u32 {
         let mut bits = 0u32;
         for &input_id in inputs {
-            if likely(input_id < 32) {
-                bits |= 1u32 << input_id;
-            }
+            bits |= Self::xinput_bit(input_id);
         }
         bits
     }
@@ -1148,6 +1223,54 @@ chord_masks_cache: SmallVec::new(),
                 }
             }
         }
+    }
+
+    /// ★R2.12 组合键并发命中仲裁 (纯函数, 可单测)。
+    ///
+    /// 放开「组合之间不得部分重叠」之后, `LT+A / LT+B / LT+X / LT+Y` 可以共存;
+    /// 位图匹配是子集匹配, 同时按住 `LT+A+B` 就会同时命中 `LT+A` 与 `LT+B`。
+    /// 这里保证任何一帧最多派发**一条多键组合**:
+    ///   ① 存在与当前按键集合完全一致的组合 → 只取它 (精确匹配优先);
+    ///   ② 否则取最长组合, 同长度按 masks 的确定性顺序取第一条;
+    ///   ③ 单键组合不参与仲裁, 仍走原有的延迟抑制 / 独占逻辑。
+    /// 只有 0/1 条多键组合命中时原样返回, 不改变任何旧行为。
+    pub fn arbitrate_matched_combos(current: &[u32], matched: Vec<Vec<u32>>) -> Vec<Vec<u32>> {
+        let multi: Vec<Vec<u32>> = matched
+            .iter()
+            .filter(|c| c.len() >= 2)
+            .cloned()
+            .collect();
+        if multi.len() <= 1 {
+            return matched;
+        }
+        let mut cur = current.to_vec();
+        cur.sort_unstable();
+        cur.dedup();
+
+        let exact = multi.iter().find(|c| {
+            let mut s = (*c).clone();
+            s.sort_unstable();
+            s.dedup();
+            s == cur
+        });
+        let winner = match exact {
+            Some(c) => c.clone(),
+            None => {
+                let max_len = multi.iter().map(|c| c.len()).max().unwrap_or(0);
+                multi
+                    .iter()
+                    .find(|c| c.len() == max_len)
+                    .cloned()
+                    .unwrap_or_default()
+            }
+        };
+
+        let mut out: Vec<Vec<u32>> = matched
+            .into_iter()
+            .filter(|c| c.len() < 2)
+            .collect();
+        out.push(winner);
+        out
     }
 
     /// Bitset-based combo matching
@@ -1998,6 +2121,8 @@ pending_solos: SmallVec::new(),
 pending_switch: None,
 pending_switch_mask: 0,
 chord_masks_cache: SmallVec::new(),
+pending_preset_switch: None,
+preset_switch_ready: None,
         }
     }
 
@@ -2081,6 +2206,48 @@ chord_masks_cache: SmallVec::new(),
     const Y: u32 = 0x0E;
 
     /// 成员集 = 多键组合 ∩ 单键映射 的交集; 只有交集里的键需要挂起
+    /// ★R2.12 放开共享修饰键组合后的安全网: 任何一帧最多派发一条多键组合。
+    #[test]
+    fn test_arbitrate_matched_combos_prefers_exact_then_longest() {
+        const LT: u32 = 0x18;
+        const A: u32 = 0x0B;
+        const B: u32 = 0x0C;
+        let matched = vec![vec![A, LT], vec![B, LT]];
+        /* 同时按 LT+A+B: 两条共享 LT 的组合都命中 → 只留一条 */
+        let out = XInputHandler::arbitrate_matched_combos(&[A, B, LT], matched.clone());
+        assert_eq!(
+            out.iter().filter(|c| c.len() >= 2).count(),
+            1,
+            "不允许两条组合同时派发: {out:?}"
+        );
+        /* 精确匹配优先 */
+        let exact = XInputHandler::arbitrate_matched_combos(&[A, LT], matched.clone());
+        assert_eq!(exact, vec![vec![A, LT]], "应只留 LT+A: {exact:?}");
+        /* 只有一条多键组合命中时原样返回 (单键组合不受影响) */
+        let with_solo = vec![vec![LT], vec![A, LT]];
+        assert_eq!(
+            XInputHandler::arbitrate_matched_combos(&[A, LT], with_solo.clone()),
+            with_solo
+        );
+    }
+
+    /// ★R2.12 预设切换键也要能识别「我是某组合的成员」, 否则按组合会误切预设。
+    #[test]
+    fn test_preset_switch_binding_may_form_chord() {
+        let c = exclusive_scenario_config(false); // 含 LB+X / LB+Y / LB+A / LB+B
+        let state = crate::state::AppState::new(c).expect("state");
+        let dt = crate::state::DeviceType::Gamepad(XBOX_VID);
+        assert!(
+            state.preset_switch_binding_may_form_chord(&dt, 1u32 << 0x09),
+            "LB 是组合成员, 应挂起而不是立刻切预设"
+        );
+        assert!(
+            !state.preset_switch_binding_may_form_chord(&dt, 1u32 << 0x06),
+            "BACK 不在任何组合里, 应立刻切"
+        );
+        assert!(!state.preset_switch_binding_may_form_chord(&dt, 0));
+    }
+
     #[test]
     fn test_chord_solo_bits_from_combos() {
         let combos = vec![

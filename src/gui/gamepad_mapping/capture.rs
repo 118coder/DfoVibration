@@ -226,5 +226,16 @@ pub fn pick_chord_device(cands: &PadCaptureCandidates) -> Result<(u16, Vec<u32>)
         }
         return Err("要 2 个键同时按住 — 请把组合键一起按下去再松开".to_string());
     }
+    /* ★R2.12 设备通道诊断: 只有 Raw Input 原始通道上报 (国产/第三方手柄常见,
+     * 触发键是一长串 GAMEPAD_VID_PID_DEV..._H...) 时, 直接说明组合键的适用范围,
+     * 不要让用户对着「没等到手柄输入」反复重按。完整支持需要给 InputDevice 增加
+     * GenericDevice 组合变体 (见交接文档), 这里先做到「说得清」。 */
+    if cands.raw.is_some() {
+        return Err(
+            "这次只收到了 Raw Input 原始通道的按键 (设备名是一长串 ..._DEV..._H...)。\
+             组合键目前只在 XInput 通道上工作, 这只手柄的这些键暂时不能组成组合键;\
+             请换用 XInput 模式 / 原装接收器, 或先做一次「快速校对手柄按键」".to_string(),
+        );
+    }
     Err("没等到手柄输入 — 请同时按住 2 个以上按键再松开".to_string())
 }

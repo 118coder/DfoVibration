@@ -7,7 +7,235 @@
 
 ## ⚡ 下一位 AI 快速接手卡 (先读这一节, 5 分钟上手)
 
-**当前状态**: 基线 = **R2.0 已发布 · 全部落库 · 无待办** (2026-09-28 收官)。
+---
+
+## ★v24.53 「音乐（BGM）震动太大 + 音乐识别不准」—— 音乐态条件门 + 幅度拓扑重写 + 云端构筑 (2026-11-09)
+
+**一句话结论**: Owner 的原始反馈是 **BGM 震得太凶**, 不是绝对增益太大。根因是二选一都不对的
+门控历史: v24.51 用 YAMNet「是 Music 就整段乘 6%」→ 枪声被连坐成蚊子叫; v24.52 矫枉过正改成
+「语义完全不碰冲击」→ BGM 一响, 旋律音一个个全在震。本轮换成**按"这一击像不像音效"分档放行**
+的条件门, 顺带修掉幅度公式的地板。
+
+### A. 核心算法替换: 音乐态条件门 (`dsp.rs`)
+1. **音乐态估计 (带滞回的状态机, 不是逐帧判定)**
+   - 语义路: YAMNet `Music` 概率做 0.35→0 / 0.65→1 的软映射;
+   - DSP 路: `1 − 归一化谱平坦度` 的慢速跟踪 (0.8s 升 / 3.0s 降), 打 0.85 折扣;
+   - 两路取大 → 上升 0.7s / 下降 2.5s 的一阶状态机。
+   - **重要**: DSP 路独立于 ONNX 模型 ⇒ slim / 模型缺失时音乐抑制照样工作。
+2. **sfx_like 得分**: `0.45·爆发度 + 0.35·宽带性 + 0.20·超阈值余量`
+3. **放行比例**: `w = 1 − bgm·music_state·(1 − sfx_like)`
+   - BGM 里的枪声/爆炸: 爆发度高 + 宽带 + 余量大 → sfx_like≈1 → **完全放行**;
+   - BGM 的旋律音/鼓点/铺底: sfx_like≈0.2 → 按 bgm 档位压到 20~40%, 基本不震。
+4. **门槛抬升**: 音乐态成立时 onset 门槛 `×(1 + 1.2·bgm·music_state)`, 节拍型再叠 `×(1 + 0.6·bgm·periodic)`。
+5. **持续音通道**: `×（1 − 0.85·bgm·max(music_state, periodic))`。
+
+这条链的关键性质: **压制强度跟着"音乐态"和"音效相似度"连续变化**, 不再有"要么全震、要么全哑"的悬崖。
+
+### B. 幅度拓扑重写 (顺带治"太凶")
+| 位置 | 旧 | 新 |
+|---|---|---|
+| 冲击幅度地板 | `0.55 + 0.45·strength` (地板 55%) | `0.28 + 0.72·strength` (地板 28%, 余量全给强度) |
+| 输出级 | 直接 `clamp(0,1)` | `soft_knee()`: 0.58 以下 1:1, 以上指数饱和到 0.87 |
+| 爆发度权重 | 无 | 铺底/渐强只保留 55% 幅度 (`IMP_FLOOR`) |
+
+`soft_knee` 是纯函数 (dsp.rs), 保证任何增益组合 (master 105% × 马达区 100%) 都顶不满占空比,
+同时保留"重击 / 轻击"的区分度 —— 旧公式的问题是**动态范围被压到顶端**, 不是增益太大。
+
+### C. 新增判据: 爆发度 (attack-ratio, 与谱通量正交)
+快包络 (4ms 攻击 / 35ms 释放) 与慢包络 (80ms 攻击 / 450ms 释放) 的比值:
+- 枪声/爆炸/打击: 起音在 10ms 量级, 快包络冲到峰值时慢包络才三成 → 比值 2~5 → 爆发度≈1;
+- BGM 铺底 pad、渐强弦乐、长音人声: 慢包络跟得上 → 比值≈1 → 爆发度≈0 → 幅度 ×0.55。
+谱通量看的是**频谱变化幅度**, 爆发度看的是**时间包络斜率**, 两者正交, 可以叠加。
+
+### D. 可观测性
+`AudioTelemetry` 新增 `music_state / periodic / flatness / impulse / strength`, 「实时监测」面板
+画四根判别量进度条 —— 以后调"识别准确率"有据可依, 不用靠猜。
+
+### E. 交付方式改变
+按 Owner 要求改成**仓库云端构筑** (`.github/workflows/build-windows.yml`, push 即触发,
+三变体 embedded/mod/slim), 不再本地 MinGW 编译。产物命名 v24.53。
+
+### F. 关于"换成三轨源分离模型"的评估结论 (核实过一手资料, 本轮不采用)
+| 方案 | 实测事实 | 结论 |
+|---|---|---|
+| TIGER-DnR (LiteRT) | 12.06s 定长块 / 44.1kHz **单声道**, 三张图各 1.41M 参数, Pixel 8a GPU 上 **~4.5s/块/图** | 延迟以**秒**计, 与 20-40ms 触觉回路差 2 个数量级, 不可用于实时 |
+| LiteCASS(-K8) | 真论文 (arXiv 2609.23453), 1.06M 参数 / 0.72G MACs/s, 子带 U-Net 分块 | 分块 U-Net 固有算法延迟数百 ms; 权重未公开; 只能做离线参考 |
+| StemgenRT | MIT, ONNX, **11.6ms** 延迟 (128 样本 hop) | 唯一真正实时的分离器, 但 **44.1kHz 限定** + Windows 端实测仍有 underrun; 且 stem 是**乐器类** (鼓/贝斯/人声/其他), 不是"音效"类 —— 游戏音效散落在"其他"里, 分不开 BGM 与音效 |
+| FireRedVAD / OmniVAD | Apache-2.0, 2.2MB/588K 参数, **10ms 帧 + 200ms 上下文**, RTF≈0.002, 有 C API + ncnn | 唯一能在预算内用的神经模块, 但只解决"现在有没有人说话", 对"音乐 vs 音效"帮不上忙 |
+| Musica | MIT/Apache, 纯 Rust, 0.2ms | SDR 只有 1-5dB (比神经 SOTA 低 5-8dB), 且只做**两源** (人声/伴奏), 类别不符 |
+
+**关键判断**: CASS 类模型全部是"定长块 + 重叠相加", 算法延迟由块长决定 (秒级),
+不是"优化一下就能进 20ms"; 而音乐分轨模型的类别体系里根本没有"游戏音效"这个类。
+→ 实时回路继续走纯 DSP; 重量级模型的正确定位是**离线**给玩家自己的游戏录音打标签,
+再拿标签回来标定 DSP 阈值, 而不是塞进触发回路。
+
+---
+
+
+
+## ★v24.52 白名单失效修复 + 音频识别算法换代 (2026-11-09)
+
+**一句话结论**: "开白名单后只有音频震动失效、连发正常" 不是权限/独占模式问题, 是
+**音频白名单自己是一份空列表 + fail-closed**; 同时把"分不清 BGM 与音效"的旧算法
+(全局谱通量 + 慢速 AGC) 换成 **逐频带自适应白化 + SuperFlux + 自相关节拍检测**。
+
+### A. 白名单根因 (实机日志坐实)
+- `[AUDIO] 状态 -> 等待白名单游戏` 反复出现 → 引擎被闸门挡住、主动丢弃采集会话。
+- 同一 exe/同一设备在白名单关闭时 `[AUDIO-OUT]` 正常 → 采集链、INT32 解码、权限全都正常。
+- 旧实现三处叠加:
+  1. `whitelist_processes` 是**独立空列表**, 玩家开开关却不填 → `entries.is_empty()` 被
+     当成"一个都不许", 直接全拒 (玩家以为会沿用连发白名单);
+  2. 判定依赖 `OpenProcess + QueryFullProcessImageNameW`, 对管理员/受保护进程可能失败,
+     失败即 fail-closed, 且**这一路完全没日志** → 表现就是"莫名无效";
+  3. 与连发白名单的失败语义相反 (连发拿不到路径 = 放行, 音频拿不到 = 全拒) →
+     精确解释"键映射/连发生效, 只有音频不生效"。
+
+### B. 白名单修复
+| 位置 | 改动 |
+|---|---|
+| `src/config.rs` | 新增 `whitelist_source` (默认 `"macro"` = 直接复用连发白名单条目); `whitelist_processes` 语义改为"空 = 不过滤" |
+| `src/state/whitelist.rs` | `foreground_probe()` 返回 PID + **路径或文件名**; 路径拿不到时用 `CreateToolhelp32Snapshot` 枚举 exe 名 (不需要打开目标进程句柄, 管理员进程也能拿到); 新增 `process_whitelist_snapshot()` 只读快照 |
+| `src/audio_haptics/mod.rs` | 闸门重写: 条目来源可选"连发/自定义"; 空列表 = 不过滤并提示; 3s 宽限防 UAC/加载屏抖动; 判定变化写 `[AUDIO] 白名单: 来源=… 条目=… 前台=… 判定=…`; 进程环回降级写 `[降级]` 提示 |
+| `src/gui/audio_page.rs` | 新增"条目来源"选择 + 实时显示"来源/条目数/当前前台/命中或拦截/失败原因/是否降级" |
+
+### C. 算法换代 (`src/audio_haptics/dsp.rs`)
+旧算法死穴: 全局谱通量对 BGM 鼓点无免疫 (鼓点本身就是瞬态); 慢速 AGC 把安静 BGM 抬起来
+反而更容易触发 —— 两个改动方向互相打架, 所以玩家只能把低频/高频增益手动调 0
+(结果连打击通道一起关死, 只剩持续低鸣)。
+
+新链路 (全部纯 Rust + rustfft, 无 GPL/AGPL):
+1. **逐频带自适应白化**: 每带维护 1.5s 衰减峰值 `ref[b]`, 用 `ln(1+6·e/ref)` 做压缩激活,
+   只在 `e/ref > 1.05` 时才算冲击。稳态 BGM/环境音 `e/ref≈1` → 通量≈0, 且天然音量不变
+   (不再需要 AGC)。
+2. **SuperFlux**: 通量前对上一帧幅度做频率轴 3-bin 最大值滤波, 抑制颤音/滑音假通量。
+3. **谱平坦度软权重**: 宽带冲击 (枪声/爆炸) 保持 100%, 纯音型内容保留 60% (不硬否决)。
+4. **自相关节拍检测**: 对冲击包络 2s 历史做自相关 (lag 85ms..1s), 峰值高 = 等间隔鼓点;
+   抬高阈值 + 压低幅度, 但按平坦度打折 —— **宽带瞬态 (技能音) 可以逃逸**, 不会被 BGM 连坐。
+5. 语义门控 (YAMNet) **只管持续音**, 不再乘在单次冲击上 (0.5-1s 判断窗没资格否决 60ms 瞬态)。
+6. 冲击振幅改为"超阈值余量"驱动 (重击/轻击有区别), 包络 `frac^1.6` 更像敲击。
+
+### D. 新增配置 (全部 `serde(default)`, 旧 Config.toml 照常加载)
+`bgm_suppress_pct` (0-100, 默认 60), `whitelist_source` ("macro"/"custom")。
+
+### E. 验证
+- `cargo build` (iter) 与 `cargo build --release` 均通过 (仓库构筑管线, ASCII 构建目录)。
+- 纯逻辑单测: `cargo test --lib audio_haptics` → **20 passed / 0 failed / 1 ignored**
+  (ignored 是需要 yamnet.onnx 的冒烟测试)。没有运行任何实机/按键注入类测试。
+- 合成对照 (`bgm_beats_suppressed_but_sfx_survives`): 4s BGM (220/330Hz 铺底 + 每 0.5s
+  一记 60Hz 鼓点) 在抑制拉满时峰值电平 0.882 → 0.542; 稳态段 0.243, 同段叠一记宽带
+  技能音后该窗口 0.575 (≈2.4× 背景), 即"BGM 压下去、音效仍突出"。
+- 已知边界: 节拍锁需要约 1.5-2s; 纯音型 BGM 靠平坦度压, 宽带鼓组靠周期性压, 两者都
+  不像真实音效时仍可能漏一点; 进程环回在管理员游戏下可能降级为设备环回 (界面会提示)。
+
+---
+
+## ★v24.51 音频震动"引擎运行中但马达无感" —— 已定位根因并修复 (2026-11-09)
+
+**一句话结论**: 不是手柄/XInput/白名单门的问题, 是**音频引擎自己把输出电平算成 0**;
+`状态 -> 运行中` 是假象 (旧代码 `finish_tick` 无条件写 RUNNING), 输出链从未收到非零值。
+
+### 根因链 (按拦截顺序, 全部在音频模块内部)
+1. **绝对能量门槛 (决定性)**: `dsp.rs` 旧 `total*100 >= silence(默认20)` 要求 5 频带能量和
+   ≥0.2 (≈ -14dBFS)。Windows 混音后真实游戏/音乐常为 0.02~0.1 → onset 与 sustain
+   **100% 被拦零**。玩家把音量调到 30~70% 必然全哑 (补充池第 1 点 AGC 早已预警)。
+2. **RMS 被当增益乘子**: `spatial_l/r = clamp(rms, 0.3, 1.0)` 把电平再乘 0.05~0.3,
+   立体声 RMS 本该只用于左右平衡, 不该缩放总强度。
+3. **语义门控叠加**: Music 20% × Speech 30% = 6%, 剩下的一点电平又掉进马达可感区以下。
+4. **采样格式硬编码**: `Loopback::read` 无条件 `chunks_exact(4)` 当 IEEE-float 解析;
+   设备混音格式若是 16/24 位整型 → 样本是乱码/近零 → 全链路恒 0 (换设备才复现的隐藏根因)。
+5. **采集范围**: 环回只取默认输出设备; 白名单旧实现复用 `state.is_process_whitelisted()`
+   (连发白名单: 开关关/列表空/取不到路径 **一律放行**) → "白名单"实际 fail-open, 且
+   即便开启也仍读系统全部声音, 不满足"非白名单应用不读取"。
+
+**日志证据** (`SorahkDFO_vib.log`, ts≥3164900000 窗口共 19 行): 全 0 条 `[XW] NO-PAD`、
+0 条 `[INJ]/[MV]`、0 次占空比保护、状态多次"运行中"; 由于 `send_vibration` 只在
+`left>0||right>0` 且 4 槽全失败时才打 NO-PAD, 零 NO-PAD 恰恰证明 **音频贡献恒 (0,0)**,
+而不是"手柄可见但写失败"。v24.50.1 的"三道门"只解耦了总开关, 没碰电平生成 → 仍然无效。
+
+### 修复 (8 个文件, 539 行增 / 56 行删)
+| 文件 | 改动 |
+|---|---|
+| `src/audio_haptics/dsp.rs` | 慢速 AGC (2s p90 → 目标 0.35, 增益 1..16×, τ≈1s); 静音判据改归一化能量; 立体声改 L/R 平衡系数 (0.6..1.4); 语义门控非零档 30% 保底 (0% 仍是完全过滤) |
+| `src/audio_haptics/mod.rs` | `WaveFormat` 校验 + F32/I16/I24/I32 解码; 按 PID 进程环回 + 默认设备环回双轨; 音频专属白名单闸门 (fail-closed); 自检脉冲; 状态"运行中"必须真有信号 |
+| `src/vibration/mod.rs` | 全 4 个输出分支补齐 max 合流 (评分测试/DLL 断连也未漏); 自检脉冲临时放行; 每秒 `[AUDIO-OUT]` 日志 |
+| `src/config.rs` | `whitelist_enabled` / `whitelist_processes` / `whitelist_mode` / `whitelist_include_tree`; 旧 `whitelist_filter` 保留为遗留别名; Music 门控默认 20→30 |
+| `src/state/audio_state.rs` | 独立白名单原子量 + 条目锁 + 自检脉冲时钟 |
+| `src/state/whitelist.rs` | 新增 `foreground_process_info()` 返回 (PID, 完整路径), 不碰连发白名单状态 |
+| `src/gui/audio_page.rs` | 「应用白名单」面板 + 「马达自检 (0.5 秒)」按钮 |
+| `src/gui/mod.rs` | 白名单编辑框缓冲 |
+
+### 设计方案: 三层隔离 + 可关闭白名单
+- **L1 采集层** `AudioSource`: 默认设备环回 / 按 PID 进程环回 / 全关。只负责"读什么",
+  不认识马达、不认识连发。格式自适应, 失败 5s 重试, PID 变化即重绑。
+- **L2 事件源层** `AudioHapState`: 只暴露 `out_l/out_r` 两个原子量 + 状态/遥测。
+  默认全零 ⇒ 关闭态与 v24.49 逐字节一致。
+- **L3 输出仲裁层** `vibration::run`: `final = max(DLL 通道, 音频通道)` → 唯一出口
+  `send_vibration` (v24.41 写入去重不破坏)。暂停键统一静音; 震动总开关只管 DLL 通道。
+- **白名单语义** (玩家可完全不启用, `whitelist_enabled=false` 默认): 关 = 全局听;
+  开 = **独立列表 + fail-closed** (列表空 / 取不到前台进程 = 不读取、不震动);
+  `process` 模式按 PID 精确环回 (Win10 2004+), 非白名单应用的音频根本不进缓冲;
+  `foreground` 模式为旧系统降级 (仅前台门控 + 全量环回, 日志明示)。条目支持进程名或
+  完整路径, 不读写 `process_whitelist` / `whitelist_enabled` / `whitelist_simple_mode`。
+
+### 兼容性不变量 (静态路径核对)
+- **DLL 注入**: 音频不碰共享内存环/引擎 tick/参数槽; 输出端 max 取大, DLL 峰值永不被覆盖;
+  DLL 断连分支不再把音频踩零。
+- **连发**: 音频不读写 `process_whitelist`、切换键、暂停计数、映射表; 白名单判定走独立
+  `foreground_process_info()`; 暂停键仍是全局唯一静音点。
+- **非震动模式**: 震动总开关关 / `dfo_player=false` 时, 音频默认关且贡献恒 0; 若玩家显式
+  开启音频, 它作为独立事件源继续工作, 不改动任何连发/DLL 行为 (音频页在非 DFO 模式下仍可达)。
+- **关闭态**: `audio_haptics.enabled=false` → 引擎空转、采集会话释放、`out=0`,
+  L3 的 `max(x,0)=x` 与原逻辑等价。
+
+### 验证 (遵守 §3: 只做编译/链接/静态检查, 未跑任何测试与实机)
+- `cargo check --no-default-features` ✓ / `cargo check` (完整 audio-sem) ✓ /
+  `cargo build --profile iter` ✓ 链接产出 `sorahk.exe` (82,036,015 B)。
+  构建目录必须放在 ASCII 路径 (`CARGO_TARGET_DIR=/e/Sorahk-build/target-verify`),
+  中文路径下 MinGW ld 找不到 `.o` (既有环境坑, 非代码问题)。
+- 静态链路: `finish_tick → out_l/out_r → audio_on → max 合流 → send_vibration → XInputSetState`
+  四处合流点全覆盖; TOML 顶层键集合未变 (契约快照不受影响); 架构允许清单未新增反向依赖。
+- **功能/兼容性最终验收仍由 Owner 实机完成**, 不能把构建成功表述为功能通过。
+  验收顺序: ①音频页点「马达自检」→ 手柄震 = 输出链通; ②播放声音 → 电平条动 +
+  vib.log 出现 `[AUDIO-OUT] L>0` → DSP 链通; ③开白名单 + 填/不填应用 → 状态
+  「等待白名单游戏」且不震; ④与 DLL 震动、连发、仅用连发、暂停键四组合交叉验证。
+- 已知边界: 进程环回需 Win10 2004+, 目标进程未播放音频时返回静默; 降级为全量环回时
+  同设备其它声音仍会被听到 (UI/日志已明示); 默认输出设备 ≠ 实际播放设备仍需玩家自行选择。
+
+---
+
+**当前状态**: 基线 = **云端 main 已归一 (v24.49+v24.50+v24.50.1 经 PR#13/#14/#15 合并);
+  本地 main 未同步 (内容已全部在云端, 待用户 `git reset --hard origin/main`); 4 别名仍 v24.47。**
+  * ✅ **已结案 (见上方 v24.51 章节): v24.50.1 实机遗留 —— 音频引擎 RUNNING 但马达仍无感** (用户反馈
+    "还是无效")。已证 (vib.log + 状态日志):
+    - 采集 (48kHz/2ch 环回) ✓、YAMNet 加载 (内嵌) ✓、白名单门已过 (v24.50.1 默认关)、
+      状态日志多次 `状态 -> 运行中` 且长时间稳定 (引擎真在处理音频);
+    - **测试窗口 (ts>=3164900000) 内 [XW] NO-PAD = 0 条** —— 无"4 槽全 get_state 失败"记录
+      (历史上 2730 条 NO-PAD 全在更早窗口: 曾有手柄对 exe 不可见的时段, 注意 HidHide 残留史);
+    - 马达区增益 100/100、震动总开关开、dfo_player=true、音频 enabled=true。
+  - **剩余嫌疑 (按概率排序)**:
+    1. 音频电平本身 ≈ 0: ①**默认输出设备 ≠ 实际播放设备** (环回录的是默认设备, 内容在
+       别处播 = 录到空气); ②相对谱通量门控偏严 (FLUX_FLOOR 0.04 + 中位数+k·MAD, k=3) +
+       静音阈值 20 —— 音乐/游戏音量小时全部拦零; ③SEM Music 门控 ×20% 再压一道。
+    2. 输出链写成功但手柄无感: MSVC 构建 exe 的 XInput 输出路径**从未单独验证过**
+       (send_vibration 成功不写日志; 去重窗口正常); 用户手柄平时由 MinGW 版驱动。
+    3. 测试时 app 恰处于"已暂停" (日志见过一次 已暂停→恢复; 暂停时音频贡献=0)。
+  - **下会话速查步骤 (按序, 每步半分钟)**:
+    1. 开音频震动 + 放大音量音乐 → **看音频页 L/R 电平条动不动**: 动 = DSP→输出链通,
+       问题在 2; 不动 = 嫌疑 1 (先查默认输出设备 vs 实际播放设备!)。
+    2. 灵敏度拉到 8 / 静音阈值 0 / 总强度 200% 再看电平条与马达。
+    3. **音频页加"测试脉冲"按钮** (待办, 半小时): 点一下 = 引擎直接产一次满幅脉冲,
+       一击区分"马达路径通不通" —— 不用再猜 DSP。
+    4. 同一手柄用旧 v24.47 别名验证震动正常 (排除手柄本身/蓝牙)。
+    5. 若 1-4 全通仍无感 → 查 MSVC exe 的 xinput 加载 (xinput.rs GetProcAddress 在
+       MSVC 构建下的行为) + HidHide 残留 (Get-Service HidHide)。
+  - mod 分离版交付件: `源码/DfoVibration-Sorahk_v24.50.1_audio_mod_云端MSVC_20261109.exe`
+    (34MB; 模型放 exe 旁 models\ 或 %APPDATA%\SorahkDFO\models\, 缺失降级纯 DSP);
+    embedded 版 49.39MB 同目录。三变体 CI 固化 (embedded/mod/slim)。
+  * 📌 **本会话收尾状态 (2026-11-09 深夜, 网络波动)**: 本交接块在本地分支
+    `release/v24.50.2-handoff` (基于 21e6572, 树=云端 main d7ee9d5da 同内容) 上**尚未推送**。
+    下会话第 0 步: `git push origin release/v24.50.2-handoff` → PR 合并到 main
+    (云端 main 已是权威线; 若远端已有同内容提交则直接丢弃本分支)。
+  * 🆕 **2026-11-09 v24.50.1 音频修复 (三道门)**
   * 🆕 **2026-11-09 v24.50.1 音频修复 (三道门)**: 实机"没反应"诊断 = 引擎正常但输出被拦。
     ①白名单改音频专属开关 `whitelist_filter` (默认关=全局听); ②音频门与震动总开关解耦
     (总开关只管 DLL 通道, else 分支改为输出 audio_l/r); ③状态翻转写日志。
@@ -27,9 +255,21 @@
       两条 "v24.48" = 并行线 (远端 HidHide 复活→v24.48d 失败归档 / 本地组合键独占)。
       `release/v24.49-chord-exclusive` 与 `release/v24.50-audio-haptics` 两分支
       = origin/main (PR #11) ⊕ 本地 main 全内容 (堆叠), 树差异仅
-      `docs/frozen/hidhide.rs` (保留远端 v24.48d 新归档)。**main 归一方向待用户拍板**。
+      `docs/frozen/hidhide.rs` (保留远端 v24.48d 新归档)。**main 已归一 (PR#13/#14/#15 合并, main=d7ee9d5da+); 本地 main reset 待用户执行**。
     - 测试: 全量 426 passed / 1 failed —— 失败项 `svg_raster` 为环境性 (键盘 SVG 纹理
       2240 > 软渲染上限 2048), 与音频无关; 音频模块 18/18 全绿。
+  * ⚙ **本会话新增环境坑 (2026-11-09)**:
+    - runner rustup 解析不了 `1.96.0-x86_64-pc-windows-gnu` 全三元 channel ("target tuple
+      in channel name") → CI 用 `RUSTUP_TOOLCHAIN=1.96.0` MSVC 宿主直构 (ci.yml 同配方);
+      **带 --target x86_64-pc-windows-gnu 时 embed-resource 产出 MSVC 格式 sorahk.lib,
+      mingw ld 报 file format not recognized** —— 别再混搭。
+    - crates.io 直连超时 → `/e/Sorahk-build/.cargo/config.toml` 局部 rsproxy 镜像 (勿动全局);
+      HF 直连超时 → hf-mirror.com; python urllib 在本机 SSL 验证失败 → GitHub API 用 curl。
+    - Git Bash heredoc 遇 CRLF 会吞终止符 (<<'EOF' 报 delimited by end-of-file) → 长补丁
+      写 work/_patch_*.py 再 `python -I`; `git show 分支:路径` 的冒号会被 MSYS 转换 →
+      用 `git cat-file -p <sha>:<path>` 或 `git restore --source=`。
+    - 云端产物 = MSVC 构建 (功能等价, 本地交付仍 MinGW); v24.49 4.6MB/v24.50.1
+      mod 34MB/embedded 49MB/slim 10.5MB (strip 后 MSVC 体积与 MinGW 差异大, 正常)。
   * ✅ **2026-10-29 v24.49 组合键大扩展 (独占成员键)** —— 已随 release/v24.49-chord-exclusive 上库 (origin 基)。
     - **根因修复**: `chord_solo_bits` 自 v24.37 引入后**从未被赋值**
       (`chord_solo_bits_from_combos()` 有实现有单测但没有调用点) ⇒ 组合成员延迟抑制

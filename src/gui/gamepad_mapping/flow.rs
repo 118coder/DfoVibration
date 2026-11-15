@@ -132,6 +132,9 @@ impl SorahkGui {
             match pick_chord_device(&cands) {
                 Ok((vid, ids)) => match validate_chord_trigger(&self.config, vid, &ids) {
                     Ok(()) => {
+                        crate::vibration::vib_log(&format!(
+                            "[chord] capture-ok | vid={vid:04X} | ids={ids:?}"
+                        ));
                         self.app_state.set_raw_input_capture_mode(false);
                         self.app_state
                             .capture_prefers_max_inputs
@@ -140,9 +143,20 @@ impl SorahkGui {
                             .gp_flow
                             .transition(GpEvent::ChordPadCaptured { vid, ids });
                     }
-                    Err(msg) => self.set_gamepad_warn(msg),
+                    Err(msg) => {
+                        crate::vibration::vib_log(&format!(
+                            "[chord] capture-reject | ids={ids:?} | {msg}"
+                        ));
+                        self.set_gamepad_warn(msg);
+                    }
                 },
-                Err(msg) => self.set_gamepad_warn(msg),
+                Err(msg) => {
+                    crate::vibration::vib_log(&format!(
+                        "[chord] capture-failed | raw_channel={} | {msg}",
+                        cands.raw.is_some()
+                    ));
+                    self.set_gamepad_warn(msg);
+                }
             }
         }
 

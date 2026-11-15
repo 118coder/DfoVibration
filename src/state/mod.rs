@@ -8,7 +8,6 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
-use std::time::Instant;
 
 use smallvec::SmallVec;
 
@@ -30,6 +29,40 @@ static INJECTION_WINDOW_START: AtomicU64 = AtomicU64::new(0);
 static INJECTION_WINDOW_COUNT: AtomicU32 = AtomicU32::new(0);
 static INJECTION_BLOCKED_UNTIL: AtomicU64 = AtomicU64::new(0);
 
+/* ★R2.12 (优化 5) 注入保险记账 —— 原来触发保护后什么都不记, 用户报
+ * 「突然不连发了 / 按键丢了」只能靠猜。现在: 触发时间、期间被丢弃的注入数、
+ * 恢复时间各写一条日志, 并在界面上给一个"注入保护中"的小胶囊。
+ * 计数器只增不减 (诊断用), 不参与任何功能判断。 */
+static INJECTION_COOLDOWNS: AtomicU64 = AtomicU64::new(0);
+static INJECTION_TOTAL_DROPPED: AtomicU64 = AtomicU64::new(0);
+static INJECTION_WINDOW_DROPPED: AtomicU32 = AtomicU32::new(0);
+/// 最近一次触发保护的时刻 (epoch ms; 0 = 从未触发)。
+static INJECTION_LAST_TRIP: AtomicU64 = AtomicU64::new(0);
+
+/// 本次冷却结束的结算动作 (只做一次: 用 swap 抢所有权, 并发调用不会重复记账)。
+fn settle_injection_cooldown(now: u64) {
+    if INJECTION_BLOCKED_UNTIL.swap(0, Ordering::Relaxed) == 0 {
+        return;
+    }
+    let dropped = INJECTION_WINDOW_DROPPED.swap(0, Ordering::Relaxed);
+    let trip_at = INJECTION_LAST_TRIP.load(Ordering::Relaxed);
+    let total = INJECTION_COOLDOWNS.load(Ordering::Relaxed);
+    crate::vibration::vib_warn(&format!(
+        "[INJECT-GUARD] 保护结束: 本次冷却丢弃 {dropped} 次注入, 累计触发 {total} 次, \
+         本次持续 {}ms (触发时刻 {trip_at})",
+        now.saturating_sub(trip_at)
+    ));
+}
+
+/// 注入保险的累计统计 (触发次数, 累计丢弃, 是否正在保护) —— 界面提示用。
+pub fn injection_guard_stats() -> (u64, u64, bool) {
+    (
+        INJECTION_COOLDOWNS.load(Ordering::Relaxed),
+        INJECTION_TOTAL_DROPPED.load(Ordering::Relaxed),
+        injection_cooldown_active(),
+    )
+}
+
 /// 每次注入前调用; 返回 false 表示本次注入应被丢弃(处于冷却期)。
 /// 当前纪元毫秒(注入保险与冷却查询共用)。
 #[inline]
@@ -44,8 +77,13 @@ fn now_ms() -> u64 {
 pub(crate) fn injection_guard_ok() -> bool {
     let now = now_ms();
     if now < INJECTION_BLOCKED_UNTIL.load(Ordering::Relaxed) {
+        /* ★R2.12 (优化 5): 冷却期丢弃要记账, 否则用户只看到"按键没反应" */
+        INJECTION_WINDOW_DROPPED.fetch_add(1, Ordering::Relaxed);
+        INJECTION_TOTAL_DROPPED.fetch_add(1, Ordering::Relaxed);
         return false;
     }
+    /* 冷却刚结束 (BLOCKED_UNTIL 还没被清算) → 补一条"恢复"记录 */
+    settle_injection_cooldown(now);
 
     let window_start = INJECTION_WINDOW_START.load(Ordering::Relaxed);
     if now - window_start >= INJECTION_WINDOW_MS {
@@ -58,6 +96,14 @@ pub(crate) fn injection_guard_ok() -> bool {
         // 超限 → 进入冷却, 强制暂停注入, 避免淹没系统输入
         INJECTION_BLOCKED_UNTIL.store(now + INJECTION_WINDOW_MS, Ordering::Relaxed);
         INJECTION_WINDOW_COUNT.store(0, Ordering::Relaxed);
+        INJECTION_WINDOW_DROPPED.store(0, Ordering::Relaxed);
+        INJECTION_LAST_TRIP.store(now, Ordering::Relaxed);
+        INJECTION_COOLDOWNS.fetch_add(1, Ordering::Relaxed);
+        /* 只在进入冷却那一刻记一条 (冷却期内的高频丢弃由结算行汇总) */
+        crate::vibration::vib_warn(&format!(
+            "[INJECT-GUARD] 一秒内注入超过 {INJECTION_MAX_PER_WINDOW} 次 → 触发保护, \
+             冷却 {INJECTION_WINDOW_MS}ms (期间注入丢弃、真实按键整体透传)"
+        ));
         return false;
     }
     true
@@ -101,6 +147,13 @@ pub(crate) fn is_ime_composing() -> bool {
 }
 
 /// 真正的 IMM 查询(见 is_ime_composing 的节流)。
+/// ⚠★R2.13 已知限制: ImmGetContext 对**别的线程创建的窗口**恒返回 NULL
+/// (IME 上下文线程亲和, 见 Microsoft Learn Q&A "ImmGetContext returns error 0
+/// when calling across threads")。本函数拿 GetForegroundWindow() 的句柄查询,
+/// 而前台窗口几乎总属于别的线程/进程 → 生产环境下恒 false, 本闸门实际不生效。
+/// 保留调用点的原因: ① 调用本身廉价 (失败即返回, 不阻塞钩子线程);
+/// ② 跨进程 IME 组合检测需要 TSF (ITfUIElementMgr) 或 AttachThreadInput,
+/// 是独立的大改动, 未纳入本次。若未来修复, 各调用点语义已就位。
 fn is_ime_composing_impl() -> bool {
     unsafe {
         use windows::Win32::UI::Input::Ime::{
@@ -136,7 +189,7 @@ mod types;
 /// ★v24.50 音频震动模式运行态 (引擎线程写 / 震动线程与 GUI 读; 默认全零=关闭)
 pub mod audio_state;
 pub use audio_state::{
-    audio_status_name, AudioHapState, AudioTelemetry, SemSnapshot, AUDIO_STATUS_NO_DEVICE,
+    audio_status_name, AudioHapState, AudioTelemetry, AUDIO_STATUS_NO_DEVICE,
     AUDIO_STATUS_OFF, AUDIO_STATUS_PAUSED, AUDIO_STATUS_RUNNING, AUDIO_STATUS_WAIT_GAME,
     AUDIO_STATUS_WAIT_SOUND,
 };
@@ -203,7 +256,10 @@ pub struct AppState {
     /// Notification event sender
     notification_sender: std::sync::Mutex<Option<Sender<NotificationEvent>>>,
     /// Process whitelist (empty means all processes enabled)
-    process_whitelist: Mutex<Vec<String>>,
+    /// ★R2.13 性能: Arc 化 —— 热路径 (键盘钩子/连发 worker/鼠标移动 worker, 合计
+    /// 最高 ~1200 次/秒) 只 clone Arc 引用计数, 不再每次锁内克隆整个 Vec<String>
+    /// (10 条完整路径 = 10 次堆分配/次); 只有写入 (配置 reload) 才重建 Arc。
+    process_whitelist: RwLock<Arc<Vec<String>>>,
     /// 白名单总开关 (false = 全部放行, 列表保留)
     whitelist_enabled: std::sync::atomic::AtomicBool,
     /// ★v24.40 白名单简易模式 (true = 条目只按文件名比对)
@@ -213,10 +269,15 @@ pub struct AppState {
     pub vib_legacy_client: std::sync::atomic::AtomicBool,
     /// Cached foreground process **full image path** with timestamp
     /// (★白名单路径条目按完整路径匹配, 文件名在匹配时从路径提取)
-    cached_process_info: RwLock<(Option<String>, Instant)>,
+    /// ★R2.12 (优化 8): 前台窗口探测缓存 (按 HWND 命中; 连发与音频白名单共用)
+    cached_process_info: RwLock<crate::state::whitelist::ForegroundCache>,
     /// ★v24.31 映射配置修订号: reload_config 时 +1。worker 里"锁定"的注入键
     /// 在配置变更后强制解锁松开 (映射已改/已删, 再按着就永远悬空 = 卡键)。
     mappings_revision: std::sync::atomic::AtomicU64,
+    /// ★R2.12 (优化 2): 配置代次 —— 每次 reload_config 成功切换后 +1。
+    /// 下游缓存 (XInput 组合位图 / 切换键掩码 / 独占键表) 都只认同一个代次,
+    /// 排查「是不是哪个缓存没跟上新配置」时有据可查, 不用再靠猜。
+    config_epoch: std::sync::atomic::AtomicU64,
     /// ★v24.31 序列宏: 全局暂停 (KeySequenceToggle/Pause/Continue 切换)
     pub sequence_paused: std::sync::atomic::AtomicBool,
     /// ★v24.31 按设备登记的执行中序列 (同一设备上一条没跑完时忽略新触发)
@@ -232,6 +293,16 @@ pub struct AppState {
     pub capture_prefers_max_inputs: std::sync::atomic::AtomicBool,
     /// Currently pressed keys for combo detection
     pressed_keys: scc::HashSet<u32>,
+    /// ★R2.13 按下/抬起拦截配对集: 记录"本次按下我们拦截过 (未透传给系统)"的 VK。
+    /// keyup 只有命中本集合才拦截真实抬起 —— 根治 MMMMM 连发:
+    /// 旧实现按"配置里有映射"就拦抬起, 当按下落在注入冷却/IME/白名单窗口
+    /// (按下透传、OS 记住键已按下) 而抬起落在窗口外时, 真实抬起被吞 →
+    /// 系统 keydown 自动重复永不停止 → 连发打进任何前台程序 (含非白名单)。
+    /// 钩子线程独占写入 (worker 不碰), 与 pressed_keys 生命周期一致。
+    hook_blocked_down: scc::HashSet<u32>,
+    /// ★R2.13 性能: 是否存在组合键 (KeyCombo) 映射。false 时 keydown 热路径
+    /// 直接跳过 pressed_keys 全量快照 + 组合匹配 (绝大多数用户无组合键配置)。
+    has_combo_index: AtomicBool,
     /// Active combo triggers (multiple combos can be active simultaneously)
     /// Maps combo device to the set of modifier keys that were suppressed
     active_combo_triggers: scc::HashMap<InputDevice, SmallVec<[u32; 8]>>,
@@ -543,6 +614,7 @@ impl AppState {
             std::array::from_fn(|_| AtomicBool::new(true));
         let cached_turbo_other = scc::HashMap::new();
         let cached_combo_index: scc::HashMap<u32, Vec<InputDevice>> = scc::HashMap::new();
+        let has_combo_index = AtomicBool::new(false);
         let cached_xinput_combos: scc::HashMap<DeviceType, Vec<Vec<u32>>> = scc::HashMap::new();
 
         for mapping in config.mappings.iter() {
@@ -562,6 +634,7 @@ impl AppState {
                             combos.push(device.clone());
                             let _ = cached_combo_index.upsert_sync(last_key, combos);
                         }
+                        has_combo_index.store(true, Ordering::Relaxed);
                         let _ =
                             cached_turbo_other.insert_sync(device.clone(), mapping.turbo_enabled);
                     }
@@ -614,7 +687,7 @@ impl AppState {
             input_timeout: AtomicU64::new(config.input_timeout.clamp(1, 2000)),
             combo_key_gap_ms: std::sync::atomic::AtomicU64::new(config.combo_key_gap_ms),
             worker_count: AtomicU64::new(0),
-            process_whitelist: Mutex::new(config.process_whitelist.clone()),
+            process_whitelist: RwLock::new(Arc::new(config.process_whitelist.clone())),
             whitelist_enabled: std::sync::atomic::AtomicBool::new(config.whitelist_enabled),
             whitelist_simple_mode: std::sync::atomic::AtomicBool::new(config.whitelist_simple_mode),
             vib_legacy_client: std::sync::atomic::AtomicBool::new(config.vib_legacy_client),
@@ -622,14 +695,19 @@ impl AppState {
             input_mappings,
             worker_pool: OnceLock::new(),
             notification_sender: std::sync::Mutex::new(None),
-            cached_process_info: RwLock::new((None, Instant::now())),
+            cached_process_info: RwLock::new(
+                crate::state::whitelist::ForegroundCache::default(),
+            ),
             mappings_revision: std::sync::atomic::AtomicU64::new(0),
+            config_epoch: std::sync::atomic::AtomicU64::new(1),
             sequence_paused: std::sync::atomic::AtomicBool::new(false),
             sequence_runs: std::sync::Mutex::new(HashMap::new()),
             key_record: std::sync::Mutex::new(None),
             key_record_active: std::sync::atomic::AtomicBool::new(false),
             capture_prefers_max_inputs: std::sync::atomic::AtomicBool::new(false),
             pressed_keys: scc::HashSet::new(),
+            hook_blocked_down: scc::HashSet::new(),
+            has_combo_index,
             active_combo_triggers: scc::HashMap::new(),
             cached_turbo_keyboard,
             cached_turbo_other,
@@ -857,7 +935,24 @@ impl AppState {
     ///
     /// Returns an error if the new toggle key is invalid or mappings cannot be created.
     pub fn reload_config(&self, config: AppConfig) -> anyhow::Result<()> {
+        /* ═══ ★R2.12 (优化 2): 两阶段切换 ═══
+         * 阶段 A —— 所有**可能失败**的构建先做完 (不碰任何共享状态):
+         *   原来 `create_input_mappings` / 捕获模式解析写在中段, 一旦返回 Err,
+         *   前面的 store 已经生效, 共享状态会停在「一半新、一半旧」的中间态,
+         *   输入线程正好在那一瞬读就会触发**已经改掉**的映射。
+         * 阶段 B —— 下面的所有 store 都不再失败, 一路切到底。 */
+        let new_input_mappings = Self::create_input_mappings(&config)?;
+        let xinput_capture_mode =
+            crate::config::XInputCaptureMode::from_str(&config.xinput_capture_mode)?;
+        /* 原来这里是 `unwrap()` —— 配置里写错一个字符就 panic。坏值退回当前值。 */
+        let rawinput_capture_mode = CaptureMode::from_str(&config.rawinput_capture_mode)
+            .unwrap_or_else(|_| *util::read_guard(&self.rawinput_capture_mode));
+        let chord_exclusive = Self::build_chord_exclusive(&config);
+        let has_semantic = Self::config_has_semantic_mappings(&config);
+        /* 切换键解析也放在阶段 A (解析失败直接返回, 缓存已在函数内做到"要么全新要么不变") */
         Self::update_switch_key_cache(&self.switch_key_cache, &config.switch_key)?;
+
+        /* ═══ 阶段 B: 整体切换 (全部不可失败) ═══ */
 
         // Update language
         self.language
@@ -885,13 +980,11 @@ impl AppState {
             .store(config.combo_key_gap_ms, Ordering::Relaxed);
 
         // Update capture modes (防中毒锁: 锁被 panic 弄脏时继续运行)
-        *util::write_guard(&self.rawinput_capture_mode) =
-            CaptureMode::from_str(&config.rawinput_capture_mode).unwrap();
-        *util::write_guard(&self.xinput_capture_mode) =
-            crate::config::XInputCaptureMode::from_str(&config.xinput_capture_mode)?;
+        /* ★R2.12: 值已在阶段 A 解析好, 这里只做 store —— 不会再中途失败或 panic */
+        *util::write_guard(&self.rawinput_capture_mode) = rawinput_capture_mode;
+        *util::write_guard(&self.xinput_capture_mode) = xinput_capture_mode;
 
         // Update mappings (lock-free concurrent HashMap)
-        let new_input_mappings = Self::create_input_mappings(&config)?;
         self.input_mappings.clear_sync();
         for (k, v) in new_input_mappings {
             let _ = self.input_mappings.insert_sync(k, v);
@@ -900,15 +993,17 @@ impl AppState {
         /* ★v21.7 方案A: 是否存在"语义 HID" 触发键 (..._H<n> / ..._A<n>_<dir>);
          * 有才在 RawInput 热路径调用 HidP_GetUsages 做语义翻译, 否则零开销。 */
         self.semantic_hid_mappings
-            .store(Self::config_has_semantic_mappings(&config), Ordering::Relaxed);
+            .store(has_semantic, Ordering::Relaxed);
 
         /* ★v24.49 独占成员键表随配置重载重建 (XInput 侧下帧据此重算位图) */
-        *util::write_guard(&self.chord_exclusive) = Self::build_chord_exclusive(&config);
+        *util::write_guard(&self.chord_exclusive) = chord_exclusive;
 
         // Update cached data structures
         self.cached_turbo_other.clear_sync();
         self.cached_combo_index.clear_sync();
         self.cached_xinput_combos.clear_sync();
+        /* ★R2.13: 组合键存在性标志随重载重建 (清空后按新配置重置) */
+        self.has_combo_index.store(false, Ordering::Relaxed);
 
         // Reset keyboard turbo cache to default
         for i in 0..256 {
@@ -934,6 +1029,7 @@ impl AppState {
 
                             let _ = self.cached_combo_index.upsert_sync(last_key, combos);
                         }
+                        self.has_combo_index.store(true, Ordering::Relaxed);
                         let _ = self
                             .cached_turbo_other
                             .insert_sync(device, mapping.turbo_enabled);
@@ -963,17 +1059,18 @@ impl AppState {
         }
 
         // Update process whitelist
-        if let Ok(mut whitelist) = self.process_whitelist.lock() {
-            *whitelist = config.process_whitelist.clone();
+        // ★R2.13: Arc 整体替换 —— 读侧 (钩子/worker 热路径) 无锁期 clone 引用即可
+        if let Ok(mut whitelist) = self.process_whitelist.write() {
+            *whitelist = Arc::new(config.process_whitelist.clone());
         }
         self.whitelist_enabled
             .store(config.whitelist_enabled, Ordering::Relaxed);
         self.whitelist_simple_mode
             .store(config.whitelist_simple_mode, Ordering::Relaxed);
 
-        // Clear process name cache
+        // Clear process name cache (★R2.12: hwnd 置 -1 强制下次重新探测)
         if let Ok(mut cache) = self.cached_process_info.write() {
-            *cache = (None, Instant::now());
+            *cache = crate::state::whitelist::ForegroundCache::default();
         }
         // ★v24.31: 映射变更 → 修订号 +1, worker 据此强制解锁旧锁定条目 (防卡键)
         self.mappings_revision
@@ -981,6 +1078,9 @@ impl AppState {
 
         // Clear pressed keys and active combos (lock-free concurrent structures)
         self.pressed_keys.clear_sync();
+        // ★R2.13: 按下/抬起拦截配对集同步清空 —— 否则清屏瞬间旧"已拦截"记录
+        // 残留, 下一次透传按下的抬起会被误拦 (OS 键状态悬空 = 连发)
+        self.hook_blocked_down.clear_sync();
         self.active_combo_triggers.clear_sync();
 
         // Clear worker pool caches (mouse action cache, etc.)
@@ -991,7 +1091,22 @@ impl AppState {
         // Signal XInput to invalidate device-level caches
         self.xinput_cache_invalid.store(true, Ordering::Release);
 
+        /* ★R2.12 (优化 2): 切换完成 —— 代次 +1 (Release: 保证上面的 store 都已落地)。
+         * 排查时看日志里的 [CONFIG] 行就知道"新配置什么时候真正生效"。 */
+        let epoch = self.config_epoch.fetch_add(1, Ordering::Release) + 1;
+        crate::vibration::vib_log(&format!(
+            "[CONFIG] 配置已切换: 代次 -> {epoch}, 映射 {} 条, 切换键={}",
+            config.mappings.len(),
+            config.switch_key
+        ));
+
         Ok(())
+    }
+
+    /// 当前配置代次 (每次成功 reload +1)。诊断/测试用。
+    #[inline]
+    pub fn config_epoch(&self) -> u64 {
+        self.config_epoch.load(Ordering::Acquire)
     }
 
     /// Sets the worker pool for event dispatching.
@@ -1234,7 +1349,7 @@ impl AppState {
                     Self::input_name_to_device(&full)
                     && let &[id] = button_ids.as_slice()
                 {
-                    bits |= 1u32 << (id & 31);
+                    bits |= crate::xinput::XInputHandler::xinput_bit(id);
                 }
             }
             if bits != 0 {
@@ -1271,7 +1386,29 @@ impl AppState {
                 combo.len() >= 2
                     && combo
                         .iter()
-                        .any(|id| mask & (1u32 << (id & 31)) != 0)
+                        .any(|id| *id < 32 && mask & (1u32 << id) != 0)
+            })
+    }
+
+    /// ★R2.12 预设切换键是否可能是某多键组合的成员。
+    /// 与 [`Self::switch_key_may_form_chord`] 同一套判据, 但掩码来自该预设切换键
+    /// 本身 (每个预设可以有不同的切换键), 而不是全局 `switch_key_cache`。
+    /// v24.49 只给全局切换键补了仲裁, 预设切换键分支一直是「命中即切」, 会误切预设。
+    pub fn preset_switch_binding_may_form_chord(
+        &self,
+        device_type: &DeviceType,
+        mask: u32,
+    ) -> bool {
+        if mask == 0 {
+            return false;
+        }
+        self.get_xinput_combos_for_device(device_type)
+            .iter()
+            .any(|combo| {
+                combo.len() >= 2
+                    && combo
+                        .iter()
+                        .any(|id| *id < 32 && mask & (1u32 << id) != 0)
             })
     }
 

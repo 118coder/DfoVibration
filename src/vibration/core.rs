@@ -152,15 +152,125 @@ pub(super) fn expired_or_unset(now: u32, deadline: u32) -> bool {
 }
 
 /* ---------------- 日志 ---------------- */
+
+/// ★R2.12 (优化 9) 日志级别。
+///
+/// 为什么需要: 原来普通状态、调试细节、异常全塞进同一个 `SorahkDFO_vib.log`,
+/// 排障要在几万行里翻。现在每行打级别标签, `Debug` 默认不写, 出问题直接筛
+/// `[WARN]` / `[ERROR]` 即可; `ERROR` 额外复制一份到 `SorahkDFO_crash.log`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum LogLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+}
+
+impl LogLevel {
+    #[inline]
+    pub fn tag(self) -> &'static str {
+        match self {
+            LogLevel::Debug => "DEBUG",
+            LogLevel::Info => "INFO",
+            LogLevel::Warn => "WARN",
+            LogLevel::Error => "ERROR",
+        }
+    }
+}
+
 static VIB_LOG_PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 
-/* ★v24.31 日志轮转 (QKeyMapper 同款): 100MB × 10 个 ≈ 1GB 上限, 防止单文件无限增长。
+/* ★v24.31 日志轮转 (QKeyMapper 同款) 保留为"单日体积"兜底:
+ * 现在按天切文件, 单日仍可能被高频事件刷爆, 故 32MB × 3 再切一层。
  * 字节数用原子计数器累计 (避免每行日志都 stat 文件); 进程重启时按文件实际大小校准。 */
-const VIB_LOG_ROTATE_BYTES: u64 = 100 * 1024 * 1024;
-const VIB_LOG_KEEP: usize = 10;
+const VIB_LOG_ROTATE_BYTES: u64 = 32 * 1024 * 1024;
+const VIB_LOG_KEEP: usize = 3;
 static VIB_LOG_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// 当前 `SorahkDFO_vib.log` 所属的「纪元日」(自 1970-01-01 起的天数)。
+/// 0 = 还没初始化; 跨天时把旧文件改名成带日期的归档再重新计数。
+static VIB_LOG_DAY: AtomicU32 = AtomicU32::new(0);
+/// 写入级别下限 (默认 Info: Debug 不落盘)。可被 [`set_log_level`] 或环境变量覆盖。
+static VIB_LOG_MIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
 
-pub fn vib_log(msg: &str) {
+/// `SORAHK_LOG_DEBUG=1` 时把 Debug 也写出来 (只读一次环境变量)。
+fn debug_log_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var("SORAHK_LOG_DEBUG")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+    })
+}
+
+/// 设置落盘级别下限 (Info 为默认; 排查时可在设置页/环境变量切到 Debug)。
+pub fn set_log_level(level: LogLevel) {
+    VIB_LOG_MIN.store(level as u8, Ordering::Relaxed);
+}
+
+#[inline]
+pub fn log_level() -> LogLevel {
+    match VIB_LOG_MIN.load(Ordering::Relaxed) {
+        0 => LogLevel::Debug,
+        1 => LogLevel::Info,
+        2 => LogLevel::Warn,
+        _ => LogLevel::Error,
+    }
+}
+
+/// 自 1970-01-01 起的天数 (按 UTC 切日; 只用日期, 不需要时区精确)。
+fn day_index_now() -> u32 {
+    (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        / 86_400) as u32
+}
+
+/// 纪元日 → (年, 月, 日)。Howard Hinnant 的 civil_from_days, 纯整数无分支表。
+fn civil_from_days(days: u32) -> (i32, u32, u32) {
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as i64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    (if m <= 2 { y + 1 } else { y } as i32, m, d)
+}
+
+/// 跨天时把 `SorahkDFO_vib.log` 改名成 `SorahkDFO_vib-YYYY-MM-DD.log` 再开新文件。
+/// 当前日志路径始终不变 —— 使用说明里让用户发的那份文件永远是最新的。
+fn rotate_by_day_if_needed(path: &std::path::Path) {
+    let today = day_index_now();
+    let prev = VIB_LOG_DAY.swap(today, Ordering::Relaxed);
+    if prev == today {
+        return;
+    }
+    if prev != 0 {
+        let (y, m, d) = civil_from_days(prev);
+        let stem = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "SorahkDFO_vib".to_string());
+        let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+        let archived = dir.join(format!("{stem}-{y:04}-{m:02}-{d:02}.log"));
+        let _ = std::fs::rename(path, &archived);
+    }
+    /* 新的一天: 文件已被挪走, 计数器归零; 没有旧文件时按实际大小校准 */
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    VIB_LOG_BYTES.store(size, Ordering::Relaxed);
+}
+
+/// 按级别写一行日志。低于下限的级别直接丢弃 (Debug 还需 `SORAHK_LOG_DEBUG=1`)。
+pub fn vib_log_at(level: LogLevel, msg: &str) {
+    if level == LogLevel::Debug && !debug_log_enabled() {
+        return;
+    }
+    if (level as u8) < VIB_LOG_MIN.load(Ordering::Relaxed) {
+        return;
+    }
     let path = VIB_LOG_PATH.get_or_init(|| {
         let p = std::env::current_exe()
             .ok()
@@ -168,20 +278,46 @@ pub fn vib_log(msg: &str) {
             .unwrap_or_else(|| std::path::PathBuf::from("SorahkDFO_vib.log"));
         // 首次使用按文件真实大小校准计数器 (进程重启不丢轮转节奏)
         let size = std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
-        VIB_LOG_BYTES.store(size, std::sync::atomic::Ordering::Relaxed);
+        VIB_LOG_BYTES.store(size, Ordering::Relaxed);
+        VIB_LOG_DAY.store(day_index_now(), Ordering::Relaxed);
         p
     });
+    rotate_by_day_if_needed(path);
     // 轮转检查: 常路径只花一次原子读; 真超限才做移位 (罕见)
     let size =
-        VIB_LOG_BYTES.fetch_add(msg.len() as u64 + 24, std::sync::atomic::Ordering::Relaxed);
+        VIB_LOG_BYTES.fetch_add(msg.len() as u64 + 32, Ordering::Relaxed);
     if size >= VIB_LOG_ROTATE_BYTES {
         crate::util::rotate_log_if_needed(path, VIB_LOG_ROTATE_BYTES, VIB_LOG_KEEP);
-        VIB_LOG_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
+        VIB_LOG_BYTES.store(0, Ordering::Relaxed);
     }
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         use std::io::Write;
-        let _ = writeln!(f, "[{}] {}", now_ms(), msg);
+        let _ = writeln!(f, "[{}] [{}] {}", now_ms(), level.tag(), msg);
     }
+    /* 异常另存一份到 crash.log —— 用户报问题只发一个文件也能看到硬错误 */
+    if level == LogLevel::Error {
+        crate::util::crash_log("ERROR", msg);
+    }
+}
+
+/// 常规状态日志 (INFO)。
+pub fn vib_log(msg: &str) {
+    vib_log_at(LogLevel::Info, msg);
+}
+
+/// 调试细节 (默认不落盘, `SORAHK_LOG_DEBUG=1` 才写)。
+pub fn vib_debug(msg: &str) {
+    vib_log_at(LogLevel::Debug, msg);
+}
+
+/// 需要用户/开发者注意但不影响运行的事件 (保护触发、事件被丢弃等)。
+pub fn vib_warn(msg: &str) {
+    vib_log_at(LogLevel::Warn, msg);
+}
+
+/// 硬错误 (同时进 crash.log)。
+pub fn vib_error(msg: &str) {
+    vib_log_at(LogLevel::Error, msg);
 }
 
 /* ★v24.43c: **节流日志** —— 高频决策点 (FONT 到达 / 注入 / 丢弃) 每秒最多写一行。
@@ -465,5 +601,43 @@ mod xinput_write_dedupe_tests {
         assert!(xinput_write_needed(nz, 700, 1000, 0, 500, 600));
         /* 槽位不同视为不同写 */
         assert!(xinput_write_needed(nz, 900, 1000, 1, 500, 600));
+    }
+}
+
+#[cfg(test)]
+mod log_tests {
+    use super::*;
+
+    /// 纪元日换算必须与实际日期一致 —— 日志归档文件名靠它 (优化 9)。
+    #[test]
+    fn civil_days_round_trip_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(19_723), (2024, 1, 1)); // 2024-01-01
+        assert_eq!(civil_from_days(20_336), (2025, 9, 5)); // 2025-09-05 (闰年跨过)
+        /* 2026-11-11 = 自 1970 起第 20768 天 */
+        assert_eq!(civil_from_days(20_768), (2026, 11, 11));
+        /* 闰日必须落在 2 月 29 —— 手写换算最容易在这里错一天 */
+        assert_eq!(civil_from_days(19_782), (2024, 2, 29));
+    }
+
+    /// 级别标签是排障时的检索关键字, 改了会让「筛 WARN 以上」的用法失效。
+    #[test]
+    fn level_tags_are_stable() {
+        assert_eq!(LogLevel::Debug.tag(), "DEBUG");
+        assert_eq!(LogLevel::Info.tag(), "INFO");
+        assert_eq!(LogLevel::Warn.tag(), "WARN");
+        assert_eq!(LogLevel::Error.tag(), "ERROR");
+        /* 顺序即严重度: 过滤靠 `(level as u8) < min` */
+        assert!(LogLevel::Debug < LogLevel::Info);
+        assert!(LogLevel::Info < LogLevel::Warn);
+        assert!(LogLevel::Warn < LogLevel::Error);
+    }
+
+    /// 默认下限是 Info: Debug 不该落盘 (优化 9 的「普通调试默认不写」)。
+    #[test]
+    fn default_min_level_is_info() {
+        /* 该用例不写盘, 只验证常量语义 (真实写到文件会污染发行目录) */
+        assert_eq!(LogLevel::Info as u8, 1);
+        assert!((LogLevel::Debug as u8) < (LogLevel::Info as u8));
     }
 }

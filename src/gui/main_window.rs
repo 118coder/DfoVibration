@@ -398,6 +398,11 @@ impl SorahkGui {
         // Render main content
         self.render_shell(ctx, &frame_state);
 
+        /* ★v24.55 检查更新: 先拉快照/驱动浮窗计时, 再叠绘浮窗与面板
+         * (放在 render_shell 之后 = 永远画在主界面之上, 但不占据任何布局)。 */
+        self.tick_update();
+        self.render_update_overlay(ctx);
+
         // Check exit
         if frame_state.should_exit {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -1236,10 +1241,9 @@ impl SorahkGui {
                     let is_selected = self.config.current_preset == preset.name;
                     if ui.selectable_label(is_selected, &preset.name).clicked() {
                         self.config.current_preset = preset.name.clone();
-                        /* 空预设不覆盖 (防止把当前映射清空); 非空才加载 */
-                        if !preset.mappings.is_empty() {
-                            self.config.mappings = preset.mappings.clone();
-                        }
+                        /* ★空预设合法: 预设里没有任何键位/映射时, 切换后当前映射就清空,
+                         * 作为"长期不触发任何连发映射"的正式状态使用 (保存/加载/热重载全链路已安全)。 */
+                        self.config.mappings = preset.mappings.clone();
                     }
                 }
             });
@@ -1251,6 +1255,27 @@ impl SorahkGui {
             }
             if let Err(e) = self.app_state.reload_config(self.config.clone()) {
                 eprintln!("Failed to reload config after preset switch: {}", e);
+            }
+            /* ★R2.12: 切预设会整份替换 mappings (可能来自手改配置/导入),
+             * 补一次组合键体检并就近提示; 只提示, 不改动用户配置。 */
+            let chord_issues =
+                crate::gui::gamepad_mapping::validate_all_chords(&self.config);
+            for issue in &chord_issues {
+                crate::vibration::vib_log(&format!(
+                    "[chord] preset-check | preset={} | {issue}",
+                    self.config.current_preset
+                ));
+            }
+            if let Some(first) = chord_issues.first() {
+                self.gamepad_warn = Some(format!(
+                    "预设「{}」的组合键有 {} 处需要注意: {}",
+                    self.config.current_preset,
+                    chord_issues.len(),
+                    first
+                ));
+                self.gamepad_warn_until = Some(
+                    std::time::Instant::now() + std::time::Duration::from_secs(8),
+                );
             }
             if let Some(temp_config) = &mut self.temp_config {
                 temp_config.current_preset = self.config.current_preset.clone();
@@ -1320,6 +1345,35 @@ impl SorahkGui {
                     ("震动 关", th.hint)
                 };
                 th.badge(ui, vtext, vcolor, if vib_on { th.good_soft } else { th.faint });
+
+                /* ★R2.12 (优化 7): 后台线程彻底挂掉必须让用户看得见 ——
+                 * 原来只在 crash.log 写一行, 玩家可能几天后才发现"震动悄悄没了"。 */
+                let stopped = crate::util::stopped_threads();
+                if !stopped.is_empty() {
+                    ui.add_space(theme::SP_XS);
+                    th.badge(
+                        ui,
+                        &format!("{} 个后台功能已停止", stopped.len()),
+                        th.warn,
+                        th.warn_soft,
+                    );
+                    if ui
+                        .add(th.ghost_button("重启该功能"))
+                        .on_hover_text(format!("已停止: {}", stopped.join(", ")))
+                        .clicked()
+                    {
+                        for name in &stopped {
+                            crate::util::restart_thread(name);
+                        }
+                    }
+                }
+
+                /* ★R2.12 (优化 5): 注入保险正在冷却 → 让用户知道"按键没反应"是保护而非卡死 */
+                let (_, _, protecting) = crate::state::injection_guard_stats();
+                if protecting {
+                    ui.add_space(theme::SP_XS);
+                    th.badge(ui, "注入保护中", th.warn, th.warn_soft);
+                }
             });
         });
     }

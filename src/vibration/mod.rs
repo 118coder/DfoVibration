@@ -19,7 +19,7 @@
 //!
 //! 60 参数槽位, 基础 0-18 / 高级 19-59, 槽位常量见 `params.rs`。
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use windows::core::w;
@@ -39,9 +39,31 @@ use params::*;
 /* 共享基础设施对 crate 内其它模块的公开面 (保持迁移前的调用点不变) */
 pub use core::now_ms_u64;
 pub use core::vib_log;
+/* ★R2.12 (优化 9): 分级日志对外出口 —— vib_debug / vib_warn / vib_error
+ * 与 vib_log 同一文件, 行首带级别标签; ERROR 另存 crash.log。 */
+pub use core::{vib_debug, vib_error, vib_log_at, vib_warn, LogLevel};
 pub use core::{invalidate_xinput_write_cache, FONT_ATTACK, FONT_EFFECT, FONT_HIT, FONT_HP, FONT_SPECIAL, FONT_STATE};
 
 use core::*;
+
+/// ★v24.51: 音频贡献实际到达输出端时, 每秒记一行 —— 让"音频震动有没有触发"
+/// 在 vib.log 里可判定, 不必靠手感猜 (旧实现只记状态, 不记电平)。
+static AUDIO_OUT_LOG_AT: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn log_audio_contribution(l: u16, r: u16, dll_gate: bool) {
+    if l == 0 && r == 0 {
+        return;
+    }
+    let now = now_ms_u64();
+    if now.saturating_sub(AUDIO_OUT_LOG_AT.load(Ordering::Relaxed)) >= 1000 {
+        AUDIO_OUT_LOG_AT.store(now, Ordering::Relaxed);
+        vib_log(&format!(
+            "[AUDIO-OUT] 音频贡献 L={l} R={r} 已送达输出端等待 max 合流 (DLL 通道={})",
+            if dll_gate { "开" } else { "关" }
+        ));
+    }
+}
 
 /// ★v16.8 高级算法总开关对 60 槽参数的覆盖 (纯函数, 便于测试):
 /// 关闭 = 把该算法的"关"语义写入参数 (滑块值仍保留在 AppState/config)。
@@ -237,6 +259,13 @@ pub fn run(state: Arc<AppState>) {
              * (DLL 重启窗口每轮都判 invalid 时不再刷屏; crash.log 是 panic 日志,
              * 保持信噪比) */
             let mut ring_prev_ok = true;
+            /* ★R2.12 (优化 3): 首次挂上共享内存的"第一次读"标记。
+             * 现象: crash.log 几乎每次启动都有一条 VIB_RING_INVALID cap=262144
+             * head=0 tail=262112 —— 那是 DLL 上次退出时留在共享内存里的旧 tail,
+             * 属于正常残留, 不是异常。原来它在第一次读就被当成错误记进 crash.log,
+             * 真出问题时反而埋在一堆假异常里。现在: 挂载后的第一次读静默对齐
+             * (tail=head), 只有运行过程中再次出现非法状态才算真异常。 */
+            let mut ring_first_read = false;
             /* 输出闸门诊断: 翻转才记 [GATE] 行 (防刷屏), 见循环内注释 */
             let mut last_gate_state: Option<(bool, bool, bool)> = None;
             /* 路线诊断: 切换时记一行, 便于日志判读是哪条引擎在跑 */
@@ -306,12 +335,17 @@ pub fn run(state: Arc<AppState>) {
                  * 行为逐字节一致。 */
                 /* ★v24.50.1 音频门与震动总开关**解耦**: 总开关只管 DLL 引擎通道,
                  * 音频是独立可选模式 (双向不影响)。暂停键仍统一静音 (audio_on 含 !is_paused)。 */
-                let audio_on = state.audio_hap.is_enabled() && !state.is_paused();
+                /* ★v24.51: 自检脉冲即使在音频总开关关闭时也临时放行走马达,
+                 * 便于一击判定"输出链通不通" (脉冲结束立即回归原语义)。 */
+                let audio_on = (state.audio_hap.is_enabled()
+                    || state.audio_hap.self_check_active())
+                    && !state.is_paused();
                 let (audio_l, audio_r) = if audio_on {
                     state.audio_hap.output()
                 } else {
                     (0u16, 0u16)
                 };
+                log_audio_contribution(audio_l, audio_r, enabled);
                 /* ★输出闸门诊断 (v14.1.1): 事件消费在总开关判断之前, 总开关关闭/
                  * 暂停时 [INJ] 照打但每轮强制 send(0,0) —— 曾因此"日志有注入命中、
                  * 马达纹丝不动"无从排查。有效输出状态一旦翻转, 记一行 [GATE]。 */
@@ -343,6 +377,8 @@ pub fn run(state: Arc<AppState>) {
                                 if s.magic == VIB_SHM_MAGIC && s.version == VIB_SHM_VERSION {
                                     shm_handle = Some(h);
                                     shm_view = Some(view);
+                                    /* ★R2.12 (优化 3): 新挂载 → 下一次读按"首读"处理 */
+                                    ring_first_read = true;
                                 } else {
                                     let _ = unsafe { UnmapViewOfFile(view) };
                                     let _ = unsafe { CloseHandle(h) };
@@ -452,6 +488,11 @@ pub fn run(state: Arc<AppState>) {
                             if got > 0 {
                                 state.vibration_events_received.fetch_add(got as u64, Ordering::Relaxed);
                             }
+                        } else if ring_first_read {
+                            /* ★R2.12 (优化 3): 首次挂载对齐 —— DLL 上次退出时留下的旧 tail
+                             * 属正常残留 (实测 head=0 tail=262112), 静默归零即可;
+                             * 记进 crash.log 只会让真正的异常被假警报埋掉。 */
+                            s.ring.tail.store(head, Ordering::Release);
                         } else {
                             // 头尾异常(DLL 重启 head 回绕 / 软件漏读落后超界): 不能一直丢
                             // (会让震动中断), 把 tail 同步到 head 丢弃积压, 下轮立即恢复读取。
@@ -464,7 +505,9 @@ pub fn run(state: Arc<AppState>) {
                             }
                             s.ring.tail.store(head, Ordering::Release);
                         }
-                        ring_prev_ok = ring_ok;
+                        /* 首读对齐后视作已恢复: 下一轮仍非法才算真异常 */
+                        ring_prev_ok = ring_ok || ring_first_read;
+                        ring_first_read = false;
                     } else {
                         let _ = unsafe { UnmapViewOfFile(view) };
                         if let Some(h) = shm_handle.take() {
@@ -474,7 +517,8 @@ pub fn run(state: Arc<AppState>) {
                         // 整引擎重置: 旧实现只清 left/right, hold/rhythm/评分脉冲等
                         // deadline 字段残留 (配合 u32 回绕会把震动卡死到下一轮 tick)
                         engine = RouteEngine::new(legacy);
-                        send_vibration(0, 0);
+                        /* ★v24.51: DLL 断开时不要把音频震动一起踩零 —— 两条通道独立共存 */
+                        send_vibration(audio_l, audio_r);
                     }
                 } else {
                     state.vibration_connected.store(false, Ordering::Relaxed);
@@ -500,6 +544,8 @@ pub fn run(state: Arc<AppState>) {
                         let pct = params[P_TEST].max(1) as f32 / 100.0;
                         let vl = (65535.0 * pct * motor_l).min(65535.0) as u16;
                         let vr = (65535.0 * pct * motor_r).min(65535.0) as u16;
+                        /* ★v24.51: 评分测试通道同样与音频 max 合流, 不独占马达 */
+                        let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                         send_vibration(vl, vr);
                         state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
                         state.vibration_out_r.store(vr as u32, Ordering::Relaxed);

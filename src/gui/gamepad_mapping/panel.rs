@@ -11,6 +11,13 @@ impl SorahkGui {
         if let Err(e) = self.app_state.reload_config(self.config.clone()) {
             eprintln!("Failed to reload config after gamepad calibration: {e}");
         }
+        /* ★R2.12 结构化日志: 组合键的增删改 / 独占勾选都从这里落盘,
+         * 记下当前存活条数, 重启后也能追溯「到底存进去几条」。 */
+        let chords = crate::gui::gamepad_mapping::chord_mapping_indexes(&self.config).len();
+        crate::vibration::vib_log(&format!(
+            "[chord] persist | chords={chords} | mappings={}",
+            self.config.mappings.len()
+        ));
     }
 
     /// 当前"应该高亮"的槽位: 选中槽位, 或校准向导的当前目标键。

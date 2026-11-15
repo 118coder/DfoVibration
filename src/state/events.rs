@@ -9,13 +9,29 @@ impl AppState {
     pub fn handle_key_event(&self, message: u32, vk_code: u32) -> bool {
         let mut should_block = false;
 
-        if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
+        /* ★R2.13 按下沿判定: 先查后插 —— 该键是否刚刚新按下 (区别于按住期
+         * 自动重复)。切换键 toggle 只在新按下沿触发, 修复"按住切换键 =
+         * 暂停 30 次/秒狂翻转"; 拦截配对登记也只在新按下沿发生 ——
+         * 按住期的重复 keydown 即使被拦截也绝不改写登记状态
+         * (原始 keydown 是透传的场合, 抬起必须照样透传, 见 keyup 分支)。 */
+        let fresh_down = if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
+            let fresh = !self.pressed_keys.contains_sync(&vk_code);
             let _ = self.pressed_keys.insert_sync(vk_code);
+            fresh
+        } else {
+            false
+        };
 
+        if matches!(message, WM_KEYDOWN | WM_SYSKEYDOWN) {
             let kb_vk = self.switch_key_cache.keyboard_vk.load(Ordering::Relaxed);
 
             if kb_vk != 0 && vk_code == kb_vk {
-                self.handle_switch_key_toggle();
+                /* ★R2.13: 只在新按下沿切换; keydown 被拦截 → 新按下沿登记配对集,
+                 * 抬起时同步拦截 (保持吞键配对, OS 键状态不悬空)。 */
+                if fresh_down {
+                    self.handle_switch_key_toggle();
+                    let _ = self.hook_blocked_down.insert_sync(vk_code);
+                }
                 return true;
             }
 
@@ -33,7 +49,12 @@ impl AppState {
                 }
 
                 if all_pressed {
-                    self.handle_switch_key_toggle();
+                    /* ★R2.13: 组合切换键同样只在新按下沿切换 (按住期的自动重复
+                     * keydown 恒满足 all_pressed, 旧实现会每 33ms toggle 一次) */
+                    if fresh_down {
+                        self.handle_switch_key_toggle();
+                        let _ = self.hook_blocked_down.insert_sync(vk_code);
+                    }
                     return true;
                 }
             }
@@ -44,9 +65,17 @@ impl AppState {
         }
 
         let is_up = matches!(message, WM_KEYUP | WM_SYSKEYUP);
+        /* ★R2.13 抬起拦截配对: keyup 是否该拦截, 由"这次按下我们拦过没有"决定
+         * (hook_blocked_down), 不再由 gated 时刻决定。先取走登记 (无论走哪条
+         * 分支都必须移除 —— 残留记录会让下一次透传按下的抬起被误拦)。 */
+        let was_blocked_down = if is_up {
+            self.hook_blocked_down.remove_sync(&vk_code).is_some()
+        } else {
+            false
+        };
         // 冷却期/输入法打字中/白名单外/暂停: 按下事件全部"透传" —— 不拦截也不映射。
         // 抬起事件不能跟着被吞: Released 到不了 worker, 注入的键会永久悬空 (卡键)。
-        // 因此抬起始终进入下方派发, 但保持透传 (不拦截真实抬起)。
+        // 因此抬起始终进入下方派发, 拦截与否由 was_blocked_down 配对决定 (见上)。
         let gated = unlikely(
             self.is_paused()
                 || !self.is_process_whitelisted()
@@ -66,26 +95,35 @@ impl AppState {
 
                     if !is_main_key_no_turbo {
                         // Block repeat events for modifiers and turbo-enabled combo main keys
+                        // ★R2.13: 仅新按下沿登记配对集 (重复 keydown 不改写登记)
+                        if fresh_down {
+                            let _ = self.hook_blocked_down.insert_sync(vk_code);
+                        }
                         return true;
                     }
                 }
 
-                let mut pressed_snapshot: std::collections::HashSet<u32> =
-                    std::collections::HashSet::with_capacity(16);
-                self.pressed_keys.iter_sync(|key| {
-                    pressed_snapshot.insert(*key);
-                    true
-                });
-                let matched_device = self
-                    .find_matching_combo(&pressed_snapshot, vk_code)
-                    .or_else(|| {
-                        let device = InputDevice::Keyboard(vk_code);
-                        if self.get_input_mapping(&device).is_some() {
-                            Some(device)
-                        } else {
-                            None
-                        }
+                /* ★R2.13 性能: 无组合键映射时 (绝大多数用户) 跳过 pressed_keys
+                 * 全量快照 + HashSet 分配 —— 旧实现每 keydown 都做一次。 */
+                let matched_device = if self.has_combo_index.load(Ordering::Relaxed) {
+                    let mut pressed_snapshot: std::collections::HashSet<u32> =
+                        std::collections::HashSet::with_capacity(16);
+                    self.pressed_keys.iter_sync(|key| {
+                        pressed_snapshot.insert(*key);
+                        true
                     });
+                    self.find_matching_combo(&pressed_snapshot, vk_code)
+                } else {
+                    None
+                }
+                .or_else(|| {
+                    let device = InputDevice::Keyboard(vk_code);
+                    if self.get_input_mapping(&device).is_some() {
+                        Some(device)
+                    } else {
+                        None
+                    }
+                });
 
                 if let Some(device) = matched_device {
                     let already_active = self.is_combo_active(&device);
@@ -94,6 +132,9 @@ impl AppState {
                         let allow_repeat = !self.is_turbo_enabled(&device);
 
                         if !allow_repeat {
+                            if fresh_down {
+                                let _ = self.hook_blocked_down.insert_sync(vk_code);
+                            }
                             return true;
                         }
                     }
@@ -113,6 +154,12 @@ impl AppState {
 
                     if let Some(pool) = self.worker_pool.get() {
                         pool.dispatch(InputEvent::Pressed(device));
+                        // ★R2.13: keydown 被拦截 + Pressed 已派发 → 登记配对集
+                        // (仅新按下沿; 抬起时按此决定是否拦截真实抬起 ——
+                        // down/up 拦截永远配对, 冷却/IME/白名单窗口翻转不再漏)。
+                        if fresh_down {
+                            let _ = self.hook_blocked_down.insert_sync(vk_code);
+                        }
                         should_block = true;
                     }
                 }
@@ -130,7 +177,12 @@ impl AppState {
                     for combo in removed_combos {
                         pool.dispatch(InputEvent::Released(combo));
                     }
-                    if !transparent {
+                    /* ★R2.13: 仅当"这次按下我们拦截过"才拦截真实抬起。
+                     * 旧实现无差别拦截 —— 组合的修饰键 (如 LALT) 按下时是透传的
+                     * (修饰键通常无映射), 松开却按组合成员被拦 → OS 认为修饰键
+                     * 仍按着 → Alt 状态卡死; 主键同理: 按下落在冷却/IME 窗口
+                     * (透传) 抬起落在窗口外 (拦截) → 系统自动重复永不停止 = 连发。 */
+                    if !transparent && was_blocked_down {
                         should_block = true;
                     }
                 }
@@ -140,7 +192,9 @@ impl AppState {
                     && let Some(pool) = self.worker_pool.get()
                 {
                     pool.dispatch(InputEvent::Released(dev));
-                    if !transparent {
+                    /* ★R2.13: 同上 —— keyup 拦截必须与 keydown 拦截配对
+                     * (was_blocked_down 已在 keyup 入口取走, 含 gated 情形的移除)。 */
+                    if !transparent && was_blocked_down {
                         should_block = true;
                     }
                 }

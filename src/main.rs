@@ -20,6 +20,8 @@ mod sequence;
 mod signal;
 mod state;
 mod tray;
+/// ★v24.55 检查更新 (与 lib.rs 同步声明)
+mod update;
 mod util;
 mod vibration;
 mod xinput;
@@ -102,6 +104,12 @@ fn main() -> Result<()> {
             return show_error(&error_msg);
         }
     };
+
+    /* ★R2.12: 手改 Config.toml / 导入配置都绕过了 GUI 建键时的组合键校验,
+     * 启动后补一次只读体检。有问题只写运行日志, 绝不改动或丢弃用户配置。 */
+    for issue in crate::gui::gamepad_mapping::validate_all_chords(&config) {
+        crate::vibration::vib_log(&format!("[chord] config-check | {issue}"));
+    }
 
     let app_state = Arc::new(match AppState::new(config.clone()) {
         Ok(state) => state,

@@ -68,6 +68,21 @@ pub fn chord_display(ids: &[u32]) -> String {
         .join("+")
 }
 
+/// ★R2.12 组合键分组标签: 优先按 LT / RT / LB / RB 归组 (用户最常用的一族组合
+/// 都挂在这些修饰键下), 没有肩键/扳机的组合归「其它组合」。
+pub fn chord_group_label(ids: &[u32]) -> &'static str {
+    for &id in ids {
+        match id {
+            0x18 => return "LT 组",
+            0x19 => return "RT 组",
+            0x09 => return "LB 组",
+            0x0A => return "RB 组",
+            _ => {}
+        }
+    }
+    "其它组合"
+}
+
 /// 列出组合键映射 (触发键解析为 ≥2 键 XInput 组合) 在 config.mappings 里的下标。
 pub fn chord_mapping_indexes(config: &AppConfig) -> Vec<usize> {
     config
@@ -79,42 +94,101 @@ pub fn chord_mapping_indexes(config: &AppConfig) -> Vec<usize> {
         .collect()
 }
 
-/// 组合键冲突校验 (建键时护栏, "无冲突"的静态一半; 动态抑制在运行时):
-/// ① 与既有组合键**完全相同** → 拒绝 (重复);
-/// ② 与既有组合键**部分重叠** (共享 ≥1 键且互不包含) → 拒绝 —— 同按两组件的按键时
-///    两条组合同时命中且互不遮蔽, 行为不可预测 (完整包含/被包含是安全的: 大组合独占)。
+/// 组合键冲突校验 (建键时护栏): **只拒绝完全重复**。
 ///
-/// ★v24.49 放宽: 与切换键共用按键**不再拒绝** —— 运行时已能仲裁
-/// (切换键命中若同时补全某组合, 则组合优先、本次不切; 只有单独按切换键才切)。
-/// 因此「LB 既当切换键、又作 LB+X 成员」成为合法配置。
+/// ★R2.12 关键修正: 旧版还拦「与既有组合部分重叠」, 结果
+/// `LT+A / LT+B / LT+X / LT+Y` 这种共用同一个修饰键的一族组合只能建成第 1 条 ——
+/// 用户反馈的「只能绑定少量组合键」根因就在这里 (见 交接_组合键彻查与优化清单_2026-11-11.md)。
+/// 运行时 [`crate::xinput::arbitrate_matched_combos`] 已能裁决多组合同时命中的情况
+/// (精确匹配 > 最长组合 > 确定性取一条), 校验层不再需要这条静态禁令。
 ///
-/// 成员键与槽位单键映射的关系同样**无需**在此校验 —— 运行时延迟抑制保证组合完成时
-/// 成员的单独功能不先触发; 若用户显式勾选「独占」(chord_exclusive_keys), 则成员单键
-/// 整份让位给组合 (永不补发), 这是"牺牲一个键换多个组合键"的用法。
+/// 与切换键共用按键 (v24.49) 早就不拒绝; 成员键与单键映射的关系由运行时
+/// 延迟抑制 / `chord_exclusive_keys` 独占处理, 也不在此校验。
 pub fn validate_chord_trigger(config: &AppConfig, vid: u16, ids: &[u32]) -> Result<(), String> {
     let norm = chord_trigger_name(vid, ids);
-    for i in chord_mapping_indexes(config) {
-        let m = &config.mappings[i];
-        if m.trigger_key.eq_ignore_ascii_case(&norm) {
-            return Err(format!("组合键 {} 已存在", chord_display(ids)));
-        }
-        if let Some((vid2, ids2)) = chord_ids_of(&m.trigger_key)
-            && vid2 == vid
-        {
-            let shared = ids2.iter().filter(|id| ids.contains(id)).count();
-            if shared == 0 {
-                continue;
-            }
-            let subset = shared == ids.len().min(ids2.len());
-            if !subset {
-                return Err(format!(
-                    "与既有组合键 {} 重叠 ({shared} 个共用按键) —— 组合键之间不能部分共用按键, 请换一组",
-                    chord_display(&ids2)
-                ));
-            }
-        }
+    if chord_mapping_indexes(config)
+        .iter()
+        .any(|&i| config.mappings[i].trigger_key.eq_ignore_ascii_case(&norm))
+    {
+        let msg = format!("组合键 {} 已存在", chord_display(ids));
+        crate::vibration::vib_log(&format!(
+            "[chord] reject-duplicate | vid={vid:04X} | trigger={norm}"
+        ));
+        return Err(msg);
     }
     Ok(())
+}
+
+/// ★R2.12 加载期 / 预设切换期统一校验: 手改 Config.toml、导入配置、切预设都会绕过
+/// GUI 建键时的 [`validate_chord_trigger`], 这里补一次只读体检。
+/// 返回可直接展示给用户的中文问题列表 (空 = 没问题), **不修改也不丢弃任何配置**。
+pub fn validate_all_chords(config: &AppConfig) -> Vec<String> {
+    use std::collections::{BTreeSet, HashMap};
+    let mut issues = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut combo_vids: BTreeSet<u16> = BTreeSet::new();
+
+    for (i, m) in config.mappings.iter().enumerate() {
+        let t = m.trigger_key.trim();
+        let upper = t.to_ascii_uppercase();
+        let looks_like_pad_combo = t.contains('+')
+            && (upper.starts_with("GAMEPAD_") || upper.starts_with("JOYSTICK_"));
+        if !looks_like_pad_combo {
+            continue;
+        }
+        match chord_ids_of(t) {
+            Some((vid, ids)) => {
+                combo_vids.insert(vid);
+                let norm = chord_trigger_name(vid, &ids);
+                if let Some(&first) = seen.get(&norm) {
+                    issues.push(format!(
+                        "第 {} 条与第 {} 条是同一个组合键 {} (完全重复, 后者不会优先生效)",
+                        i + 1,
+                        first + 1,
+                        norm
+                    ));
+                } else {
+                    seen.insert(norm, i);
+                }
+            }
+            None => issues.push(format!(
+                "第 {} 条映射的触发键 {} 不是可解析的手柄组合键 (按钮名请用 LB/RB/LT/RT/A/B/X/Y/DPad_Up/LS_Up 等)",
+                i + 1,
+                t
+            )),
+        }
+    }
+
+    /* 同 VID 不同 PID (用户实测: 有线 20BC:5158 / 无线 20BC:5159) 的组合键
+     * 目前按 VID 编码, 无法区分两台设备 —— 这里给出明确诊断而不是静默串键。 */
+    let mut pids_by_vid: HashMap<String, BTreeSet<String>> = HashMap::new();
+    for m in &config.mappings {
+        let p: Vec<&str> = m.trigger_key.split('_').collect();
+        if p.len() >= 4
+            && p[1].len() == 4
+            && p[2].len() == 4
+            && p[1].chars().all(|c| c.is_ascii_hexdigit())
+            && p[2].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            pids_by_vid
+                .entry(p[1].to_ascii_uppercase())
+                .or_default()
+                .insert(p[2].to_ascii_uppercase());
+        }
+    }
+    for vid in combo_vids {
+        let key = format!("{vid:04X}");
+        if let Some(pids) = pids_by_vid.get(&key)
+            && pids.len() > 1
+        {
+            issues.push(format!(
+                "VID {key} 下检测到 {} 个不同 PID 的设备 ({}), 组合键当前按 VID 共享, 这些设备上会互相串键",
+                pids.len(),
+                pids.iter().cloned().collect::<Vec<_>>().join("/")
+            ));
+        }
+    }
+    issues
 }
 
 /// ★v24.49 组合键与切换键共用按键时的**提示** (不再拒绝, 只告知运行时的仲裁语义)。
@@ -208,6 +282,10 @@ pub fn chord_solo_member_names_by_vid(config: &AppConfig) -> Vec<String> {
 impl SorahkGui {
     /// 开始组合键录入 (面板「＋ 添加组合键」)。
     pub(super) fn start_chord_capture(&mut self) {
+        crate::vibration::vib_log(&format!(
+            "[chord] capture-start | existing={}",
+            chord_mapping_indexes(&self.config).len()
+        ));
         self.gp_flow = self.gp_flow.transition(GpEvent::BeginChord);
         if matches!(self.gp_flow, GpFlow::AwaitChordPad) {
             self.capture_pressed_keys.clear();
@@ -424,7 +502,119 @@ impl SorahkGui {
                              可在下方勾选「独占」。",
                         ));
                     } else {
-                        for &i in &indexes {
+                        /* ★R2.12: 组合键数量上去后要找得到 —— 搜索 / 按修饰键分组 /
+                         * 展开全部序列宏 / 带二次确认的批量删除。状态存 egui 临时数据,
+                         * 不往 SorahkGui 和 Config.toml 里加字段。 */
+                        let filter_id = egui::Id::new("gp_chord_filter_v1");
+                        let grouped_id = egui::Id::new("gp_chord_grouped_v1");
+                        let expand_id = egui::Id::new("gp_chord_expand_v1");
+                        let confirm_id = egui::Id::new("gp_chord_batch_v1");
+                        let mut filter: String = ui
+                            .ctx()
+                            .data_mut(|d| d.get_temp::<String>(filter_id).unwrap_or_default());
+                        let mut grouped: bool = ui
+                            .ctx()
+                            .data_mut(|d| d.get_temp::<bool>(grouped_id).unwrap_or(true));
+                        let mut expand_all: bool = ui
+                            .ctx()
+                            .data_mut(|d| d.get_temp::<bool>(expand_id).unwrap_or(false));
+                        let mut confirm_count: usize = ui
+                            .ctx()
+                            .data_mut(|d| d.get_temp::<usize>(confirm_id).unwrap_or(0));
+
+                        ui.horizontal(|ui| {
+                            ui.label(th.hint_text("搜索"));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut filter)
+                                    .desired_width(150.0)
+                                    .hint_text("组合 / 目标键"),
+                            );
+                            let _ = ui.checkbox(&mut grouped, "按修饰键分组");
+                            let _ = ui.checkbox(&mut expand_all, "展开全部序列宏");
+                        });
+                        let needle = filter.trim().to_ascii_lowercase();
+                        let visible: Vec<usize> = indexes
+                            .iter()
+                            .copied()
+                            .filter(|&i| {
+                                if needle.is_empty() {
+                                    return true;
+                                }
+                                let m = &self.config.mappings[i];
+                                m.trigger_key.to_ascii_lowercase().contains(&needle)
+                                    || m.get_target_keys()
+                                        .join(" + ")
+                                        .to_ascii_lowercase()
+                                        .contains(&needle)
+                            })
+                            .collect();
+                        /* 分组排序: 同组的行挨在一起, 循环里遇到新组名就插一行标题 */
+                        let mut ordered = visible.clone();
+                        if grouped {
+                            ordered.sort_by_key(|&i| {
+                                chord_ids_of(&self.config.mappings[i].trigger_key)
+                                    .map(|(_, ids)| chord_group_label(&ids))
+                                    .unwrap_or("其它组合")
+                            });
+                        }
+                        ui.horizontal(|ui| {
+                            ui.label(th.hint_text(format!("共 {} 条组合键", indexes.len())));
+                            if !needle.is_empty() {
+                                ui.label(th.hint_text(format!("筛出 {} 条", visible.len())));
+                            }
+                            let batch_label = format!("删除筛选结果 ({})", visible.len());
+                            if !visible.is_empty()
+                                && ui.add(th.ghost_button(batch_label.as_str())).clicked()
+                            {
+                                confirm_count = visible.len();
+                            }
+                        });
+                        if confirm_count > 0 {
+                            ui.horizontal(|ui| {
+                                ui.label(th.hint_text(format!(
+                                    "确认删除这 {} 条组合键？此操作不可撤销",
+                                    confirm_count
+                                )));
+                                if ui.add(th.primary_button("确认删除")).clicked() {
+                                    for i in visible.iter().rev() {
+                                        if *i < self.config.mappings.len() {
+                                            self.config.mappings.remove(*i);
+                                        }
+                                    }
+                                    self.gp_save_and_reload();
+                                    self.set_gamepad_toast(format!(
+                                        "已删除 {} 条组合键",
+                                        confirm_count
+                                    ));
+                                    crate::vibration::vib_log(&format!(
+                                        "[chord] batch-delete | count={confirm_count}"
+                                    ));
+                                    confirm_count = 0;
+                                }
+                                if ui.add(th.ghost_button("取消")).clicked() {
+                                    confirm_count = 0;
+                                }
+                            });
+                        }
+                        ui.ctx().data_mut(|d| {
+                            d.insert_temp(filter_id, filter.clone());
+                            d.insert_temp(grouped_id, grouped);
+                            d.insert_temp(expand_id, expand_all);
+                            d.insert_temp(confirm_id, confirm_count);
+                        });
+                        let mut last_group = String::new();
+                        for &i in &ordered {
+                            /* ★R2.12 分组标题: 同组只打一次, 40 条组合键也能一眼定位 */
+                            if grouped {
+                                let group = chord_ids_of(&self.config.mappings[i].trigger_key)
+                                    .map(|(_, ids)| chord_group_label(&ids))
+                                    .unwrap_or("其它组合");
+                                if group != last_group.as_str() {
+                                    last_group = group.to_string();
+                                    ui.add_space(2.0);
+                                    th.badge(ui, group, th.accent_text, th.accent_soft);
+                                }
+                            }
                             /* 先取显示数据再放借用 —— 行内要 &mut self 渲染序列编辑器 */
                             let (trig_display, has_seq, targets) = {
                                 let m = &self.config.mappings[i];
@@ -473,6 +663,7 @@ impl SorahkGui {
                                 egui::RichText::new("☰ 序列宏 (连招)").size(12.0),
                             )
                             .id_salt(("gp_chord_seq", i))
+                            .default_open(expand_all)
                             .show(ui, |ui| {
                                 ui.label(th.hint_text(
                                     "按下组合 = 自动执行这套按键时序 (序列优先于下方目标键)",
@@ -610,6 +801,15 @@ mod tests {
         c
     }
 
+    /// ★R2.12 分组标签: 共享修饰键的一族组合归到同一组, 便于 40 条时定位。
+    #[test]
+    fn test_chord_group_label() {
+        assert_eq!(chord_group_label(&[0x0B, 0x18]), "LT 组");
+        assert_eq!(chord_group_label(&[0x09, 0x0D]), "LB 组");
+        assert_eq!(chord_group_label(&[0x0A, 0x0D]), "RB 组");
+        assert_eq!(chord_group_label(&[0x0B, 0x0C]), "其它组合");
+    }
+
     #[test]
     fn test_chord_trigger_name_roundtrip() {
         let name = chord_trigger_name(0x045E, &[RB, LB]);
@@ -647,22 +847,80 @@ mod tests {
         assert!(!idx.contains(&idx_of("Q")), "默认映射不是组合键");
     }
 
+    /// ★R2.12: 部分重叠**不再拒绝** —— 共享修饰键的一族组合是核心用法;
+    /// 完全仍然重复 (否则同一触发键会有两条映射, 行为不确定)。
     #[test]
     fn test_validate_chord_duplicates_and_overlap() {
         let c = config_with(&["GAMEPAD_045E_RB+X", "GAMEPAD_045E_A+LB"]);
-        /* 完全重复 (RB+X) → 拒绝 */
-        assert!(validate_chord_trigger(&c, 0x045E, &[RB, X]).is_err());
-        /* 部分重叠 (RB+Y 与 RB+X 共享 RB) → 拒绝 */
         assert!(
-            validate_chord_trigger(&c, 0x045E, &[RB, Y]).is_err(),
-            "RB+Y 与 RB+X 部分重叠应拒绝"
+            validate_chord_trigger(&c, 0x045E, &[RB, X]).is_err(),
+            "完全重复仍应拒绝"
         );
-        /* 完全包含 (RB+X+Y ⊃ RB+X) → 允许 (大组合独占, 语义确定) */
+        assert!(
+            validate_chord_trigger(&c, 0x045E, &[RB, Y]).is_ok(),
+            "RB+Y 与 RB+X 共享 RB 应允许"
+        );
         assert!(validate_chord_trigger(&c, 0x045E, &[RB, X, Y]).is_ok());
-        /* 与另一组合部分重叠 (X+LT 与 RB+X 共享 X) → 拒绝 */
-        assert!(validate_chord_trigger(&c, 0x045E, &[X, 0x18]).is_err());
-        /* 完全不相交 (LT+RT) → 允许 */
+        assert!(
+            validate_chord_trigger(&c, 0x045E, &[X, 0x18]).is_ok(),
+            "X+LT 与 RB+X 共享 X 应允许"
+        );
         assert!(validate_chord_trigger(&c, 0x045E, &[0x18, 0x19]).is_ok());
+    }
+
+    /// ★R2.12 用户原话: LT+A / LT+B / LT+X / LT+Y 四条要能一次建出来。
+    /// 旧版在第 2 条就会被「部分重叠」拦下 (只能建 1/4)。
+    #[test]
+    fn test_shared_modifier_chord_family_is_buildable() {
+        let mut c = config_with(&[]);
+        const LT: u32 = 0x18;
+        for (name, key) in [("A", 0x0Bu32), ("B", 0x0C), ("X", 0x0D), ("Y", 0x0E)] {
+            let ids = vec![key, LT];
+            assert!(
+                validate_chord_trigger(&c, 0x045E, &ids).is_ok(),
+                "{name}+LT 应能建成 (第 {} 条)",
+                c.mappings.len() + 1
+            );
+            c.mappings.push(KeyMapping {
+                release_targets: Default::default(),
+                sequence_text: String::new(),
+                trigger_key: chord_trigger_name(0x045E, &ids),
+                target_keys: Default::default(),
+                interval: None,
+                event_duration: None,
+                turbo_enabled: false,
+                move_speed: 5,
+                double_tap_enabled: false,
+                double_tap_gap_ms: 50,
+                run_enabled: false,
+                run_threshold: 80,
+                run_recheck: true,
+                lock_enabled: false,
+                note: String::new(),
+            });
+        }
+        assert_eq!(chord_mapping_indexes(&c).len(), 4);
+        let issues = validate_all_chords(&c);
+        assert!(issues.is_empty(), "四条共享 LT 的组合键体检应无问题: {issues:?}");
+    }
+
+    /// ★R2.12: 加载期体检要能发现完全重复与解析不了的组合键。
+    #[test]
+    fn test_validate_all_chords_finds_duplicates_and_bad_names() {
+        let c = config_with(&[
+            "GAMEPAD_045E_LT+A",
+            "GAMEPAD_045E_LT+A",
+            "GAMEPAD_045E_LS_RightUp+A",
+        ]);
+        let issues = validate_all_chords(&c);
+        assert!(
+            issues.iter().any(|s| s.contains("完全重复")),
+            "重复组合键应被报出: {issues:?}"
+        );
+        assert!(
+            issues.iter().any(|s| s.contains("不是可解析")),
+            "斜向名 LS_RightUp 无法解析, 应被报出: {issues:?}"
+        );
     }
 
     /// ★v24.49: 与切换键共用按键**不再拒绝** (运行时仲裁: 单独按切换键才切,

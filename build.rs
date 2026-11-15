@@ -1,27 +1,28 @@
 fn main() {
-    // ★v24.50 音频震动: 个人版模型内嵌机制。
-    // 构建时若项目根存在 models/yamnet.onnx (~15MB, Apache-2.0) → include_bytes 内嵌进 exe
-    // (用户决策: 个人版 15MB 不算什么, 离线可用)。不存在 → 公开精简构建, 运行时从
-    // mod 目录 (exe 同目录 models\ 或 %APPDATA%\SorahkDFO\models\) 加载, 缺失自动降级纯 DSP。
-    println!("cargo:rustc-check-cfg=cfg(yamnet_embed)");
-    let model = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("models").join("yamnet.onnx");
-    if model.is_file() {
-        println!("cargo:rustc-env=YAMNET_EMBED_PATH={}", model.display());
-        println!("cargo:rustc-cfg=yamnet_embed");
-        println!("cargo:rerun-if-changed=models/yamnet.onnx");
-    }
+    // ★v24.60 音频震动引擎已改为纯算法 (无 ONNX 模型), 旧 yamnet/mrx 内嵌机制随
+    // AI 层一并移除; 此处只保留 Windows 资源编译。
 
     // Only compile resources on Windows
     #[cfg(windows)]
     {
-        // ★v24.20a: RT_MANIFEST(highestAvailable) 默认**不**嵌入 (用户决策:
-        // 不默认管理员运行, 90CN 靠使用说明引导右键管理员) 。
-        // 如需恢复静默提权构建: SORAHK_MANIFEST=1 。注意带 manifest 的
-        // 可执行体 (cargo test 产物) 非提权 shell 启动会 os error 740。
+        // ★R2.12: 普通发行版一律 asInvoker (默认不嵌 manifest, 或显式 =1 时嵌 asInvoker 清单),
+        // 双击不弹 UAC, headless 渲染 / CI 也能在非提权 shell 直接跑 (旧 highestAvailable
+        // 曾让实机普通权限启动报 os error 740)。仅显式 SORAHK_MANIFEST=admin 才嵌入
+        // highestAvailable 变体, 供 90CN 这类已提权客户端使用。
         println!("cargo:rerun-if-env-changed=SORAHK_MANIFEST");
         let _ = embed_resource::compile("resources/sorahk.rc", embed_resource::NONE);
-        if std::env::var("SORAHK_MANIFEST").as_deref() == Ok("1") {
-            let _ = embed_resource::compile("resources/sorahk_manifest.rc", embed_resource::NONE);
+        match std::env::var("SORAHK_MANIFEST").as_deref() {
+            Ok("admin") => {
+                let _ = embed_resource::compile(
+                    "resources/sorahk_manifest_admin.rc",
+                    embed_resource::NONE,
+                );
+            }
+            Ok("1") => {
+                // 兼容旧脚本: 旧 =1 期望提权, 现在只嵌 asInvoker 清单 (等价普通权限)。
+                let _ = embed_resource::compile("resources/sorahk_manifest.rc", embed_resource::NONE);
+            }
+            _ => {}
         }
     }
 }

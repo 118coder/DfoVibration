@@ -22,8 +22,14 @@ pub struct Resampler {
 
 impl Resampler {
     pub fn new(rate_in: f32, rate_out: f32) -> Self {
-        let cutoff = LPF_CUTOFF_HZ.min(rate_out * 0.45).min(rate_in * 0.45);
-        let taps = sinc_lpf(cutoff / rate_in, LPF_TAPS);
+        Self::with_lpf(rate_in, rate_out, LPF_CUTOFF_HZ, LPF_TAPS)
+    }
+
+    /// ★v24.54 可参数化截止/阶数 (三轨分离的 48↔44.1k 全通带转换用:
+    /// 截止 ≈ min(in,out)×0.45, 127 tap 让 20k 以上过渡带足够窄)。
+    pub fn with_lpf(rate_in: f32, rate_out: f32, cutoff_hz: f32, taps: usize) -> Self {
+        let cutoff = cutoff_hz.min(rate_out * 0.45).min(rate_in * 0.45);
+        let taps = sinc_lpf(cutoff / rate_in, taps);
         let tap_count = taps.len();
         Self {
             taps,

@@ -308,6 +308,62 @@ pub fn icon_button(ui: &mut egui::Ui, th: &Theme, icon: Icon, tip: &str) -> egui
     response.on_hover_text(tip)
 }
 
+/// 开/关拨动开关 (46×26 胶囊 / 20px 滑块 / 120ms 过渡)。
+///
+/// 用于"长期状态"型开关 (总开关), 比一个大按钮更符合直觉: 位置本身就是状态。
+/// 点击自动翻转 `*on` 并 `mark_changed()`; 焦点环/指针光标与其它自绘控件一致。
+pub fn switch(ui: &mut egui::Ui, th: &Theme, on: &mut bool) -> egui::Response {
+    let size = egui::vec2(46.0, 26.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+
+    let anim = ui.ctx().animate_bool_with_time(
+        egui::Id::new("switch").with(rect.min.x.to_bits()).with(rect.min.y.to_bits()),
+        *on,
+        0.12,
+    );
+
+    // 轨道: 关 = faint, 开 = accent; 悬停整体提亮一档
+    let mut track = lerp_color(th.faint, th.accent, anim);
+    if response.hovered() {
+        track = lerp_color(track, egui::Color32::WHITE, if th.dark { 0.10 } else { 0.05 });
+    }
+    ui.painter().rect_filled(rect, size.y / 2.0, track);
+
+    // 滑块: 关 = 中性灰, 开 = 白
+    let knob_r = 10.0;
+    let x = egui::lerp(
+        (rect.left() + 3.0 + knob_r)..=(rect.right() - 3.0 - knob_r),
+        anim,
+    );
+    ui.painter().circle_filled(
+        egui::pos2(x, rect.center().y),
+        knob_r,
+        lerp_color(th.text_weak, egui::Color32::WHITE, anim),
+    );
+
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            size.y / 2.0 + 2.0,
+            egui::Stroke::new(2.0, th.accent),
+            egui::StrokeKind::Outside,
+        );
+    }
+    response
+}
+
+/// 两色线性插值 (不透明, 用于开关过渡这类必须逐帧算的颜色)。
+fn lerp_color(a: egui::Color32, b: egui::Color32, t: f32) -> egui::Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    egui::Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
 /// 空状态: 大图标 + 标题 + 多行说明。
 pub fn empty_state(ui: &mut egui::Ui, th: &Theme, icon: Icon, title: &str, lines: &[&str]) {
     ui.vertical_centered(|ui| {

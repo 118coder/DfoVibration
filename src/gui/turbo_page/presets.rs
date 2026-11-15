@@ -41,9 +41,8 @@ impl SorahkGui {
                 if switched {
                     self.config.current_preset = next.clone();
                     if let Some(pr) = self.config.presets.iter().find(|p| p.name == next) {
-                        if !pr.mappings.is_empty() {
-                            self.config.mappings = pr.mappings.clone();
-                        }
+                        /* ★空预设合法: mappings 为空就是"清空所有键位映射"的正式状态, 照常加载。 */
+                        self.config.mappings = pr.mappings.clone();
                     }
                     self.page_preset_delete_arm = false;
                     let _ = self.config.save_to_file("Config.toml");
@@ -196,7 +195,7 @@ impl SorahkGui {
                     });
                 }
             } else {
-                ui.label(th.hint_text("顶栏选择「(无)」时映射未入档: 用上方「保存预设」起名入档后可切换/重命名/删除"));
+                ui.label(th.hint_text("顶栏选择「(无)」时映射未入档: 用上方「保存预设」起名入档后可切换/重命名/删除；预设里一条映射都没有(空预设)是合法状态，可长期保存使用"));
             }
 
             /* ★v20.3 行4: 预设切换键 —— 游戏内按组合键直接切预设 (保存时防冲突) */

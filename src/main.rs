@@ -101,13 +101,20 @@ fn main() -> Result<()> {
     safety::start_emergency_hotkey();
 
     // Load config or create default if not exists
-    let config = match AppConfig::load_or_create("Config.toml") {
+    let mut config = match AppConfig::load_or_create("Config.toml") {
         Ok(cfg) => cfg,
         Err(e) => {
             let error_msg = format!("Failed to load configuration: {}", e);
             return show_error(&error_msg);
         }
     };
+
+    /* ★R2.14: 「仅用连发」(dfo_player=false) → 震动关闭并落盘 (原 SorahkGui::new 的启动修正
+     * 移到装配处、AppState 构造前 —— 保证运行态镜像的就是修正后的配置)。 */
+    if !config.dfo_player && config.vibration.enabled {
+        config.vibration.enabled = false;
+        let _ = config.save_vibration_to_file(AppConfig::vibration_path_for("Config.toml"));
+    }
 
     /* ★R2.12: 手改 Config.toml / 导入配置都绕过了 GUI 建键时的组合键校验,
      * 启动后补一次只读体检。有问题只写运行日志, 绝不改动或丢弃用户配置。 */
@@ -193,7 +200,12 @@ fn main() -> Result<()> {
         });
     }
 
-    let gui_result = SorahkGui::run(app_state.clone(), config);
+    /* ★R2.14 前后端分离: 后端服务门面 —— 配置权威/保存调度/命令分派全归它。
+     * AppState/钩子/引擎的接线保持不变 (app_state 照旧共享)。 */
+    let backend =
+        std::sync::Arc::new(backend::BackendService::new(app_state.clone(), config, "Config.toml"));
+
+    let gui_result = SorahkGui::run(backend);
 
     gui_result
 }

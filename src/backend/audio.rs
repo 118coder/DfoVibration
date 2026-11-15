@@ -226,4 +226,112 @@ impl BackendService {
         })?;
         Ok(())
     }
+
+    // ── ★R2.14 B 阶段: 音频页 GUI 所需的补充 API ────────────────────────
+
+    /// 内置预设表 (audio_haptics::mapping::PRESETS 静态切片; 顺序即 UI 展示顺序)。
+    pub fn audio_builtin_presets(&self) -> &'static [crate::audio_haptics::mapping::Preset] {
+        crate::audio_haptics::mapping::PRESETS
+    }
+
+    /// 按名查内置预设。
+    pub fn audio_preset_by_name(
+        &self,
+        name: &str,
+    ) -> Option<&'static crate::audio_haptics::mapping::Preset> {
+        crate::audio_haptics::mapping::preset_by_name(name)
+    }
+
+    /// 内置预设保护名 (与内置重名的自定义/导入一律拒绝, 旧 is_protected_preset 语义)。
+    pub fn audio_preset_protected(&self, name: &str) -> bool {
+        crate::audio_haptics::mapping::is_protected_preset(name)
+    }
+
+    /// 引擎遥测快照 (旧 audio_page 帧首 try_lock + clone 的等价物;
+    /// Mutex 被引擎占用时返回 None, GUI 显示"本帧跳过")。
+    pub fn audio_telemetry(&self) -> Option<crate::state::audio_state::AudioTelemetry> {
+        self.app.audio_hap.telemetry.try_lock().ok().map(|t| t.clone())
+    }
+
+    /// 引擎状态码 (AUDIO_STATUS_* 常量口径; 状态名走 snapshot.audio.status)。
+    pub fn audio_status_code(&self) -> u8 {
+        self.app.audio_hap.status_code()
+    }
+
+    /// ★v24.61 应用预设 (按名; **同名自定义优先**, 否则内置 —— 对齐震动区
+    /// pick_preset_for_apply 语义)。返回 false = 找不到该预设。
+    pub fn apply_audio_preset_by_name(&self, name: &str) -> anyhow::Result<bool> {
+        let custom = self.cfg.with_config(|c| {
+            c.audio_haptics
+                .presets
+                .iter()
+                .find(|p| p.name == name)
+                .cloned()
+        });
+        let entry = match custom {
+            Some(e) => e,
+            None => match self.audio_preset_by_name(name) {
+                Some(p) => crate::config::AudioPresetConfig {
+                    name: p.name.to_string(),
+                    user_modified: false,
+                    master_gain_pct: p.master_gain_pct,
+                    low_gain_pct: p.low_gain_pct,
+                    high_gain_pct: p.high_gain_pct,
+                    punch_pct: p.punch_pct,
+                    mask_threshold: p.mask_threshold,
+                    adaptive_threshold: p.adaptive_threshold,
+                    auto_profile: p.auto_profile,
+                    music_mask_pct: p.music_mask_pct,
+                    quiet_mask: p.quiet_mask,
+                    rhythm_pct: p.rhythm_pct,
+                    texture_pct: p.texture_pct,
+                    attack_pct: p.attack_pct,
+                    release_pct: p.release_pct,
+                    dead_zone_pct: p.dead_zone_pct,
+                    map_max: p.map_max,
+                    dual_motor: p.dual_motor,
+                    vocal_only: p.vocal_only,
+                    bass_high_hz: p.bass_high_hz,
+                    vocal_low_hz: p.vocal_low_hz,
+                    vocal_high_hz: p.vocal_high_hz,
+                },
+                None => return Ok(false),
+            },
+        };
+        self.apply_audio_preset_entry(&entry)?;
+        Ok(true)
+    }
+
+    /// 把预设条目写进 config 引擎字段 (不改 enabled / 白名单; 写 preset 名),
+    /// `apply_config` 镜像即时生效 + 立即落盘 (旧 apply_preset_entry 语义)。
+    pub fn apply_audio_preset_entry(
+        &self,
+        e: &crate::config::AudioPresetConfig,
+    ) -> anyhow::Result<()> {
+        self.update_audio_config(|a| {
+            a.preset = e.name.clone();
+            a.master_gain_pct = e.master_gain_pct;
+            a.low_gain_pct = e.low_gain_pct;
+            a.high_gain_pct = e.high_gain_pct;
+            a.punch_pct = e.punch_pct;
+            a.mask_threshold = e.mask_threshold;
+            a.adaptive_threshold = e.adaptive_threshold;
+            a.auto_profile = e.auto_profile;
+            a.music_mask_pct = e.music_mask_pct;
+            a.quiet_mask = e.quiet_mask;
+            a.rhythm_pct = e.rhythm_pct;
+            a.texture_pct = e.texture_pct;
+            a.attack_pct = e.attack_pct;
+            a.release_pct = e.release_pct;
+            a.dead_zone_pct = e.dead_zone_pct;
+            a.map_max = e.map_max;
+            a.dual_motor = e.dual_motor;
+            a.vocal_only = e.vocal_only;
+            a.bass_high_hz = e.bass_high_hz;
+            a.vocal_low_hz = e.vocal_low_hz;
+            a.vocal_high_hz = e.vocal_high_hz;
+        });
+        self.cfg.save_all_now()?;
+        Ok(())
+    }
 }

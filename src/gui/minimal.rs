@@ -1,4 +1,7 @@
 //! Main window implementation and rendering logic.
+//!
+//! ★R2.14 前后端分离: 配置读写全部走 backend (with_config / update_config)，
+//! 本文件不再直持 AppConfig / AppState。
 
 use crate::gui::SorahkGui;
 use crate::gui::theme::{self, Theme};
@@ -10,26 +13,29 @@ use super::main_window::FrameState;
 impl SorahkGui {
     pub(super) fn set_minimal_mode(&mut self, ctx: &egui::Context, on: bool) {
         self.minimal_mode = on;
-        self.config.minimal_mode = on;
         if on {
             /* ★v20.4: 与经典模式互斥 —— 进入极简即退经典 (双标记同真会让外壳分支打架);
              * 同时解除经典模式的 820×600 最小尺寸, 否则小窗缩不下去 */
             self.classic_mode = false;
-            self.config.classic_mode = false;
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::Vec2::ZERO));
         }
         if !on {
             /* 退出极简: 极简矩形落盘 + 精确还原完整模式上次的窗口位置+尺寸 */
             if let Some((pos, sz)) = self.minimal_window_rect {
-                self.config.window_rect_minimal = Some([pos.x, pos.y, sz.x, sz.y]);
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.window_rect_minimal = Some([pos.x, pos.y, sz.x, sz.y]),
+                );
             }
+            let normal_cfg = self.backend.with_config(|c| c.window_rect_normal);
             let restore = self.normal_window_rect.take().or_else(|| {
-                self.config
-                    .window_rect_normal
-                    .map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
+                normal_cfg.map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
             });
             if let Some((pos, sz)) = restore {
-                self.config.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]);
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]),
+                );
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(sz));
             } else if let Some(sz) = self.normal_window_size.take() {
@@ -44,7 +50,12 @@ impl SorahkGui {
             // 退出恢复的是上一次的旧矩形
             self.normal_window_size = None;
         }
-        let _ = self.config.save_to_file("Config.toml");
+        /* ★R2.14: 模式标记落盘走 backend (Save 档) */
+        let (minimal, classic) = (self.minimal_mode, self.classic_mode);
+        let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+            c.minimal_mode = minimal;
+            c.classic_mode = classic;
+        });
     }
 
 
@@ -70,8 +81,11 @@ impl SorahkGui {
                 ui.add_space(theme::SP_S);
                 if widgets::icon_button(ui, &th, widgets::Icon::Theme, "切换主题").clicked() {
                     self.dark_mode = !self.dark_mode;
-                    self.config.dark_mode = self.dark_mode;
-                    let _ = self.config.save_to_file("Config.toml");
+                    /* ★R2.14: 主题持久化走 backend (Save 档) */
+                    let _ = self.backend.update_config(
+                        crate::ui_api::Commit::Save,
+                        |c| c.dark_mode = self.dark_mode,
+                    );
                     if let Some(temp_config) = &mut self.temp_config {
                         temp_config.dark_mode = self.dark_mode;
                     }
@@ -106,6 +120,14 @@ impl SorahkGui {
     /// 会垂直占满剩余空间并把后续内容挤出视口 (曾导致文字全部消失)。
     pub(super) fn render_minimal_page(&mut self, ui: &mut egui::Ui, frame_state: &FrameState) {
         let th = self.theme();
+        /* ★R2.14: 帧首一次性收集 (震动运行态 + dfo_player + 预设来源路线) */
+        let (vib_on, dfo_player, vib_legacy) = self.backend.with_config(|c| {
+            (
+                c.vibration.enabled,
+                c.dfo_player,
+                c.vib_legacy_client,
+            )
+        });
 
         ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
             ui.add_space(theme::SP_L);
@@ -138,7 +160,8 @@ impl SorahkGui {
             ui.add_space(theme::SP_S);
 
             // 预设快切 (极简模式中间)
-            if self.config.presets.is_empty() {
+            let presets_empty = self.backend.with_config(|c| c.presets.is_empty());
+            if presets_empty {
                 ui.label(th.hint_text("无预设"));
             } else {
                 // egui 的 main_align 不作用于水平行的摆放 (只对齐按钮内文字),
@@ -178,12 +201,8 @@ impl SorahkGui {
             ui.add_space(theme::SP_S);
 
             // 震动大开关
-            let vib_on = self
-                .app_state
-                .vibration_enabled
-                .load(std::sync::atomic::Ordering::Relaxed);
             // 非 DFO 玩家: 整段震动 UI 隐藏 (连发功能不受影响)
-            if self.config.dfo_player {
+            if dfo_player {
             let (vtext, vfg, vbg) = if vib_on {
                 ("震动 · 开启", th.good, th.good_soft)
             } else {
@@ -196,13 +215,10 @@ impl SorahkGui {
             .corner_radius(egui::CornerRadius::same(12))
             .min_size(egui::vec2(260.0, 50.0));
             if ui.add_sized([280.0, 50.0], vib_btn).clicked() {
-                let v = self
-                    .app_state
-                    .vibration_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed);
-                self.app_state
-                    .vibration_enabled
-                    .store(!v, std::sync::atomic::Ordering::Relaxed);
+                /* ★R2.14: 总开关切换走 backend (config + 运行态镜像 + 落盘,
+                 * 替代旧的"只翻原子"写法 —— 单一写路径, 重启不再回滚) */
+                self.backend
+                    .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
             }
             ui.add_space(theme::SP_S);
 
@@ -214,7 +230,7 @@ impl SorahkGui {
             let seg_h = 26.0_f32;
             let (seg_rect, _) =
                 ui.allocate_exact_size(egui::vec2(seg_w * 2.0 + 4.0, seg_h), egui::Sense::hover());
-    
+
             let left_rect = egui::Rect::from_x_y_ranges(
                 seg_rect.left()..=seg_rect.center().x,
                 seg_rect.top()..=seg_rect.bottom(),
@@ -268,28 +284,35 @@ impl SorahkGui {
                 if self.vib_job_enabled {
                     self.disable_job_vibration_preset();
                 }
-                let _ = self.config.save_to_file("Config.toml");
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.minimal_vib_preset_job = false,
+                );
             }
             if r_resp.clicked() {
                 self.minimal_vib_preset_job = true;
                 /* 切到全职业预设: 直接启用当前选中职业 (无需再点应用) */
-                let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
+                let jobs = crate::job_presets::available_jobs(vib_legacy);
                 let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                 let class_sel = self.vib_job_class.min(jobs[base_sel].classes.len().saturating_sub(1));
                 self.apply_job_vibration_preset(jobs[base_sel].base_job, &jobs[base_sel].classes[class_sel]);
                 self.vib_job_loaded = Some((base_sel, class_sel));
-                let _ = self.config.save_to_file("Config.toml");
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.minimal_vib_preset_job = true,
+                );
             }
             ui.add_space(theme::SP_XS);
 
             /* 预设选择 (来源由上面的分段开关决定) */
             if !mode_job {
                 self.ensure_act1_preset_listed();
-                /* ★v19: 用真实下标, 修过滤下标错位 */
-                let entries = crate::config::visible_preset_entries(
-                    &self.config.vibration_presets,
-                    self.config.vib_legacy_client,
-                );
+                /* ★v19: 用真实下标, 修过滤下标错位
+                 * ★R2.14: 自定义预设表/路线标记从 backend 读 */
+                let (vpresets, legacy) = self.backend.with_config(|c| {
+                    (c.vibration_presets.clone(), c.vib_legacy_client)
+                });
+                let entries = crate::config::visible_preset_entries(&vpresets, legacy);
                 let sel_pos = entries
                     .iter()
                     .position(|(real, _)| *real == self.vib_preset_idx)
@@ -319,7 +342,7 @@ impl SorahkGui {
                 );
             } else {
                 /* 全职业: 基础职业 → 转职 两级选择 (选中转职立即应用) */
-                let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
+                let jobs = crate::job_presets::available_jobs(vib_legacy);
                 let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                 let classes = &jobs[base_sel].classes;
                 let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
@@ -395,7 +418,7 @@ impl SorahkGui {
             }
 
             // 状态行 (居中原理同预设行: 测宽 + 定宽子块)
-            let (dot, stat_text) = if !self.config.dfo_player {
+            let (dot, stat_text) = if !dfo_player {
                 (th.hint, "连发模式 · DFO 震动功能已关闭")
             } else if vib_on && running {
                 (th.good, "连发与震动均已就绪")

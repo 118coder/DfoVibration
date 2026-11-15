@@ -242,8 +242,13 @@ impl HeadlessGui {
     pub fn new(config: AppConfig, opts: HeadlessOptions) -> anyhow::Result<Self> {
         let language = config.language;
         let headless = Headless::new(opts, language);
+        /* ★R2.14 前后端分离: 无头渲染同样经 backend (配置权威)。
+         * AppState 仅读配置、不启后台线程 (挂钩子/托盘/引擎都在 main.rs), 无头环境安全。 */
         let state = std::sync::Arc::new(AppState::new(config.clone())?);
-        let gui = SorahkGui::new(state, config);
+        let backend: crate::backend::Backend = std::sync::Arc::new(
+            crate::backend::BackendService::new(state, config, "Config.toml"),
+        );
+        let gui = SorahkGui::new(backend);
         Ok(Self { headless, gui })
     }
 

@@ -8,6 +8,10 @@ impl SorahkGui {
     /// ★v24.32 通用宏管理卡: 序列文本里用 宏(名字) 引用的公共片段。
     pub(in crate::gui) fn render_universal_macros_card(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
+        /* ★R2.14: 宏列表帧首克隆 (渲染只读; 增删走 backend 配置提交) */
+        let macros = self
+            .backend
+            .with_config(|c| c.universal_macros.clone());
         th.card(ui, Some("通用宏"), |ui| {
             ui.label(th.hint_text(
                 "公共的序列片段: 在任意映射的「序列宏」里用 宏(名字) 引用 (名字不分大小写)",
@@ -15,7 +19,7 @@ impl SorahkGui {
             ui.add_space(theme::SP_S);
 
             let mut to_remove: Option<usize> = None;
-            for (i, m) in self.config.universal_macros.iter().enumerate() {
+            for (i, m) in macros.iter().enumerate() {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(format!("宏({})", m.name))
@@ -46,7 +50,7 @@ impl SorahkGui {
                 });
                 ui.add_space(theme::SP_XS);
             }
-            if self.config.universal_macros.is_empty() {
+            if macros.is_empty() {
                 ui.vertical_centered(|ui| {
                     ui.add_space(theme::SP_S);
                     ui.label(th.hint_text("还没有通用宏 —— 下面新增一个试试"));
@@ -54,10 +58,14 @@ impl SorahkGui {
                 });
             }
             if let Some(i) = to_remove {
-                self.config.universal_macros.remove(i);
-                let _ = self.config.save_to_file("Config.toml");
-                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                    eprintln!("Failed to reload config after macro removal: {}", e);
+                if let Some(m) = macros.get(i) {
+                    let name = m.name.clone();
+                    /* ★R2.14: 删除后热重载 —— 引擎要重新解析引用了宏的序列 (与旧行为一致) */
+                    let _ =
+                        self.backend
+                            .update_config(crate::ui_api::Commit::Reload, |c| {
+                                c.universal_macros.retain(|x| x.name != name);
+                            });
                 }
             }
 
@@ -85,23 +93,24 @@ impl SorahkGui {
                 {
                     let name = new_name.trim().to_string();
                     let text = new_text.trim().to_string();
-                    /* 同名覆盖 (大小写不敏感), 与运行时解析规则一致 */
-                    if let Some(slot) = self
-                        .config
-                        .universal_macros
-                        .iter_mut()
-                        .find(|m| m.name.eq_ignore_ascii_case(&name))
-                    {
-                        slot.text = text;
-                    } else {
-                        self.config
-                            .universal_macros
-                            .push(crate::config::UniversalMacro { name, text });
-                    }
-                    let _ = self.config.save_to_file("Config.toml");
-                    if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                        eprintln!("Failed to reload config after macro add: {}", e);
-                    }
+                    /* ★R2.14: 同名覆盖 (大小写不敏感, 与运行时解析规则一致) ——
+                     * upsert_macro 是精确同名匹配, 这里保持旧语义走配置提交;
+                     * Reload 档: 引擎要重新解析引用了宏的序列 (与旧 save+reload 一致) */
+                    let _ = self
+                        .backend
+                        .update_config(crate::ui_api::Commit::Reload, |c| {
+                            match c
+                                .universal_macros
+                                .iter_mut()
+                                .find(|m| m.name.eq_ignore_ascii_case(&name))
+                            {
+                                Some(slot) => slot.text = text.clone(),
+                                None => c.universal_macros.push(crate::config::UniversalMacro {
+                                    name: name.clone(),
+                                    text: text.clone(),
+                                }),
+                            }
+                        });
                     new_name.clear();
                     new_text.clear();
                 }

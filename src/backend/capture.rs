@@ -176,6 +176,61 @@ impl BackendService {
         self.app.clear_device_baseline(vid, pid);
     }
 
+    // ── 实时态细粒度透传 (帧级原子读; 聚合版见 snapshot().input) ────────
+
+    /// 正在实时识别的第三方手柄 (vid, pid)。
+    pub fn live_hid_pad(&self) -> Option<(u16, u16)> {
+        self.app.live_hid_pad()
+    }
+
+    /// 该手柄最新实时状态 (SVG 按下即亮 / 识别态自动选中)。
+    pub fn live_hid_state(&self) -> Option<crate::state::LiveHidState> {
+        self.app.live_hid_state()
+    }
+
+    /// XInput 实时输入位图 (vid, 按钮位图)。
+    pub fn live_xinput_state(&self) -> Option<(u16, u32)> {
+        self.app.live_xinput_state()
+    }
+
+    /// 设置/停止实时识别目标 (手柄页「停止识别」与校准记录后挂载)。
+    pub fn set_live_hid_pad(&self, pad: Option<(u16, u16)>) {
+        self.app.set_live_hid_pad(pad);
+    }
+
+    // ── 手柄校准抑制标志 (旧 flow.rs 直调 AppState 的两处) ───────────────
+
+    /// 校准向导进行中标志 (进行中输入线程不派发任何映射)。
+    pub fn is_gp_calibrating(&self) -> bool {
+        self.app.is_gp_calibrating()
+    }
+
+    /// 设置校准向导进行中标志 (与 GpFlow::Calibrate 状态机每帧同步)。
+    pub fn set_gp_calibrating(&self, on: bool) {
+        self.app.set_gp_calibrating(on);
+    }
+
+    // ── 序列录制状态查询 (渲染「● 录制中…」用; start/stop 见上) ─────────
+
+    /// 序列宏录制是否进行中。
+    pub fn key_record_active(&self) -> bool {
+        self.app
+            .key_record_active
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// 停止录制并产出序列文本, 附带诊断: IME 吞键计数 (vk == 0xE5)。
+    /// 旧 edit.rs 停止按钮用它区分「没按键盘」与「被中文输入法接管」两种失败提示。
+    /// 返回 `None` = 录制状态丢失 (没在录制 / 状态已取走);
+    /// `Some((序列文本, ime_hits))`, 内层文本 None = 录到了但没有效按键。
+    pub fn stop_key_record_with_diagnostics(&self) -> Option<(Option<String>, usize)> {
+        let events = self.app.stop_key_record()?;
+        let ime_hits = events.iter().filter(|e| e.vk == 0xE5).count();
+        let text =
+            crate::sequence::recorded_to_sequence(&events, &crate::sequence::vk_to_seq_name);
+        Some((if text.is_empty() { None } else { Some(text) }, ime_hits))
+    }
+
     // ── 序列宏录制 ──────────────────────────────────────────────────────
 
     /// 开始录制 (后端负责拉起轮询线程，旧 edit.rs 的两步合一；已在录则幂等)。

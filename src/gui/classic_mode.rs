@@ -25,11 +25,9 @@ impl SorahkGui {
     /// 进入/退出经典模式 (与 `set_minimal_mode` 同构: 采样完整窗矩形, 退出精确还原)。
     pub(super) fn set_classic_mode(&mut self, ctx: &egui::Context, on: bool) {
         self.classic_mode = on;
-        self.config.classic_mode = on;
         if on {
             /* 与极简模式互斥: 进入经典即退极简 (双标记同真会让外壳分支打架) */
             self.minimal_mode = false;
-            self.config.minimal_mode = false;
             /* 老宿主 min_inner_size 820×600: 进入时设最小尺寸 (可放大, 不逐帧钳死) */
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(CLASSIC_SIZE));
         }
@@ -38,15 +36,20 @@ impl SorahkGui {
             ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::Vec2::ZERO));
             /* 退出经典: 经典矩形落盘 + 精确还原完整模式上次的窗口位置+尺寸 */
             if let Some((pos, sz)) = self.classic_window_rect {
-                self.config.window_rect_classic = Some([pos.x, pos.y, sz.x, sz.y]);
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.window_rect_classic = Some([pos.x, pos.y, sz.x, sz.y]),
+                );
             }
+            let normal_cfg = self.backend.with_config(|c| c.window_rect_normal);
             let restore = self.normal_window_rect.take().or_else(|| {
-                self.config
-                    .window_rect_normal
-                    .map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
+                normal_cfg.map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
             });
             if let Some((pos, sz)) = restore {
-                self.config.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]);
+                let _ = self.backend.update_config(
+                    crate::ui_api::Commit::Save,
+                    |c| c.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]),
+                );
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(pos));
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(sz));
             } else if let Some(sz) = self.normal_window_size.take() {
@@ -60,7 +63,12 @@ impl SorahkGui {
              * (与 set_minimal_mode 同一条注释的坑) */
             self.normal_window_size = None;
         }
-        let _ = self.config.save_to_file("Config.toml");
+        /* ★R2.14: 模式标记落盘走 backend (Save 档) */
+        let (classic, minimal) = (self.classic_mode, self.minimal_mode);
+        let _ = self.backend.update_config(crate::ui_api::Commit::Save, |c| {
+            c.classic_mode = classic;
+            c.minimal_mode = minimal;
+        });
     }
 
     /// 经典标题栏: 拖动区 + 品牌 + 预设快切 (老宿主同位) + 图标按钮组 + 返回完整界面。
@@ -122,8 +130,11 @@ impl SorahkGui {
                 }
                 if widgets::icon_button(ui, &th, widgets::Icon::Theme, "切换主题").clicked() {
                     self.dark_mode = !self.dark_mode;
-                    self.config.dark_mode = self.dark_mode;
-                    let _ = self.config.save_to_file("Config.toml");
+                    /* ★R2.14: 主题持久化走 backend (Save 档) */
+                    let _ = self.backend.update_config(
+                        crate::ui_api::Commit::Save,
+                        |c| c.dark_mode = self.dark_mode,
+                    );
                     if let Some(temp_config) = &mut self.temp_config {
                         temp_config.dark_mode = self.dark_mode;
                     }
@@ -171,8 +182,10 @@ impl SorahkGui {
             .enumerate()
             .filter(|&(i, _)| {
                 /* ★v24.4: 「手柄映射」(i=3) 已从经典模式移除 (用户要求: 经典就应该经典);
-                 * 手柄映射仍在完整模式侧边栏可用。1/2 为震动页, 非 DFO 玩家隐藏。 */
-                i != 3 && (self.config.dfo_player || (i != 1 && i != 2))
+                 * 手柄映射仍在完整模式侧边栏可用。1/2 为震动页, 非 DFO 玩家隐藏。
+                 * ★R2.14: dfo_player 从 backend 读 */
+                i != 3
+                    && (self.backend.with_config(|c| c.dfo_player) || (i != 1 && i != 2))
             })
             .map(|(i, n)| (i, *n))
             .collect();
@@ -203,7 +216,7 @@ impl SorahkGui {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 /* ★v24.10: 「仅用连发」不显示震动相关文案 */
-                if self.config.dfo_player {
+                if self.backend.with_config(|c| c.dfo_player) {
                     ui.label(
                         egui::RichText::new("震动参数实时生效, 进图自动驱动")
                             .size(11.0)
@@ -221,14 +234,19 @@ impl SorahkGui {
     pub(super) fn render_classic_vib_quickbar(&mut self, ui: &mut egui::Ui) {
         let th = self.theme();
         /* ★v24.10: 「仅用连发」(dfo_player=false) 时整条隐藏 —— 用户要求:
-         * 不用震动功能的人不该看到这块, 功能也默认关闭。 */
-        if !self.config.dfo_player {
+         * 不用震动功能的人不该看到这块, 功能也默认关闭。
+         * ★R2.14: dfo_player/预设表/路线从 backend 读 */
+        let (dfo_player, vpresets, vib_legacy) = self.backend.with_config(|c| {
+            (
+                c.dfo_player,
+                c.vibration_presets.clone(),
+                c.vib_legacy_client,
+            )
+        });
+        if !dfo_player {
             return;
         }
-        let entries = crate::config::visible_preset_entries(
-            &self.config.vibration_presets,
-            self.config.vib_legacy_client,
-        );
+        let entries = crate::config::visible_preset_entries(&vpresets, vib_legacy);
         if entries.is_empty() {
             return;
         }
@@ -246,23 +264,16 @@ impl SorahkGui {
         let mut goto_tune = false;
         th.card(ui, None, |ui| {
             ui.horizontal(|ui| {
-                let vib_on = self
-                    .app_state
-                    .vibration_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                let vib_on = self.backend.snapshot().vibration.enabled;
                 let (vtext, vcolor, vbg) = if vib_on {
                     ("震动: 开", th.good, th.good_soft)
                 } else {
                     ("震动: 关", th.bad, th.bad_soft)
                 };
                 if ui.add(th.status_pill(vtext, vcolor, vbg)).clicked() {
-                    let v = self
-                        .app_state
-                        .vibration_enabled
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    self.app_state
-                        .vibration_enabled
-                        .store(!v, std::sync::atomic::Ordering::Relaxed);
+                    /* ★R2.14: 总开关切换走 backend (config + 镜像 + 落盘) */
+                    self.backend
+                        .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
                 }
                 ui.add_space(theme::SP_S);
                 ui.label(th.weak("震动预设"));

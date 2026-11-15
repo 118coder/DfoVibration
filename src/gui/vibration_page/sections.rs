@@ -11,15 +11,17 @@ impl SorahkGui {
     /// 开 = 评分/移动通道独立于全局总调整 (单通道调试用, 方便逐项验证);
     /// 关 = 全局总调整统一应用到所有通道 (正常使用)。
     /// 不影响各卡片自己的测试按钮与滑块。状态持久化到 Config.toml。
+    ///
+    /// ★R2.14: 当前值由调用方从帧首 config gather 传入, 写入走
+    /// backend.update_vibration_config (config → 镜像 → 去抖落盘)。
     pub(in crate::gui) fn render_independent_test_toggle(
+        &self,
         ui: &mut egui::Ui,
-        app_state: &crate::state::AppState,
-        config: &mut crate::config::AppConfig,
+        ind: bool,
     ) {
-        use std::sync::atomic::Ordering;
-        let dark = config.dark_mode;
+        let dark = self.dark_mode;
         let th = Theme::new(dark);
-        let mut ind = app_state.vibration_independent_test.load(Ordering::Relaxed);
+        let mut ind = ind;
 
         th.panel(ui, Some("🧪 调试模式 (独立测试)"), |ui| {
             ui.horizontal(|ui| {
@@ -35,11 +37,9 @@ impl SorahkGui {
                     )
                     .changed()
                 {
-                    app_state
-                        .vibration_independent_test
-                        .store(ind, Ordering::Relaxed);
-                    config.vibration.independent_test = ind;
-                    let _ = config.save_vibration_to_file(crate::config::AppConfig::vibration_path_for("Config.toml"));
+                    self.backend.update_vibration_config(|v| {
+                        v.independent_test = ind;
+                    });
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

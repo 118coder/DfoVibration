@@ -350,6 +350,9 @@ pub enum Commit {
     Memory,
     /// 立即写 Config.toml (+ 路线震动文件，save_to_file 既有语义)
     Save,
+    /// 立即只写 Config.toml (**不含**路线震动文件；设置弹窗保存路径专用 ——
+    /// 弹窗内的震动参数可能属于另一条路线，写震动文件会互相覆盖)
+    SaveConfigOnly,
     /// 立即只写路线震动文件 (Vibration.toml / Vibration-ACT.toml)
     SaveVib,
     /// 立即落盘 + 两阶段热重载 + 运行态重挂 (预设切换键/语言等)

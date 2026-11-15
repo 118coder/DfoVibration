@@ -148,7 +148,7 @@ mod preset_switch_conflict_tests {
             assert_eq!(SorahkGui::compact_switch_key_parts(&parts), original, "round-trip {original}");
             // 合成的结果必须能被解析器接受 (否则保存会被拒)
             assert!(
-                crate::state::AppState::is_valid_input_name(&SorahkGui::compact_switch_key_parts(&parts)),
+                crate::backend::BackendService::is_valid_input_name(&SorahkGui::compact_switch_key_parts(&parts)),
                 "compact 结果必须合法: {original}"
             );
         }
@@ -161,7 +161,7 @@ mod preset_switch_conflict_tests {
         // 汉字等非法内容不会被 compact 变成合法键 (保存时再校验)
         let parts = SorahkGui::decombo_switch_key("测试");
         assert_eq!(SorahkGui::compact_switch_key_parts(&parts), "测试");
-        assert!(!crate::state::AppState::is_valid_input_name("测试"));
+        assert!(!crate::backend::BackendService::is_valid_input_name("测试"));
     }
 }
 
@@ -176,7 +176,9 @@ mod sequence_apply_tests {
     use crate::state::{AppState, InputDevice};
     use std::sync::Arc;
 
-    fn gui_with_target_a() -> (SorahkGui, Arc<AppState>, InputDevice, usize) {
+    /// ★R2.14: GUI 只持 backend 句柄 —— 测试装配真实 AppState + BackendService
+    /// (临时目录落盘, 与 backend::tests 同套路), 旧 AppState 引用保留给断言用。
+    fn gui_with_target_a() -> (SorahkGui, Arc<AppState>, InputDevice, usize, std::path::PathBuf) {
         let mut config = AppConfig::default();
         config.mappings.push(KeyMapping {
             sequence_text: String::new(),
@@ -202,14 +204,25 @@ mod sequence_apply_tests {
             .position(|m| m.trigger_key == "F8")
             .unwrap();
         let state = Arc::new(AppState::new(config.clone()).unwrap());
-        let gui = SorahkGui::new(state.clone(), config);
-        let dev = AppState::input_name_to_device("F8").unwrap();
-        (gui, state, dev, idx)
+        let dir = std::env::temp_dir().join(format!(
+            "sorahk_turbo_seq_test_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Config.toml");
+        let backend = Arc::new(crate::backend::BackendService::new(
+            state.clone(),
+            config,
+            &path.to_string_lossy(),
+        ));
+        let gui = SorahkGui::new(backend);
+        let dev = crate::backend::BackendService::input_name_to_device("F8").unwrap();
+        (gui, state, dev, idx, path)
     }
 
     #[test]
     fn sequence_edit_takes_over_engine_immediately() {
-        let (mut gui, state, dev, idx) = gui_with_target_a();
+        let (mut gui, state, dev, idx, path) = gui_with_target_a();
         /* 初始: 无序列 → 目标键 A 生效 */
         let m = state.get_input_mapping(&dev).expect("映射应存在");
         assert!(m.sequence.is_none(), "前置: 初始无序列");
@@ -224,11 +237,12 @@ mod sequence_apply_tests {
         );
         /* 注: mapping 层 target_action 保留原目标键数据, 但 worker 的序列分支
          * 优先且登记占位 DevRuntime (KeyboardKey(0) 永不注入) —— 见 keyboard.rs */
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]
     fn sequence_edit_bad_syntax_disables_mapping_not_falls_back() {
-        let (mut gui, state, dev, idx) = gui_with_target_a();
+        let (mut gui, state, dev, idx, path) = gui_with_target_a();
         /* 解析失败: 整条跳过 (不回退目标键) —— 与引擎 v24.35 契约一致 */
         gui.apply_sequence_text(idx, "NONE".to_string());
         let m = state.get_input_mapping(&dev);
@@ -236,5 +250,6 @@ mod sequence_apply_tests {
             m.is_none(),
             "序列解析失败 → 映射整体不生效 (防行为突变), 而不是悄悄按 A"
         );
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

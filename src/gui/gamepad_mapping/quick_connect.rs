@@ -9,20 +9,22 @@ impl SorahkGui {
     /// 控件语义与极简模式一致 (toggle_with_notify / 选中即应用), egui id 用
     /// "gp_" 前缀避免与极简模式冲突; 震动段仅 DFO 玩家可见。
     pub(super) fn render_quick_connect_card(&mut self, ui: &mut egui::Ui, th: &Theme) {
-        use std::sync::atomic::Ordering;
+        /* ★R2.14: 运行态/配置读数帧首从 backend 收集 */
+        let running = !self.backend.is_paused();
+        let vib_on = self.backend.snapshot().vibration.enabled;
+        let (dfo, has_presets) = self
+            .backend
+            .with_config(|c| (c.dfo_player, !c.presets.is_empty()));
         /* ★v24.9: 压缩行距/控件高 —— 一屏放下优先 (默认 interact 26 + 行距 8 太占高) */
         ui.spacing_mut().interact_size.y = 22.0;
         ui.spacing_mut().item_spacing.y = 4.0;
         th.panel(ui, Some("快速连接"), |ui| {
             /* ★v24.9: 连发 / 震动 并排一行 —— 一屏放下优先 (旧版两块各占一行) */
-            let running = !self.app_state.is_paused();
             let (ltext, lfg, lbg) = if running {
                 ("连发 · 开启中", th.good, th.good_soft)
             } else {
                 ("连发 · 已暂停", th.hint, th.faint)
             };
-            let vib_on = self.app_state.vibration_enabled.load(Ordering::Relaxed);
-            let dfo = self.config.dfo_player;
             let gap = 8.0;
             let half = if dfo {
                 (ui.available_width() - gap) * 0.5
@@ -50,17 +52,16 @@ impl SorahkGui {
                     .fill(vbg)
                     .corner_radius(egui::CornerRadius::same(10));
                     if ui.add_sized([half, 32.0], vib_btn).clicked() {
-                        let v = self.app_state.vibration_enabled.load(Ordering::Relaxed);
-                        self.app_state
-                            .vibration_enabled
-                            .store(!v, Ordering::Relaxed);
+                        /* ★R2.14: 震动总开关走命令通道 (配置 + 引擎镜像即时生效) */
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
                     }
                 }
             });
             ui.add_space(theme::SP_XS);
 
             /* 映射选择 (连发预设, 与极简/顶栏同一套切换逻辑) */
-            if self.config.presets.is_empty() {
+            if !has_presets {
                 ui.label(th.hint_text("映射预设: 无 — 到「连发映射修改」页保存一个"));
             } else {
                 ui.horizontal(|ui| {
@@ -71,7 +72,7 @@ impl SorahkGui {
             ui.add_space(theme::SP_XS);
 
             /* 震动预设段 (仅 DFO 玩家; 震动开关已在上方与「连发」并排) */
-            if self.config.dfo_player {
+            if dfo {
                 /* 通用 / 全职业 分段开关 (与极简模式共享 minimal_vib_preset_job 状态) */
                 let mode_job = self.minimal_vib_preset_job;
                 let seg_w = ui.available_width();
@@ -137,11 +138,15 @@ impl SorahkGui {
                     if self.vib_job_enabled {
                         self.disable_job_vibration_preset();
                     }
-                    let _ = self.config.save_to_file("Config.toml");
+                    /* ★R2.14: 落盘走 backend (震动预设助手内部已各自提交, 这里兜底全量保存) */
+                    let _ = self.backend.save_all_now();
                 }
                 if r_resp.clicked() {
                     self.minimal_vib_preset_job = true;
-                    let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
+                    let legacy = self
+                        .backend
+                        .with_config(|c| c.vib_legacy_client);
+                    let jobs = crate::job_presets::available_jobs(legacy);
                     let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                     let class_sel =
                         self.vib_job_class.min(jobs[base_sel].classes.len().saturating_sub(1));
@@ -150,7 +155,7 @@ impl SorahkGui {
                         &jobs[base_sel].classes[class_sel],
                     );
                     self.vib_job_loaded = Some((base_sel, class_sel));
-                    let _ = self.config.save_to_file("Config.toml");
+                    let _ = self.backend.save_all_now();
                 }
                 ui.add_space(theme::SP_XS);
 
@@ -160,10 +165,14 @@ impl SorahkGui {
                     ui.horizontal(|ui| {
                         ui.label(th.weak("通用预设"));
                         self.ensure_act1_preset_listed();
+                        /* ★R2.14: 震动预设表/路线版本从 backend 现取 */
+                        let (vib_presets, legacy) = self.backend.with_config(|c| {
+                            (c.vibration_presets.clone(), c.vib_legacy_client)
+                        });
                         /* ★v19: 用真实下标, 修过滤下标错位 */
                         let entries = crate::config::visible_preset_entries(
-                            &self.config.vibration_presets,
-                            self.config.vib_legacy_client,
+                            &vib_presets,
+                            legacy,
                         );
                         let sel_pos = entries
                             .iter()
@@ -186,7 +195,10 @@ impl SorahkGui {
                             });
                     });
                 } else {
-                    let jobs = crate::job_presets::available_jobs(self.config.vib_legacy_client);
+                    let legacy = self
+                        .backend
+                        .with_config(|c| c.vib_legacy_client);
+                    let jobs = crate::job_presets::available_jobs(legacy);
                     let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
                     let classes = &jobs[base_sel].classes;
                     let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
@@ -245,8 +257,11 @@ impl SorahkGui {
                 /* ★震动模块状态行: 按版本分流 (ACT1=自动注入 / S4+=模块已启用)
                  * ★v19.5 S1 专属: 职业选择行与状态行之间多留一点间距 (S4 不变) */
                 ui.add_space(if mode_job { 10.0 } else { theme::SP_XS });
-                if self.config.vib_legacy_client {
-                    let ready = crate::auto_inject::host_dir_dll();
+                let legacy_now = self
+                    .backend
+                    .with_config(|c| c.vib_legacy_client);
+                if legacy_now {
+                    let ready = crate::backend::BackendService::host_dir_dll_ready();
                     let (itext, ifg, ibg) = if ready {
                         ("ACT1 自动注入 · 已启用 (DLL: 主程序目录)", th.good, th.good_soft)
                     } else {

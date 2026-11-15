@@ -101,6 +101,10 @@ impl ConfigStore {
                 self.save_all_now()?;
                 Ok(ret)
             }
+            Commit::SaveConfigOnly => {
+                self.save_config_only_now()?;
+                Ok(ret)
+            }
             Commit::SaveVib => {
                 self.save_vib_now()?;
                 Ok(ret)
@@ -149,6 +153,15 @@ impl ConfigStore {
         let c = util::read_guard(&self.lock);
         c.save_vibration_to_file(AppConfig::vibration_path_for(&self.path))?;
         util::write_guard(&self.vib_deb).dirty = false;
+        Ok(())
+    }
+
+    /// 立即只写 Config.toml (设置弹窗保存路径专用，见 [`Commit::SaveConfigOnly`])。
+    pub(crate) fn save_config_only_now(&self) -> Result<()> {
+        let _g = util::read_guard(&self.save_lock);
+        let c = util::read_guard(&self.lock);
+        c.save_config_only(&self.path)?;
+        util::write_guard(&self.cfg_deb).dirty = false;
         Ok(())
     }
 

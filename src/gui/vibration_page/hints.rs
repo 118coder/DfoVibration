@@ -106,36 +106,56 @@ impl SorahkGui {
         }
     }
 
-    /// 将当前参数写入 config.vibration (索引映射, 与预设 params 顺序一致)
-    /// ★D 方案: 槽位↔字段映射唯一事实源在 vibration/params.rs, 此处只做原子读取 + 委托。
-    pub(in crate::gui) fn sync_vib_config_from_params(
-        cfg: &mut crate::config::VibrationConfig,
-        p: &[std::sync::atomic::AtomicU32; 60],
+    /// ★R2.14 非槽位震动参数滑杆的统一写路径 (旧「写 config + 写原子 + 脏标」三连
+    /// 的后端化): 通用页走 update_vibration_config (全量镜像); 全职业预设页走
+    /// update_vib_config_keep_params (保留 60 槽叠加层)。
+    pub(in crate::gui) fn vib_slider_update(
+        backend: &crate::backend::Backend,
+        job_mode: bool,
+        f: impl FnOnce(&mut crate::config::VibrationConfig),
     ) {
-        use std::sync::atomic::Ordering;
-        let mut a = [0u32; 60];
-        for (i, s) in p.iter().enumerate() {
-            a[i] = s.load(Ordering::Relaxed);
+        if job_mode {
+            backend.update_vib_config_keep_params(f);
+        } else {
+            backend.update_vibration_config(f);
         }
-        crate::vibration::params::config_from_params(&a, cfg);
+    }
+
+    /// 60 槽参数滑杆的统一写路径: 全职业预设页只写叠加层原子 (会话状态归
+    /// JobVibration.toml), 通用页走 config → 镜像 → 去抖落盘的单一写路径。
+    pub(in crate::gui) fn vib_slot_update(
+        backend: &crate::backend::Backend,
+        job_mode: bool,
+        slot: usize,
+        value: u32,
+    ) {
+        if job_mode {
+            backend.set_vib_param_job(slot, value);
+        } else {
+            backend.set_vib_param(slot, value);
+        }
     }
 
 
     /// 渲染某基础项的 L/R 马达权重滑块 + 实时输出条
     /// 权重范围 -100..+100: 0 = 保持原样(不动原参数), 负 = 减弱, 正 = 增强
     /// item: 0=总闸 1=攻击 2=上限 3=衰减 4=连击 5=节奏 6=通用 7=DOT 8=特效 9=状态 10=特殊 11=命中 12=受击
+    ///
+    /// ★R2.14: 读值来自帧首快照 (item_lr 原子镜像), 写入走 backend 定点双写
+    /// (原子 + config 内存同步, 不镜像不落盘 —— 与旧实现逐字一致)。
+    /// 显式传 `&Backend` 而非 `&self`, 避免闭包内整份 self 捕获与字段可变捕获冲突。
     pub(in crate::gui) fn render_item_lr(
+        backend: &crate::backend::Backend,
         ui: &mut egui::Ui,
         dark: bool,
-        state: &crate::state::AppState,
-        config_item_lr: &mut [u32; 26],
+        item_lr: &[u32; 26],
+        item_out: &[u32; 26],
         item: usize,
     ) {
-        use std::sync::atomic::Ordering;
-        let il = state.vibration_item_lr[item * 2].load(Ordering::Relaxed) as i32 as f32;
-        let ir = state.vibration_item_lr[item * 2 + 1].load(Ordering::Relaxed) as i32 as f32;
-        let ol = state.vibration_item_out[item * 2].load(Ordering::Relaxed);
-        let or_ = state.vibration_item_out[item * 2 + 1].load(Ordering::Relaxed);
+        let il = item_lr[item * 2] as i32 as f32;
+        let ir = item_lr[item * 2 + 1] as i32 as f32;
+        let ol = item_out[item * 2];
+        let or_ = item_out[item * 2 + 1];
         let mut l = il;
         let mut r = ir;
 
@@ -184,29 +204,28 @@ impl SorahkGui {
             });
         });
         if (l as i32) != (il as i32) {
-            state.vibration_item_lr[item * 2].store((l as i32) as u32, Ordering::Relaxed);
-            config_item_lr[item * 2] = l as u32;
+            backend.set_vib_item_lr_quiet(item * 2, (l as i32) as u32);
         }
         if (r as i32) != (ir as i32) {
-            state.vibration_item_lr[item * 2 + 1].store((r as i32) as u32, Ordering::Relaxed);
-            config_item_lr[item * 2 + 1] = r as u32;
+            backend.set_vib_item_lr_quiet(item * 2 + 1, (r as i32) as u32);
         }
     }
 
 
     /// 渲染评分事件的 L/R 马达权重滑块 (rank_lr, 30 项 = 15 事件 x L/R)
+    /// (★R2.14 读快照/写 backend, 语义同 [`Self::render_item_lr`])
     pub(in crate::gui) fn render_rank_lr(
+        backend: &crate::backend::Backend,
         ui: &mut egui::Ui,
         dark: bool,
-        state: &crate::state::AppState,
-        config_rank_lr: &mut [u32; 30],
+        rank_lr: &[u32; 30],
+        rank_out: &[u32; 30],
         item: usize,
     ) {
-        use std::sync::atomic::Ordering;
-        let il = state.vibration_rank_lr[item * 2].load(Ordering::Relaxed) as i32 as f32;
-        let ir = state.vibration_rank_lr[item * 2 + 1].load(Ordering::Relaxed) as i32 as f32;
-        let ol = state.vibration_rank_out[item * 2].load(Ordering::Relaxed);
-        let or_ = state.vibration_rank_out[item * 2 + 1].load(Ordering::Relaxed);
+        let il = rank_lr[item * 2] as i32 as f32;
+        let ir = rank_lr[item * 2 + 1] as i32 as f32;
+        let ol = rank_out[item * 2];
+        let or_ = rank_out[item * 2 + 1];
         let mut l = il;
         let mut r = ir;
 
@@ -254,12 +273,10 @@ impl SorahkGui {
             });
         });
         if (l as i32) != (il as i32) {
-            state.vibration_rank_lr[item * 2].store((l as i32) as u32, Ordering::Relaxed);
-            config_rank_lr[item * 2] = l as u32;
+            backend.set_vib_rank_lr_quiet(item * 2, (l as i32) as u32);
         }
         if (r as i32) != (ir as i32) {
-            state.vibration_rank_lr[item * 2 + 1].store((r as i32) as u32, Ordering::Relaxed);
-            config_rank_lr[item * 2 + 1] = r as u32;
+            backend.set_vib_rank_lr_quiet(item * 2 + 1, (r as i32) as u32);
         }
     }
 }

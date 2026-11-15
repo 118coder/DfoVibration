@@ -9,6 +9,27 @@ use crate::config::KeyMapping;
 use crate::ui_api::Commit;
 
 impl BackendService {
+    // ── 键名解析透传 (纯函数; GUI 不再直调 crate::state::AppState::) ────
+
+    /// 键名 → 输入设备解析 (键盘 / 鼠标 / 手柄原始设备 / XInput 组合键)。
+    /// 旧 GUI 在预设切换键校验、组合键识别、槽位高亮里大量使用; 纯函数无状态。
+    pub fn input_name_to_device(name: &str) -> Option<crate::state::InputDevice> {
+        crate::state::AppState::input_name_to_device(name)
+    }
+
+    /// 键名合法性校验 (预设切换键保存前用)。
+    pub fn is_valid_input_name(name: &str) -> bool {
+        crate::state::AppState::is_valid_input_name(name)
+    }
+
+    /// 某 XInput 设备的全部组合键 button_ids (运行时子集匹配缓存, 连发页/组合键 UI 用)。
+    pub fn get_xinput_combos_for_device(
+        &self,
+        device_type: &crate::state::DeviceType,
+    ) -> Vec<Vec<u32>> {
+        self.app.get_xinput_combos_for_device(device_type)
+    }
+
     // ── 映射 CRUD ───────────────────────────────────────────────────────
 
     /// 新增/替换一条映射并热重载。`index = Some(i)` 按 i 替换 (越界 = 追加)。

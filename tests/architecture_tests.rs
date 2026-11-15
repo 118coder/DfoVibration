@@ -91,17 +91,24 @@ fn no_gui_dep_outside_gui() {
 /// 允许 = 当前真实图 (2026-09-27 R1.1 审计)。不在清单内 = 禁止,
 /// 特别是: keyboard/mouse (钩子线程), tray/signal/safety (系统接线),
 /// input_ownership (设备仲裁内部), hidhide (冻结资产)。
+/// ★R2.14 前后端分离收紧: **输入层/引擎/系统层全部对 GUI 断供** ——
+/// rawinput / xinput / vibration / auto_inject / input_manager 已移出清单,
+/// GUI 的设备枚举/马达测试/日志/时间基准/HID 激活/注入查询一律走 backend 门面;
+/// 数据读写唯一入口 = backend (配置权威 RwLock + 三档提交 + 快照/事件/命令)。
+/// 清单内剩余模块只允许**契约词汇类型与纯函数** (AppConfig/InputDevice 等类型、
+/// 键名/序列解析、预设表、状态名), 不含任何可变状态入口。
 #[test]
 fn gui_dependency_allowlist() {
     const ALLOWED: &[&str] = &[
         "gui",          // gui 内部互引
-        "config", "state", "i18n", "util", "job_presets", "sequence",
-        "rawinput", "xinput", "hid_layout",   // 输入层公开 API (类型/查询函数)
-        "vibration",                           // 引擎公开助手 (now_ms_u64 等)
-        "audio_haptics",                       // ★v24.60 音频震动页 (预设表 mapping::PRESETS / 模式名)
-        "update",                              // ★v24.55 检查更新浮窗/设置页 (遗留补录)
-        "auto_inject",                         // host_dir_dll 等查询
-        "input_manager",                       // 设备管理操作 (request_xinput_reset 等 3 处)
+        "ui_api",       // ★R2.14 契约层 (UiSnapshot/UiEvent/UiCommand/Commit)
+        "backend",      // ★R2.14 后端服务门面 (配置权威/快照/事件/命令/领域 API)
+        "config",       // 契约词汇类型 (AppConfig/KeyMapping/... 仅类型, 数据读写走 backend)
+        "state",        // 契约词汇类型 (InputDevice/LiveHidState/... 同上)
+        "i18n", "util", "job_presets", "sequence",
+        "hid_layout",   // 键名映射纯函数
+        "audio_haptics",// 音频状态名/模式常量/预设表 (纯展示词汇)
+        "update",       // 更新快照类型/版本常量 (操作走 backend)
     ];
     let mut files = Vec::new();
     collect_rs(&src_dir().join("gui"), &mut files);

@@ -54,6 +54,11 @@ impl BackendService {
     /// `config_path`：通常 `"Config.toml"` (相对工作目录，与旧 GUI 完全一致)。
     pub fn new(app_state: Arc<AppState>, config: crate::config::AppConfig, config_path: &str) -> Self {
         let cfg = Arc::new(ConfigStore::new(config, config_path));
+        /* ★R2.14: 启动即挂预设切换键 (旧 GUI 首帧 sync_preset_switch_bindings 的等价物;
+         * 之后每次 Commit::Reload 都会重建)。 */
+        cfg.with_config(|c| {
+            app_state.set_preset_switch_bindings(ConfigStore::build_preset_bindings(c));
+        });
         config_store::spawn_scheduler(cfg.clone());
         Self {
             cfg,
@@ -118,6 +123,12 @@ impl BackendService {
     pub fn quit(&self) {
         self.flush_all();
         self.app.exit();
+    }
+
+    /// 无落盘运行态重载 (设置弹窗 Save 路径: 配置已用 SaveConfigOnly 落盘
+    /// / Memory 写入 store 后, 把 store 里的最新值灌进运行态)。
+    pub fn reload_runtime(&self) -> anyhow::Result<()> {
+        self.cfg.reload_and_apply(&self.app)
     }
 
     // ── 事件 ────────────────────────────────────────────────────────────
@@ -462,6 +473,295 @@ impl BackendService {
     /// 后端启动时刻 (诊断用)。
     pub fn uptime(&self) -> std::time::Duration {
         self.started_at.elapsed()
+    }
+
+    /// 轮询当前所有按下的键 (静态版；实例版委托于此)。
+    #[inline]
+    pub fn poll_pressed_keys_static() -> std::collections::HashSet<u32> {
+        use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+        let mut pressed_keys = std::collections::HashSet::new();
+
+        unsafe {
+            // Modifiers
+            let modifiers = [
+                0xA0, 0xA1, // LSHIFT, RSHIFT
+                0xA2, 0xA3, // LCTRL, RCTRL
+                0xA4, 0xA5, // LALT, RALT
+                0x5B, 0x5C, // LWIN, RWIN
+            ];
+            for &vk in &modifiers {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+
+            // A-Z (0x41-0x5A)
+            for vk in 0x41..=0x5A {
+                if GetAsyncKeyState(vk) < 0 {
+                    pressed_keys.insert(vk as u32);
+                }
+            }
+
+            // 0-9 (0x30-0x39)
+            for vk in 0x30..=0x39 {
+                if GetAsyncKeyState(vk) < 0 {
+                    pressed_keys.insert(vk as u32);
+                }
+            }
+
+            // Numpad 0-9 (0x60-0x69)
+            for vk in 0x60..=0x69 {
+                if GetAsyncKeyState(vk) < 0 {
+                    pressed_keys.insert(vk as u32);
+                }
+            }
+
+            // F1-F24 (0x70-0x87)
+            for vk in 0x70..=0x87 {
+                if GetAsyncKeyState(vk) < 0 {
+                    pressed_keys.insert(vk as u32);
+                }
+            }
+
+            // Navigation and editing keys
+            let navigation = [
+                0x20, // SPACE
+                0x0D, // ENTER
+                0x09, // TAB
+                0x1B, // ESC
+                0x08, // BACKSPACE
+                0x2E, // DELETE
+                0x2D, // INSERT
+                0x24, // HOME
+                0x23, // END
+                0x21, // PAGEUP
+                0x22, // PAGEDOWN
+                0x26, // UP
+                0x28, // DOWN
+                0x25, // LEFT
+                0x27, // RIGHT
+            ];
+            for &vk in &navigation {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+
+            // Lock and special keys
+            let lock_keys = [
+                0x14, // CAPSLOCK
+                0x90, // NUMLOCK
+                0x91, // SCROLL LOCK
+                0x13, // PAUSE
+                0x2C, // PRINT SCREEN
+            ];
+            for &vk in &lock_keys {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+
+            // Numpad operators
+            let numpad_ops = [
+                0x6A, // MULTIPLY
+                0x6B, // ADD
+                0x6C, // SEPARATOR
+                0x6D, // SUBTRACT
+                0x6E, // DECIMAL
+                0x6F, // DIVIDE
+            ];
+            for &vk in &numpad_ops {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+
+            // OEM keys (punctuation and symbols)
+            let oem_keys = [
+                0xBA, // OEM_1 (;:)
+                0xBB, // OEM_PLUS (=+)
+                0xBC, // OEM_COMMA (,<)
+                0xBD, // OEM_MINUS (-_)
+                0xBE, // OEM_PERIOD (.>)
+                0xBF, // OEM_2 (/?)
+                0xC0, // OEM_3 (`~)
+                0xDB, // OEM_4 ([{)
+                0xDC, // OEM_5 (\|)
+                0xDD, // OEM_6 (]})
+                0xDE, // OEM_7 ('")
+                0xDF, // OEM_8
+                0xE2, // OEM_102 (<>)
+            ];
+            for &vk in &oem_keys {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+
+            // Mouse buttons
+            let mouse_buttons = [
+                0x01, // LBUTTON
+                0x02, // RBUTTON
+                0x04, // MBUTTON
+                0x05, // XBUTTON1
+                0x06, // XBUTTON2
+            ];
+            for &vk in &mouse_buttons {
+                if GetAsyncKeyState(vk as i32) < 0 {
+                    pressed_keys.insert(vk);
+                }
+            }
+        }
+
+        pressed_keys
+    }
+
+    // ── 主窗口帧循环透传 (R2.14: GUI 不再直持 AppState) ────────────────
+    // 注: 这里集中放"托盘请求/暂停/切换键"等主窗口每帧需要的细粒度透传;
+    // 领域方法分布在各领域文件 (mappings/vibration/audio/capture/devices)。
+
+    /// 退出标志 (托盘"退出"置位)。
+    pub fn should_exit(&self) -> bool {
+        self.app.should_exit()
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.app.is_paused()
+    }
+
+    pub fn set_paused(&self, paused: bool) {
+        self.app.set_paused(paused);
+    }
+
+    pub fn toggle_paused(&self) -> bool {
+        self.app.toggle_paused()
+    }
+
+    /// 连发总开关切换键 (旧 handle_keyboard_input 里直调)。
+    pub fn handle_switch_key_toggle(&self) {
+        self.app.handle_switch_key_toggle();
+    }
+
+    /// 取走输入线程触发的预设切换请求 (旧 take_pending_preset_switches)。
+    pub fn take_pending_preset_switches(&self) -> Vec<String> {
+        self.app.take_pending_preset_switches()
+    }
+
+    /// 托盘"显示主窗口"请求 (旧 check_and_clear_show_window_request)。
+    pub fn take_show_window_request(&self) -> bool {
+        self.app.check_and_clear_show_window_request()
+    }
+
+    /// 托盘"关于"请求。
+    pub fn take_show_about_request(&self) -> bool {
+        self.app.check_and_clear_show_about_request()
+    }
+
+    /// HID 激活请求轮询 (弹窗创建用)。
+    pub fn poll_hid_activation_requests(&self) -> smallvec::SmallVec<[crate::state::HidActivationRequest; 2]> {
+        self.app.poll_hid_activation_requests()
+    }
+
+    /// 设备 API 偏好即时生效 (写配置之外的系统侧登记)。
+    pub fn apply_device_api_preference(&self, vid: u16, pid: u16, pref: crate::config::DeviceApiPreference) {
+        crate::input_manager::set_device_api_preference((vid, pid), pref);
+        crate::input_manager::release_device_ownership((vid, pid));
+    }
+
+    /// 设备测试震动 (设备管理弹窗) —— 直写马达 + 作废引擎写入去重缓存。
+    pub fn xinput_test_vibration(&self, user_index: u32, left: u16, right: u16) -> bool {
+        let ok = crate::xinput::XInputHandler::set_vibration(user_index, left, right);
+        crate::vibration::invalidate_xinput_write_cache();
+        ok
+    }
+
+    /// 设置 DFO 玩家类型并联动震动总开关 (旧向导首弹语义: dfo_player 与
+    /// vibration.enabled 同值写入 + 运行态镜像 + 立即落盘)。
+    pub fn set_dfo_player(&self, dfo: bool) -> anyhow::Result<()> {
+        self.cfg.update_config(&self.app, Commit::Save, |c| {
+            c.dfo_player = dfo;
+            c.vibration.enabled = dfo;
+        })?;
+        self.cfg
+            .with_config(|c| self.app.apply_vibration_config(&c.vibration));
+        Ok(())
+    }
+}
+
+/// ★R2.14: 设备信息类型经 backend 转发 (GUI 不直接依赖输入层模块)。
+pub use crate::rawinput::{HidDeviceInfo, RawHidGamepad};
+pub use crate::xinput::XInputDeviceInfo;
+
+impl BackendService {
+    // ── 静态版设备探测 (无后端句柄的 UI 弹窗用; 与实例版同源透传) ──────
+
+    pub fn enumerate_xinput_devices_static() -> Vec<XInputDeviceInfo> {
+        crate::xinput::XInputHandler::enumerate_devices()
+    }
+
+    pub fn enumerate_hid_devices_static() -> Vec<HidDeviceInfo> {
+        crate::rawinput::enumerate_hid_devices()
+    }
+
+    pub fn enumerate_raw_hid_gamepads_static() -> Vec<RawHidGamepad> {
+        crate::rawinput::enumerate_raw_hid_gamepads()
+    }
+
+    pub fn request_xinput_reset_static() {
+        crate::input_manager::request_xinput_reset();
+    }
+
+    /// 直写马达 + 作废引擎写入去重缓存 (设备管理弹窗测试震动用)。
+    pub fn xinput_test_vibration_static(user_index: u32, left: u16, right: u16) -> bool {
+        let ok = crate::xinput::XInputHandler::set_vibration(user_index, left, right);
+        crate::vibration::invalidate_xinput_write_cache();
+        ok
+    }
+
+    /// 引擎 XInput 写入去重缓存作废 (直写马达后的配套操作)。
+    pub fn xinput_invalidate_write_cache() {
+        crate::vibration::invalidate_xinput_write_cache();
+    }
+
+    /// XInput 按钮位 → 显示名 (纯映射, 组合键校验/捕获显示用)。
+    pub fn xinput_input_id_to_name(input_id: u32) -> &'static str {
+        crate::xinput::XInputHandler::input_id_to_name(input_id)
+    }
+
+    // ── 静态版系统查询 (GUI 不直接触碰系统层模块) ─────────────────────
+
+    /// 运行日志 (SorahkDFO_vib.log；GUI 诊断输出统一走这里)。
+    pub fn log(msg: &str) {
+        crate::vibration::vib_log(msg);
+    }
+
+    /// 引擎时间基准 (now_ms 口径; GUI 频谱闪色等 UI 动画用)。
+    pub fn now_ms() -> u64 {
+        crate::vibration::now_ms_u64()
+    }
+
+    /// HID 激活: 写入基线并激活设备 (激活向导收尾)。
+    pub fn activate_hid_device(device_handle: isize, baseline_data: Vec<u8>) {
+        crate::rawinput::activate_hid_device(device_handle, baseline_data);
+    }
+
+    /// HID 激活: 按句柄取稳定标识 (VID, PID, Serial)。
+    pub fn get_device_info_for_handle(
+        device_handle: isize,
+    ) -> Option<(u16, u16, Option<String>)> {
+        crate::rawinput::get_device_info_for_handle(device_handle)
+    }
+
+    /// 设备显示信息缓存查询 (手柄页/面板展示厂商型号用)。
+    pub fn get_device_display_info(
+        stable_device_id: u64,
+    ) -> Option<crate::rawinput::DeviceDisplayInfo> {
+        crate::rawinput::get_device_display_info(stable_device_id)
+    }
+
+    /// S1 ACT DLL 是否已在主程序目录 (快捷连接卡的启用提示)。
+    pub fn host_dir_dll_ready() -> bool {
+        crate::auto_inject::host_dir_dll()
     }
 }
 

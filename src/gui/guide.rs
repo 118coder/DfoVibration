@@ -49,37 +49,23 @@ impl SorahkGui {
                             let no =
                                 ui.add_sized([240.0, 34.0], th.secondary_button("⌨️ 不是, 仅用连发"));
                             if yes.clicked() || no.clicked() {
-                                self.config.dfo_player = yes.clicked();
+                                /* ★R2.14: dfo_player + 震动总开关联动写入走 backend
+                                 * (set_dfo_player = config + 运行态镜像 + 落盘) */
+                                let dfo = yes.clicked();
+                                let _ = self.backend.set_dfo_player(dfo);
                                 self.dfo_ask_answered = true;
-                                /* ★v24.18: 震动默认跟随玩家类型 —— DFO 玩家默认「开」, 仅用连发默认「关」。
-                                 * (首次运行本来就是 true, 但用户若曾关过震动、现在用「?」重跑向导选"是",
-                                 * 这里要把它打开) */
-                                if self.config.dfo_player {
-                                    self.app_state.vibration_enabled.store(
-                                        true,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    );
-                                    self.config.vibration.enabled = true;
-                                }
-                                /* ★v24.10: 选「仅用连发」→ 震动功能一并默认关闭 (用户要求),
-                                 * 而不是只藏入口却让震动仍在后台驱动 */
-                                if !self.config.dfo_player {
-                                    self.app_state.vibration_enabled.store(
-                                        false,
-                                        std::sync::atomic::Ordering::Relaxed,
-                                    );
-                                    self.config.vibration.enabled = false;
-                                    if matches!(
+                                /* ★v24.10: 选「仅用连发」→ 震动页入口同步隐藏 */
+                                if !dfo
+                                    && matches!(
                                         self.active_page,
                                         Page::Vibration | Page::JobPresets
-                                    ) {
-                                        self.active_page = Page::Gamepad;
-                                    }
+                                    )
+                                {
+                                    self.active_page = Page::Gamepad;
                                 }
-                                let _ = self.config.save_to_file("Config.toml");
                                 /* DFO 玩家 → 第 1.5 弹问客户端版本 (S1 ACT / S4+ 新版);
                                  * 非 DFO 玩家 (无震动) → 直接进第 2 弹使用说明 */
-                                if self.config.dfo_player {
+                                if dfo {
                                     self.show_edition_ask = true;
                                     self.modal_defer = 1; /* 防同帧点击穿透 */
                                 } else {
@@ -145,13 +131,19 @@ impl SorahkGui {
                                 th.secondary_button("🆕 S4 之后的新版本"),
                             );
                             if s1.clicked() || s4.clicked() {
-                                let from = self.config.vib_legacy_client;
+                                let from = self
+                                    .backend
+                                    .with_config(|c| c.vib_legacy_client);
                                 let to = s1.clicked();
-                                self.config.vib_edition_asked = true;
                                 /* ★v24.13: 换客户端路线 = 换**整套**震动参数 (S1/S4 各一套, 互不污染);
-                                 * 目标路线首次使用则套该路线内置默认预设。 */
+                                 * 目标路线首次使用则套该路线内置默认预设。
+                                 * ★R2.14: 路线切换本体走 backend (switch_vibration_edition 内部已改造),
+                                 * asked 标记随既有保存链路落盘。 */
                                 self.switch_vibration_edition(from, to);
-                                let _ = self.config.save_to_file("Config.toml");
+                                let _ = self.backend.update_config(
+                                    crate::ui_api::Commit::Save,
+                                    |c| c.vib_edition_asked = true,
+                                );
                                 self.show_edition_ask = false;
                                 /* 选完进入第 2 弹: 使用说明 (延迟一帧防点击穿透) */
                                 self.show_guide = true;
@@ -217,10 +209,13 @@ impl SorahkGui {
                             ));
                             ui.add_space(theme::SP_XS);
                             if ui.add_sized([180.0, 34.0], th.primary_button("开始使用")).clicked() {
-                                self.config.guide_seen = true;
+                                /* ★R2.14: guide_seen 落盘走 backend */
+                                let _ = self.backend.update_config(
+                                    crate::ui_api::Commit::Save,
+                                    |c| c.guide_seen = true,
+                                );
                                 self.first_run_rerun = false;
                                 self.show_guide = false;
-                                let _ = self.config.save_to_file("Config.toml");
                             }
                             ui.add_space(theme::SP_XS);
                             ui.label(th.hint_text("随时可在「设置 → DFO 震动功能」更改 DFO 选择"));

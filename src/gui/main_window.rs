@@ -29,9 +29,9 @@ impl eframe::App for SorahkGui {
         // }
         /* ★v24.18 用户要求"退出时的模式记忆": 极简/经典/完整在切换时本来就会落盘,
          * 这里在**真正退出**时再兜底存一次 (含窗口几何), 保证下次打开还是同一模式。
-         * (点 x 只是收进托盘, 不会走到这里) */
-        let _ = self.config.save_to_file("Config.toml");
-        self.app_state.exit();
+         * (点 x 只是收进托盘, 不会走到这里)
+         * ★R2.14: 落盘+退出统一走 backend (backend.quit = flush_all + exit)。 */
+        self.backend.quit();
     }
 }
 
@@ -43,50 +43,24 @@ impl SorahkGui {
     /// ⚠ 新增 UI 逻辑请一律写在这个函数体内, 不要写回 `update`。
     pub(crate) fn update_ctx(&mut self, ctx: &egui::Context) {
         // Cache frame state at the beginning to avoid repeated atomic operations
+        let snap = self.backend.snapshot();
         let frame_state = FrameState {
-            is_paused: self.app_state.is_paused(),
-            worker_count: self.app_state.get_actual_worker_count(),
-            should_exit: self.app_state.should_exit(),
+            is_paused: snap.core.paused,
+            worker_count: snap.core.workers_actual,
+            should_exit: self.backend.should_exit(),
         };
 
         // Check if exit was requested at the very beginning
         if frame_state.should_exit {
-            /* ★v16.2b: 退出前强制落盘 (不等 1 秒去抖窗口) —— 修"拖完滑块立刻关软件
-             * 丢最后一次改动"的边界 (去抖落盘在下面, 早退时不会执行) */
-            if self.vib_params_dirty_since.is_some() {
-                let _ = self.config.save_vibration_to_file(
-                    crate::config::AppConfig::vibration_path_for("Config.toml"),
-                );
-                self.vib_params_dirty_since = None;
-            }
-            /* ★v24.50 音频震动参数同款退出落盘 */
-            if self.audio_params_dirty_since.is_some() {
-                let _ = self.config.save_to_file("Config.toml");
-                self.audio_params_dirty_since = None;
-            }
+            /* ★R2.14: 退出落盘统一走 backend —— 保存调度线程已静默 1s 落过盘,
+             * 这里兜底补写脏数据 (语义同旧"退出前强制落盘")。 */
+            self.backend.flush_all();
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
 
-        /* ★v16.2: 60 槽滑块自动落盘 (去抖 1 秒) —— 滑块拖动只镜像进 config 并打脏标,
-         * 静默 1 秒后在此统一写 Vibration.toml (职业模式不打脏标, 走 JobVibration 快照)。
-         * 修"拖动滑块不点保存当前 → 重启回滚"的高频痛点 */
-        if let Some(t) = self.vib_params_dirty_since {
-            if t.elapsed().as_millis() >= 1000 {
-                let _ = self.config.save_vibration_to_file(
-                    crate::config::AppConfig::vibration_path_for("Config.toml"),
-                );
-                self.vib_params_dirty_since = None;
-            }
-        }
-
-        /* ★v24.50 音频震动参数自动落盘 (同款去抖 1 秒 → Config.toml) */
-        if let Some(t) = self.audio_params_dirty_since {
-            if t.elapsed().as_millis() >= 1000 {
-                let _ = self.config.save_to_file("Config.toml");
-                self.audio_params_dirty_since = None;
-            }
-        }
+        /* ★R2.14: 滑杆去抖落盘已下沉 backend 保存调度线程 (静默 1s 原子写),
+         * 旧的两段 GUI 去抖块废除。 */
 
         /* ★v24.36 性能: SVG 纹理后台预热 —— 键盘/手柄 SVG 的光栅化
          * (全系统字体扫描 + 2x 渲染 750 万像素) 从"首次进页那一帧"挪到后台线程,
@@ -96,7 +70,7 @@ impl SorahkGui {
 
         // Check for HID device activation requests
         if self.hid_activation_dialog.is_none() {
-            let requests = self.app_state.poll_hid_activation_requests();
+            let requests = self.backend.poll_hid_activation_requests();
             if let Some(request) = requests.first() {
                 self.hid_activation_dialog =
                     Some(crate::gui::hid_activation_dialog::HidActivationDialog::new(
@@ -122,16 +96,16 @@ impl SorahkGui {
 
             if is_debouncing {
                 while self
-                    .app_state
-                    .try_recv_hid_activation_data(dialog.device_handle())
+                    .backend
+                    .try_hid_activation_data(dialog.device_handle())
                     .is_some()
                 {
                     // Discard all data during debounce period
                 }
             } else {
                 while let Some(hid_data) = self
-                    .app_state
-                    .try_recv_hid_activation_data(dialog.device_handle())
+                    .backend
+                    .try_hid_activation_data(dialog.device_handle())
                 {
                     dialog.handle_hid_data(&hid_data);
                 }
@@ -142,11 +116,11 @@ impl SorahkGui {
             if should_close {
                 // Save baseline to config if successful
                 if let Some(baseline) = dialog.get_baseline() {
-                    crate::rawinput::activate_hid_device(dialog.device_handle(), baseline.clone());
+                    crate::backend::BackendService::activate_hid_device(dialog.device_handle(), baseline.clone());
 
                     // Get device info for stable identifier (VID:PID:Serial)
                     if let Some((vid, pid, serial)) =
-                        crate::rawinput::get_device_info_for_handle(dialog.device_handle())
+                        crate::backend::BackendService::get_device_info_for_handle(dialog.device_handle())
                     {
                         // Create device ID string using format: "VID:PID" or "VID:PID:Serial"
                         let device_id = if let Some(ref serial) = serial {
@@ -156,28 +130,27 @@ impl SorahkGui {
                         };
 
                         // Check if device already exists in config (avoid duplicates)
-                        if !self
-                            .config
-                            .hid_baselines
-                            .iter()
-                            .any(|b| b.device_id == device_id)
-                        {
-                            // Add to config for persistence
-                            self.config
-                                .hid_baselines
-                                .push(crate::config::HidDeviceBaseline {
-                                    device_id,
-                                    baseline_data: baseline,
-                                });
-
-                            // Save config
-                            let _ = self.config.save_to_file("Config.toml");
-                        }
+                        // ★R2.14: 配置写入走 backend (Save 档立即落盘)
+                        let _ = self.backend.update_config(
+                            crate::ui_api::Commit::Save,
+                            |c| {
+                                if !c
+                                    .hid_baselines
+                                    .iter()
+                                    .any(|b| b.device_id == device_id)
+                                {
+                                    c.hid_baselines.push(crate::config::HidDeviceBaseline {
+                                        device_id,
+                                        baseline_data: baseline,
+                                    });
+                                }
+                            },
+                        );
                     }
                 }
 
                 // Clear activating device handle
-                self.app_state.clear_activating_device();
+                self.backend.clear_activating_device();
                 self.hid_activation_dialog = None;
                 self.hid_activation_creation_time = None;
             }
@@ -205,13 +178,13 @@ impl SorahkGui {
 
 
         // Handle window visibility requests
-        if self.app_state.check_and_clear_show_window_request() {
+        if self.backend.take_show_window_request() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        if self.app_state.check_and_clear_show_about_request() {
+        if self.backend.take_show_about_request() {
             self.show_about_dialog = true;
         }
 
@@ -236,16 +209,20 @@ impl SorahkGui {
         if self.show_device_manager {
             if self.device_manager_dialog.is_none() {
                 let mut dialog = crate::gui::device_manager_dialog::DeviceManagerDialog::new();
-                dialog.load_preferences(&self.config.device_api_preferences);
+                let prefs = self
+                    .backend
+                    .with_config(|c| c.device_api_preferences.clone());
+                dialog.load_preferences(&prefs);
                 dialog.refresh_devices();
                 self.device_manager_dialog = Some(dialog);
             }
 
             if let Some(dialog) = &mut self.device_manager_dialog {
+                let hid_baselines = self.backend.with_config(|c| c.hid_baselines.clone());
                 let mut activated_devices =
-                    std::collections::HashSet::with_capacity(self.config.hid_baselines.len());
+                    std::collections::HashSet::with_capacity(hid_baselines.len());
 
-                for baseline in &self.config.hid_baselines {
+                for baseline in &hid_baselines {
                     // Parse VID:PID from device_id (format: "VID:PID" or "VID:PID:Serial")
                     if let Some(colon_pos) = baseline.device_id.find(':') {
                         let vid_str = &baseline.device_id[..colon_pos];
@@ -273,32 +250,40 @@ impl SorahkGui {
 
                 let changed_prefs = dialog.take_changed_preferences();
                 if !changed_prefs.is_empty() {
+                    /* ★R2.14: 偏好写入走 backend (Save 落盘), 系统侧登记走 backend 透传 */
+                    let _ = self.backend.update_config(
+                        crate::ui_api::Commit::Save,
+                        |c| {
+                            for (key, pref) in &changed_prefs {
+                                c.device_api_preferences.insert(key.clone(), *pref);
+                            }
+                        },
+                    );
                     for (key, pref) in changed_prefs {
-                        self.config.device_api_preferences.insert(key.clone(), pref);
                         if let Some((vid, pid)) = key.split_once(':')
                             && let (Ok(vid_u16), Ok(pid_u16)) =
                                 (u16::from_str_radix(vid, 16), u16::from_str_radix(pid, 16))
                         {
-                            crate::input_manager::set_device_api_preference(
-                                (vid_u16, pid_u16),
-                                pref,
-                            );
-                            crate::input_manager::release_device_ownership((vid_u16, pid_u16));
+                            self.backend.apply_device_api_preference(vid_u16, pid_u16, pref);
                         }
                     }
-                    let _ = self.config.save_to_file("Config.toml");
                 }
 
                 let devices_to_reactivate = dialog.take_devices_to_reactivate();
                 if !devices_to_reactivate.is_empty() {
+                    let _ = self.backend.update_config(
+                        crate::ui_api::Commit::Save,
+                        |c| {
+                            for (vid, pid) in &devices_to_reactivate {
+                                let vid_pid_prefix = format!("{vid:04X}:{pid:04X}");
+                                c.hid_baselines
+                                    .retain(|b| !b.device_id.starts_with(&vid_pid_prefix));
+                            }
+                        },
+                    );
                     for (vid, pid) in devices_to_reactivate {
-                        let vid_pid_prefix = format!("{:04X}:{:04X}", vid, pid);
-                        self.config
-                            .hid_baselines
-                            .retain(|baseline| !baseline.device_id.starts_with(&vid_pid_prefix));
-                        self.app_state.clear_device_baseline(vid, pid);
+                        self.backend.clear_device_baseline(vid, pid);
                     }
-                    let _ = self.config.save_to_file("Config.toml");
                     dialog.refresh_devices();
                 }
 
@@ -326,13 +311,15 @@ impl SorahkGui {
                             }
                         } else {
                             // ★v20.3: 连发页内联入口 (设置弹窗未开) — 直接写正式配置并热重载
-                            if let Some(mapping) = self.config.mappings.get_mut(idx) {
-                                mapping.add_target_key(selected);
-                                let _ = self.config.save_to_file("Config.toml");
-                                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                                    eprintln!("Failed to reload config after direction add: {}", e);
-                                }
-                            }
+                            // ★R2.14: 走 backend (Reload 档 = 落盘+热重载)
+                            let _ = self.backend.update_config(
+                                crate::ui_api::Commit::Reload,
+                                |c| {
+                                    if let Some(mapping) = c.mappings.get_mut(idx) {
+                                        mapping.add_target_key(selected.clone());
+                                    }
+                                },
+                            );
                         }
                     } else {
                         // New mapping - add to target keys list
@@ -362,13 +349,15 @@ impl SorahkGui {
                             }
                         } else {
                             // ★v20.3: 连发页内联入口 (设置弹窗未开) — 直接写正式配置并热重载
-                            if let Some(mapping) = self.config.mappings.get_mut(idx) {
-                                mapping.add_target_key(selected);
-                                let _ = self.config.save_to_file("Config.toml");
-                                if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                                    eprintln!("Failed to reload config after scroll add: {}", e);
-                                }
-                            }
+                            // ★R2.14: 走 backend (Reload 档 = 落盘+热重载)
+                            let _ = self.backend.update_config(
+                                crate::ui_api::Commit::Reload,
+                                |c| {
+                                    if let Some(mapping) = c.mappings.get_mut(idx) {
+                                        mapping.add_target_key(selected.clone());
+                                    }
+                                },
+                            );
                         }
                     } else {
                         self.new_mapping_target = selected.clone();
@@ -501,7 +490,7 @@ impl SorahkGui {
 
                 let button_width = 320.0;
                 let button_height = 32.0;
-                let tray_enabled = self.config.show_tray_icon;
+                let tray_enabled = self.backend.with_config(|c| c.show_tray_icon);
 
                 if tray_enabled {
                     let minimize_btn = egui::Button::new(
@@ -543,7 +532,8 @@ impl SorahkGui {
                     .clicked()
                 {
                     self.show_close_dialog = false;
-                    self.app_state.exit();
+                    /* ★R2.14: 退出 = backend 落盘 + 通知运行线程收尾 */
+                    self.backend.quit();
                 }
 
                 ui.add_space(12.0);
@@ -586,7 +576,7 @@ impl SorahkGui {
 
                     if is_pressed && !was_pressed {
                         self.last_vk_state |= vk_bit;
-                        self.app_state.handle_switch_key_toggle();
+                        self.backend.handle_switch_key_toggle();
                     } else if !is_pressed {
                         self.last_vk_state &= !vk_bit;
                     }
@@ -619,7 +609,7 @@ impl SorahkGui {
                             let all_down = keys.iter().all(|&k| GetAsyncKeyState(k as i32) < 0);
 
                             if all_down {
-                                self.app_state.handle_switch_key_toggle();
+                                self.backend.handle_switch_key_toggle();
                                 return;
                             }
                         } else if !is_pressed {
@@ -641,25 +631,28 @@ impl SorahkGui {
     /// 执行真正的切换 (落盘 + 热重载只能发生在 UI 线程)。
     pub(super) fn handle_preset_switch_keys(&mut self) {
         /* 1) 先取走输入线程排队的手柄切换请求 (FIFO) */
-        for name in self.app_state.take_pending_preset_switches() {
+        for name in self.backend.take_pending_preset_switches() {
             self.switch_to_turbo_preset(&name);
         }
 
-        if self.config.presets.len() != self.preset_switch_key_states.len() {
-            self.preset_switch_key_states = vec![false; self.config.presets.len()];
+        let preset_count = self.backend.with_config(|c| c.presets.len());
+        if preset_count != self.preset_switch_key_states.len() {
+            self.preset_switch_key_states = vec![false; preset_count];
         }
 
-        /* 2) 把"手柄类"绑定推送给输入线程 (仅签名变化时, 避免逐帧写锁) */
-        self.sync_preset_switch_bindings();
+        /* ★R2.14: 手柄类绑定表已由 backend 在启动/每次 Commit::Reload 时重建,
+         * 旧 GUI 的 sync_preset_switch_bindings 签名推送逻辑废除。 */
 
-        /* 3) 键盘切换键按下边缘检测 */
+        /* 2) 键盘切换键按下边缘检测 */
         /* 先拷出 (名字, 键), 避免迭代借用与 switch_to_turbo_preset 的 &mut self 冲突 */
         let entries: Vec<(String, String)> = self
-            .config
-            .presets
-            .iter()
-            .map(|p| (p.name.clone(), p.switch_key.clone()))
-            .collect();
+            .backend
+            .with_config(|c| {
+                c.presets
+                    .iter()
+                    .map(|p| (p.name.clone(), p.switch_key.clone()))
+                    .collect()
+            });
         for (i, (name, key)) in entries.iter().enumerate() {
             if key.trim().is_empty() {
                 self.preset_switch_key_states[i] = false;
@@ -679,38 +672,8 @@ impl SorahkGui {
         }
     }
 
-    /// ★v21.7: 预设切换键的手柄类绑定 → AppState (输入线程消费)。
-    /// 签名 = (预设名, 键名) 序列的哈希; 只在变化时推送 (配置改动/切换预设均会触发)。
-    fn sync_preset_switch_bindings(&mut self) {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for p in &self.config.presets {
-            p.name.hash(&mut hasher);
-            p.switch_key.hash(&mut hasher);
-        }
-        let sig = hasher.finish();
-        if sig == self.preset_switch_bindings_sig {
-            return;
-        }
-        self.preset_switch_bindings_sig = sig;
-
-        let mut bindings = Vec::new();
-        for p in &self.config.presets {
-            let key = p.switch_key.trim();
-            if key.is_empty()
-                || crate::gui::utils::key_kind(key) != crate::gui::utils::KeyKind::Gamepad
-            {
-                continue;
-            }
-            if let Some(device) = crate::state::AppState::input_name_to_device(key) {
-                bindings.push(crate::state::PresetSwitchBinding {
-                    preset_name: p.name.clone(),
-                    device,
-                });
-            }
-        }
-        self.app_state.set_preset_switch_bindings(bindings);
-    }
+    /// ★R2.14: 旧 sync_preset_switch_bindings 已废除 —— 手柄类预设切换键绑定
+    /// 由 backend 在构造与每次 `Commit::Reload` 时重建 (config_store::build_preset_bindings)。
 
     /// ★v20.3: 轮询一个组合键当前是否处于按下状态 (不含边缘检测)。
     fn poll_switch_key_down(key: &str) -> bool {
@@ -748,10 +711,12 @@ impl SorahkGui {
     /// 应用外壳: 顶栏 + 侧边栏导航 + 内容区 (现代桌面应用三段式)。
     pub(super) fn render_shell(&mut self, ctx: &egui::Context, frame_state: &FrameState) {
         let th = self.theme();
+        /* ★R2.14: guide_seen 从 backend 读 */
+        let guide_seen = self.backend.with_config(|c| c.guide_seen);
 
         /* 首次运行: 第 1 弹问「是否 DFO 玩家」→ (是) 第 1.5 弹问「S1 ACT / S4+ 新版」
          * → 第 2 弹使用说明; 非 DFO 玩家跳过版本询问; 「?」重跑完整流程 (旁路 guide_seen) */
-        if (!self.config.guide_seen || self.first_run_rerun)
+        if (!guide_seen || self.first_run_rerun)
             && !self.dfo_ask_answered
             && !self.show_guide
         {
@@ -788,8 +753,11 @@ impl SorahkGui {
                             let pos = outer.min;
                             let sz = inner.size();
                             self.normal_window_rect = Some((pos, sz));
-                            self.config.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]);
-                            let _ = self.config.save_to_file("Config.toml");
+                            /* ★R2.14: 窗口几何持久化走 backend (Save 档) */
+                            let _ = self.backend.update_config(
+                                crate::ui_api::Commit::Save,
+                                |c| c.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]),
+                            );
                         }
                     }
                 }
@@ -805,8 +773,8 @@ impl SorahkGui {
                 ));
                 /* 经典窗回到上次位置 (运行时记忆 → 配置持久化) + 位置锁存 */
                 let classic = self.classic_window_rect.or_else(|| {
-                    self.config
-                        .window_rect_classic
+                    self.backend
+                        .with_config(|c| c.window_rect_classic)
                         .map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
                 });
                 if let Some((pos, _)) = classic {
@@ -874,8 +842,11 @@ impl SorahkGui {
                             let pos = outer.min;
                             let sz = inner.size();
                             self.normal_window_rect = Some((pos, sz));
-                            self.config.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]);
-                            let _ = self.config.save_to_file("Config.toml");
+                            /* ★R2.14: 窗口几何持久化走 backend (Save 档) */
+                            let _ = self.backend.update_config(
+                                crate::ui_api::Commit::Save,
+                                |c| c.window_rect_normal = Some([pos.x, pos.y, sz.x, sz.y]),
+                            );
                         }
                     }
                 }
@@ -887,8 +858,8 @@ impl SorahkGui {
                 let mini = self
                     .minimal_window_rect
                     .or_else(|| {
-                        self.config
-                            .window_rect_minimal
+                        self.backend
+                            .with_config(|c| c.window_rect_minimal)
                             .map(|r| (egui::pos2(r[0], r[1]), egui::vec2(r[2], r[3])))
                     });
                 if let Some((pos, _)) = mini {
@@ -980,9 +951,9 @@ impl SorahkGui {
                 widgets::paint_top_glow(ui, &th);
                 widgets::page_header(ui, &th, self.active_page.title(), self.active_page.hint());
                 // DFO 功能关闭时震动页不可达: 当前页落在其上则回手柄映射
-                if !self.config.dfo_player
-                    && matches!(self.active_page, Page::Vibration | Page::JobPresets)
-                {
+                // ★R2.14: dfo_player 从 backend 读
+                let dfo_player = self.backend.with_config(|c| c.dfo_player);
+                if !dfo_player && matches!(self.active_page, Page::Vibration | Page::JobPresets) {
                     self.active_page = Page::Gamepad;
                 }
                 match self.active_page {
@@ -1104,7 +1075,8 @@ impl SorahkGui {
                 self.render_window_controls(ui, ctx);
                 ui.add_space(theme::SP_S);
                 self.render_top_bar_actions(ui, ctx);
-                if !self.config.presets.is_empty() {
+                let has_presets = self.backend.with_config(|c| !c.presets.is_empty());
+                if has_presets {
                     self.render_preset_switch_centered(ui);
                 }
             });
@@ -1133,8 +1105,11 @@ impl SorahkGui {
         // 主题切换 (半月图标)
         if widgets::icon_button(ui, &th, widgets::Icon::Theme, &theme_tip).clicked() {
             self.dark_mode = !self.dark_mode;
-            self.config.dark_mode = self.dark_mode;
-            let _ = self.config.save_to_file("Config.toml");
+            /* ★R2.14: 主题持久化走 backend (Save 档) */
+            let _ = self.backend.update_config(
+                crate::ui_api::Commit::Save,
+                |c| c.dark_mode = self.dark_mode,
+            );
             if let Some(temp_config) = &mut self.temp_config {
                 temp_config.dark_mode = self.dark_mode;
             }
@@ -1203,13 +1178,13 @@ impl SorahkGui {
     /// (弹窗渲染直接解包它, None = 崩溃 —— 经典齿轮最初漏了这步就是这个崩溃) /
     /// 清理预设重命名暂存。
     pub(super) fn open_settings_dialog(&mut self) {
-        let was_paused = self.app_state.is_paused();
+        let was_paused = self.backend.is_paused();
         self.was_paused_before_settings = Some(was_paused);
         if !was_paused {
-            self.app_state.set_paused(true);
+            self.backend.set_paused(true);
         }
         self.show_settings_dialog = true;
-        self.temp_config = Some(self.config.clone());
+        self.temp_config = Some(self.backend.with_config(|c| c.clone()));
         self.preset_rename_target.clear();
         self.preset_rename_input.clear();
     }
@@ -1218,58 +1193,79 @@ impl SorahkGui {
     /// 预设快切下拉 (切换即保存并热重载; 完整顶栏与极简页面共用)。
     pub(super) fn render_preset_switch(&mut self, ui: &mut egui::Ui) -> egui::Response {
         let no_preset = self.translations.no_preset().to_owned();
-        let current_name = if self.config.current_preset.is_empty() {
+        /* ★R2.14: 帧首一次性收集 (current_preset, 预设表) */
+        let (current_preset, presets) = self.backend.with_config(|c| {
+            (c.current_preset.clone(), c.presets.clone())
+        });
+        let current_name = if current_preset.is_empty() {
             no_preset.clone()
         } else {
-            self.config.current_preset.clone()
+            current_preset.clone()
         };
-        let previous_preset = self.config.current_preset.clone();
-        let previous_mapping_count = self.config.mappings.len();
-        let presets = self.config.presets.clone(); // 每帧仅一次克隆
+        /* 选择结果暂存 (UI 闭包只记意图, 统一走 backend 提交) */
+        let mut picked: Option<Option<String>> = None; // None = 切"无"; Some(名字) = 切预设
         let combo_ir = egui::ComboBox::from_id_salt("titlebar_preset_selector")
             .selected_text(current_name)
             .width(130.0)
             .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(self.config.current_preset.is_empty(), &no_preset)
+                    .selectable_label(current_preset.is_empty(), &no_preset)
                     .clicked()
                 {
                     /* 切"无": 仅清空当前预设名, 保留现有映射 (防止误删用户配置) */
-                    self.config.current_preset.clear();
+                    picked = Some(None);
                 }
                 for preset in &presets {
-                    let is_selected = self.config.current_preset == preset.name;
+                    let is_selected = current_preset == preset.name;
                     if ui.selectable_label(is_selected, &preset.name).clicked() {
-                        self.config.current_preset = preset.name.clone();
                         /* ★空预设合法: 预设里没有任何键位/映射时, 切换后当前映射就清空,
                          * 作为"长期不触发任何连发映射"的正式状态使用 (保存/加载/热重载全链路已安全)。 */
-                        self.config.mappings = preset.mappings.clone();
+                        picked = Some(Some(preset.name.clone()));
                     }
                 }
             });
-        if previous_preset != self.config.current_preset
-            || previous_mapping_count != self.config.mappings.len()
-        {
-            if let Err(e) = self.config.save_to_file("Config.toml") {
-                eprintln!("Failed to save preset switch: {}", e);
+        let mut changed = false;
+        let mut now_current = current_preset.clone();
+        match picked {
+            Some(None) => {
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Reload, |c| {
+                        c.current_preset.clear();
+                    });
+                now_current.clear();
+                changed = true;
             }
-            if let Err(e) = self.app_state.reload_config(self.config.clone()) {
-                eprintln!("Failed to reload config after preset switch: {}", e);
+            Some(Some(name)) => {
+                match self.backend.apply_mapping_preset(&name) {
+                    Ok(()) => {
+                        now_current = name;
+                        changed = true;
+                    }
+                    Err(e) => eprintln!("Failed to switch preset: {e}"),
+                }
             }
+            None => {}
+        }
+        if changed {
             /* ★R2.12: 切预设会整份替换 mappings (可能来自手改配置/导入),
              * 补一次组合键体检并就近提示; 只提示, 不改动用户配置。 */
-            let chord_issues =
-                crate::gui::gamepad_mapping::validate_all_chords(&self.config);
+            let (chord_issues, presets_now) = self.backend.with_config(|c| {
+                (
+                    crate::gui::gamepad_mapping::validate_all_chords(c),
+                    c.presets.clone(),
+                )
+            });
             for issue in &chord_issues {
-                crate::vibration::vib_log(&format!(
+                crate::backend::BackendService::log(&format!(
                     "[chord] preset-check | preset={} | {issue}",
-                    self.config.current_preset
+                    now_current
                 ));
             }
             if let Some(first) = chord_issues.first() {
                 self.gamepad_warn = Some(format!(
                     "预设「{}」的组合键有 {} 处需要注意: {}",
-                    self.config.current_preset,
+                    now_current,
                     chord_issues.len(),
                     first
                 ));
@@ -1278,8 +1274,8 @@ impl SorahkGui {
                 );
             }
             if let Some(temp_config) = &mut self.temp_config {
-                temp_config.current_preset = self.config.current_preset.clone();
-                temp_config.presets = self.config.presets.clone();
+                temp_config.current_preset = now_current;
+                temp_config.presets = presets_now;
             }
         }
         combo_ir.response
@@ -1296,9 +1292,9 @@ impl SorahkGui {
 
         for page in Page::TABS {
             // DFO 非玩家: 隐藏「通用震动」「全职业预设」两个入口 (设置中可开启)
-            if !self.config.dfo_player
-                && matches!(page, Page::Vibration | Page::JobPresets)
-            {
+            // ★R2.14: dfo_player 从 backend 读
+            let dfo_player = self.backend.with_config(|c| c.dfo_player);
+            if !dfo_player && matches!(page, Page::Vibration | Page::JobPresets) {
                 continue;
             }
             let icon = page.icon();
@@ -1335,10 +1331,8 @@ impl SorahkGui {
                 });
                 ui.add_space(theme::SP_XS);
                 // 震动状态小胶囊
-                let vib_on = self
-                    .app_state
-                    .vibration_enabled
-                    .load(std::sync::atomic::Ordering::Relaxed);
+                // ★R2.14: 运行态从 backend 快照读
+                let vib_on = self.backend.snapshot().vibration.enabled;
                 let (vtext, vcolor) = if vib_on {
                     ("震动 开", th.good)
                 } else {
@@ -1347,8 +1341,9 @@ impl SorahkGui {
                 th.badge(ui, vtext, vcolor, if vib_on { th.good_soft } else { th.faint });
 
                 /* ★R2.12 (优化 7): 后台线程彻底挂掉必须让用户看得见 ——
-                 * 原来只在 crash.log 写一行, 玩家可能几天后才发现"震动悄悄没了"。 */
-                let stopped = crate::util::stopped_threads();
+                 * 原来只在 crash.log 写一行, 玩家可能几天后才发现"震动悄悄没了"。
+                 * ★R2.14: 看护线程名单/重启走 backend。 */
+                let stopped = self.backend.stopped_threads();
                 if !stopped.is_empty() {
                     ui.add_space(theme::SP_XS);
                     th.badge(
@@ -1363,7 +1358,7 @@ impl SorahkGui {
                         .clicked()
                     {
                         for name in &stopped {
-                            crate::util::restart_thread(name);
+                            self.backend.restart_thread(name);
                         }
                     }
                 }
@@ -1381,14 +1376,14 @@ impl SorahkGui {
 
     /// 暂停/恢复连发并发送系统通知 (侧边栏与 hero 共用)。
     pub(super) fn toggle_with_notify(&mut self) {
-        let was_paused = self.app_state.toggle_paused();
+        /* ★R2.14: 暂停切换走 backend；通知经 backend 透传 (托盘气泡) */
+        let was_paused = self.backend.toggle_paused();
         let msg = if was_paused {
             "Sorahk activating"
         } else {
             "Sorahk paused"
         };
-        self.app_state
-            .send_notification(NotificationEvent::Info(msg.to_string()));
+        self.backend.notify_info(msg);
     }
 
     /* ═══════════════════ 连发映射页 (v2) ═══════════════════ */

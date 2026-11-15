@@ -13,8 +13,7 @@ use crate::config::{AppConfig, KeyMapping};
 use crate::gui::SorahkGui;
 use crate::gui::theme::Theme;
 use crate::gui::types::{GpEvent, GpFlow};
-use crate::state::{AppState, DeviceType, InputDevice};
-use crate::xinput::XInputHandler;
+use crate::state::{DeviceType, InputDevice};
 use eframe::egui;
 use super::*;
 
@@ -22,8 +21,9 @@ use super::*;
 
 /// 触发键的 XInput 组合部分 (任意键数, 含单键): 返回 `(vid, 排序后的按钮 id)`。
 /// 用于切换键交集校验 (切换键通常是单键); 组合键自身判定用 [`chord_ids_of`]。
+/// ★R2.14: 键名解析走 backend 透传 (GUI 不再直调 crate::state::AppState::)。
 fn xinput_ids_of_any(trigger: &str) -> Option<(u16, Vec<u32>)> {
-    match AppState::input_name_to_device(trigger) {
+    match crate::backend::BackendService::input_name_to_device(trigger) {
         Some(InputDevice::XInputCombo {
             device_type: DeviceType::Gamepad(vid),
             button_ids,
@@ -52,7 +52,7 @@ pub fn chord_trigger_name(vid: u16, ids: &[u32]) -> String {
     ids.dedup();
     let names: Vec<&str> = ids
         .iter()
-        .map(|&id| XInputHandler::input_id_to_name(id))
+        .map(|&id| crate::backend::BackendService::xinput_input_id_to_name(id))
         .collect();
     format!("GAMEPAD_{vid:04X}_{}", names.join("+"))
 }
@@ -63,7 +63,7 @@ pub fn chord_display(ids: &[u32]) -> String {
     ids.sort_unstable();
     ids.dedup();
     ids.iter()
-        .map(|&id| XInputHandler::input_id_to_name(id))
+        .map(|&id| crate::backend::BackendService::xinput_input_id_to_name(id))
         .collect::<Vec<&str>>()
         .join("+")
 }
@@ -111,7 +111,7 @@ pub fn validate_chord_trigger(config: &AppConfig, vid: u16, ids: &[u32]) -> Resu
         .any(|&i| config.mappings[i].trigger_key.eq_ignore_ascii_case(&norm))
     {
         let msg = format!("组合键 {} 已存在", chord_display(ids));
-        crate::vibration::vib_log(&format!(
+        crate::backend::BackendService::log(&format!(
             "[chord] reject-duplicate | vid={vid:04X} | trigger={norm}"
         ));
         return Err(msg);
@@ -201,7 +201,7 @@ pub fn chord_switch_overlap_notes(config: &AppConfig, vid: u16, ids: &[u32]) -> 
     {
         notes.push(format!(
             "与「连发切换键」共用 {} — 单独按它才切换, 按组合只触发组合",
-            XInputHandler::input_id_to_name(*shared)
+            crate::backend::BackendService::xinput_input_id_to_name(*shared)
         ));
     }
     for p in &config.presets {
@@ -212,7 +212,7 @@ pub fn chord_switch_overlap_notes(config: &AppConfig, vid: u16, ids: &[u32]) -> 
             notes.push(format!(
                 "与预设「{}」的切换键共用 {} — 单独按它才切换, 按组合只触发组合",
                 p.name,
-                XInputHandler::input_id_to_name(*shared)
+                crate::backend::BackendService::xinput_input_id_to_name(*shared)
             ));
         }
     }
@@ -226,7 +226,7 @@ pub fn chord_solo_member_names(config: &AppConfig, vid: u16, ids: &[u32]) -> Vec
         let Some(InputDevice::XInputCombo {
             device_type: DeviceType::Gamepad(vid2),
             button_ids,
-        }) = AppState::input_name_to_device(&m.trigger_key)
+        }) = crate::backend::BackendService::input_name_to_device(&m.trigger_key)
         else {
             continue;
         };
@@ -251,7 +251,7 @@ pub fn chord_solo_member_names_by_vid(config: &AppConfig) -> Vec<String> {
     let mut solo_keys: Vec<u32> = Vec::new();
     for m in &config.mappings {
         let Some(InputDevice::XInputCombo { button_ids, .. }) =
-            AppState::input_name_to_device(&m.trigger_key)
+            crate::backend::BackendService::input_name_to_device(&m.trigger_key)
         else {
             continue;
         };
@@ -270,7 +270,7 @@ pub fn chord_solo_member_names_by_vid(config: &AppConfig) -> Vec<String> {
     let mut out: Vec<String> = combo_members
         .iter()
         .filter(|id| solo_keys.contains(id))
-        .map(|&id| XInputHandler::input_id_to_name(id).to_string())
+        .map(|&id| crate::backend::BackendService::xinput_input_id_to_name(id).to_string())
         .collect();
     out.sort_unstable();
     out.dedup();
@@ -282,20 +282,18 @@ pub fn chord_solo_member_names_by_vid(config: &AppConfig) -> Vec<String> {
 impl SorahkGui {
     /// 开始组合键录入 (面板「＋ 添加组合键」)。
     pub(super) fn start_chord_capture(&mut self) {
-        crate::vibration::vib_log(&format!(
-            "[chord] capture-start | existing={}",
-            chord_mapping_indexes(&self.config).len()
-        ));
+        let existing = self
+            .backend
+            .with_config(|c| chord_mapping_indexes(c).len());
+        crate::backend::BackendService::log(&format!("[chord] capture-start | existing={existing}"));
         self.gp_flow = self.gp_flow.transition(GpEvent::BeginChord);
         if matches!(self.gp_flow, GpFlow::AwaitChordPad) {
             self.capture_pressed_keys.clear();
             self.gp_pad_capture.reset();
             self.gp_quick_listen = false;
-            self.app_state.set_raw_input_capture_mode(true);
+            self.backend.set_pad_capture(true);
             /* ★v24.39: 组合捕获用「输入数最多」帧选择 (LB+LT 才能整帧捕获) */
-            self.app_state
-                .capture_prefers_max_inputs
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.backend.set_capture_prefers_max_inputs(true);
         }
     }
 
@@ -306,51 +304,70 @@ impl SorahkGui {
         };
         let trigger = chord_trigger_name(vid, &ids);
         let display = chord_display(&ids);
-        /* 已有同触发键映射 = 「改目标」语义 → 整份替换; 否则新建 */
+        /* 已有同触发键映射 = 「改目标」语义 → 整份替换; 否则新建
+         * ★R2.14: 读/写都走 backend; 写用 Memory, 统一由 gp_save_and_reload 落盘热重载 */
         let existing = self
-            .config
-            .mappings
-            .iter()
-            .position(|m| m.trigger_key.eq_ignore_ascii_case(&trigger));
+            .backend
+            .with_config(|c| {
+                c.mappings
+                    .iter()
+                    .position(|m| m.trigger_key.eq_ignore_ascii_case(&trigger))
+            });
         let solo_names;
         match existing {
             Some(i) => {
-                self.config.mappings[i].clear_target_keys();
-                self.config.mappings[i].add_target_key(value.clone());
+                let _ = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Memory, |c| {
+                        if let Some(m) = c.mappings.get_mut(i) {
+                            m.clear_target_keys();
+                            m.add_target_key(value.clone());
+                        }
+                    });
                 solo_names = Vec::new();
             }
             None => {
-                /* 二次校验 (捕获期间配置可能变化) */
-                if let Err(msg) = validate_chord_trigger(&self.config, vid, &ids) {
+                /* 二次校验 (捕获期间配置可能变化) —— 读 backend, 闭包内无写 */
+                if let Err(msg) = self
+                    .backend
+                    .with_config(|c| validate_chord_trigger(c, vid, &ids))
+                {
                     self.set_gamepad_warn(msg);
                     return;
                 }
-                self.config.mappings.push(KeyMapping {
-                    release_targets: Default::default(),
-                    sequence_text: String::new(),
-                    trigger_key: trigger.clone(),
-                    target_keys: Default::default(),
-                    interval: None,
-                    event_duration: None,
-                    turbo_enabled: false,
-                    move_speed: 5,
-                    double_tap_enabled: false,
-                    double_tap_gap_ms: 50,
-                    run_enabled: false,
-                    run_threshold: 80,
-                    run_recheck: true,
-                    lock_enabled: false,
-                    note: "手柄组合键（系统）".to_string(),
-                });
-                let last = self.config.mappings.len() - 1;
-                self.config.mappings[last].add_target_key(value.clone());
-                solo_names = chord_solo_member_names(&self.config, vid, &ids);
+                solo_names = self
+                    .backend
+                    .update_config(crate::ui_api::Commit::Memory, |c| {
+                        c.mappings.push(KeyMapping {
+                            release_targets: Default::default(),
+                            sequence_text: String::new(),
+                            trigger_key: trigger.clone(),
+                            target_keys: Default::default(),
+                            interval: None,
+                            event_duration: None,
+                            turbo_enabled: false,
+                            move_speed: 5,
+                            double_tap_enabled: false,
+                            double_tap_gap_ms: 50,
+                            run_enabled: false,
+                            run_threshold: 80,
+                            run_recheck: true,
+                            lock_enabled: false,
+                            note: "手柄组合键（系统）".to_string(),
+                        });
+                        let last = c.mappings.len() - 1;
+                        c.mappings[last].add_target_key(value.clone());
+                        chord_solo_member_names(c, vid, &ids)
+                    })
+                    .unwrap_or_default();
             }
         }
         self.gp_save_and_reload();
         self.gp_flow = self.gp_flow.transition(GpEvent::FinishEdit);
         /* ★v24.49: 与切换键共用按键不再是错误, 但要让用户知道运行时怎么仲裁 */
-        let switch_notes = chord_switch_overlap_notes(&self.config, vid, &ids);
+        let switch_notes = self
+            .backend
+            .with_config(|c| chord_switch_overlap_notes(c, vid, &ids));
         let mut extra = String::new();
         if !switch_notes.is_empty() {
             extra.push_str(&format!("。{}", switch_notes.join("; ")));
@@ -367,13 +384,21 @@ impl SorahkGui {
 
     /// 删除组合键映射。
     fn delete_chord(&mut self, mapping_idx: usize) {
-        if mapping_idx < self.config.mappings.len() {
-            let display = chord_display(
-                &chord_ids_of(&self.config.mappings[mapping_idx].trigger_key)
-                    .map(|(_, ids)| ids)
-                    .unwrap_or_default(),
-            );
-            self.config.mappings.remove(mapping_idx);
+        let display = self.backend.with_config(|c| {
+            c.mappings.get(mapping_idx).map(|m| {
+                chord_ids_of(&m.trigger_key)
+                    .map(|(_, ids)| chord_display(&ids))
+                    .unwrap_or_default()
+            })
+        });
+        if let Some(display) = display {
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Memory, |c| {
+                    if mapping_idx < c.mappings.len() {
+                        c.mappings.remove(mapping_idx);
+                    }
+                });
             self.gp_save_and_reload();
             self.set_gamepad_toast(format!("组合键 {display} 已删除"));
         }
@@ -381,7 +406,12 @@ impl SorahkGui {
 
     /// 对既有组合键「改目标」→ 进入键盘捕获 (沿用组合, 只换目标)。
     fn begin_chord_target_edit(&mut self, mapping_idx: usize) {
-        let Some((vid, ids)) = chord_ids_of(&self.config.mappings[mapping_idx].trigger_key) else {
+        let parsed = self.backend.with_config(|c| {
+            c.mappings
+                .get(mapping_idx)
+                .and_then(|m| chord_ids_of(&m.trigger_key))
+        });
+        let Some((vid, ids)) = parsed else {
             return;
         };
         self.gp_flow = GpFlow::AwaitChordKb {
@@ -481,7 +511,11 @@ impl SorahkGui {
             }
             /* 其余状态: 正常列表 */
             _ => {
-                let indexes = chord_mapping_indexes(&self.config);
+                /* ★R2.14: 组合键下标 + 映射列表帧首克隆 (渲染只读; 增删改走 backend) */
+                let indexes = self
+                    .backend
+                    .with_config(|c| chord_mapping_indexes(c));
+                let mappings = self.backend.with_config(|c| c.mappings.clone());
                 let mut delete_idx: Option<usize> = None;
                 let mut edit_idx: Option<usize> = None;
                 let mut add_clicked = false;
@@ -540,7 +574,7 @@ impl SorahkGui {
                                 if needle.is_empty() {
                                     return true;
                                 }
-                                let m = &self.config.mappings[i];
+                                let m = &mappings[i];
                                 m.trigger_key.to_ascii_lowercase().contains(&needle)
                                     || m.get_target_keys()
                                         .join(" + ")
@@ -552,7 +586,7 @@ impl SorahkGui {
                         let mut ordered = visible.clone();
                         if grouped {
                             ordered.sort_by_key(|&i| {
-                                chord_ids_of(&self.config.mappings[i].trigger_key)
+                                chord_ids_of(&mappings[i].trigger_key)
                                     .map(|(_, ids)| chord_group_label(&ids))
                                     .unwrap_or("其它组合")
                             });
@@ -576,17 +610,23 @@ impl SorahkGui {
                                     confirm_count
                                 )));
                                 if ui.add(th.primary_button("确认删除")).clicked() {
-                                    for i in visible.iter().rev() {
-                                        if *i < self.config.mappings.len() {
-                                            self.config.mappings.remove(*i);
-                                        }
-                                    }
+                                    /* ★R2.14: 批量删除一次 Memory 提交 + gp_save_and_reload 落盘 */
+                                    let targets = visible.clone();
+                                    let _ = self
+                                        .backend
+                                        .update_config(crate::ui_api::Commit::Memory, |c| {
+                                            for i in targets.iter().rev() {
+                                                if *i < c.mappings.len() {
+                                                    c.mappings.remove(*i);
+                                                }
+                                            }
+                                        });
                                     self.gp_save_and_reload();
                                     self.set_gamepad_toast(format!(
                                         "已删除 {} 条组合键",
                                         confirm_count
                                     ));
-                                    crate::vibration::vib_log(&format!(
+                                    crate::backend::BackendService::log(&format!(
                                         "[chord] batch-delete | count={confirm_count}"
                                     ));
                                     confirm_count = 0;
@@ -606,7 +646,7 @@ impl SorahkGui {
                         for &i in &ordered {
                             /* ★R2.12 分组标题: 同组只打一次, 40 条组合键也能一眼定位 */
                             if grouped {
-                                let group = chord_ids_of(&self.config.mappings[i].trigger_key)
+                                let group = chord_ids_of(&mappings[i].trigger_key)
                                     .map(|(_, ids)| chord_group_label(&ids))
                                     .unwrap_or("其它组合");
                                 if group != last_group.as_str() {
@@ -615,9 +655,10 @@ impl SorahkGui {
                                     th.badge(ui, group, th.accent_text, th.accent_soft);
                                 }
                             }
-                            /* 先取显示数据再放借用 —— 行内要 &mut self 渲染序列编辑器 */
+                            /* 先取显示数据再放借用 —— 行内要 &mut self 渲染序列编辑器
+                             * (★R2.14: 显示数据取自帧首克隆) */
                             let (trig_display, has_seq, targets) = {
-                                let m = &self.config.mappings[i];
+                                let m = &mappings[i];
                                 (
                                     chord_ids_of(&m.trigger_key)
                                         .map(|(_, ids)| chord_display(&ids))
@@ -696,13 +737,17 @@ impl SorahkGui {
     /// 整份让位给组合 (单独按住也不触发自己的映射), 用于"牺牲一个键换多个组合键"。
     /// 例: 牺牲 LB 单键 → LB+X / LB+Y / LB+A / LB+B 各映射一个键盘键。
     fn render_chord_exclusive_section(&mut self, ui: &mut egui::Ui, th: &Theme) {
-        let mut candidates = chord_solo_member_names_by_vid(&self.config);
+        /* ★R2.14: 候选与现值帧首从 backend 收集; 勾选改动攒起后一次提交 */
+        let (mut candidates, exclusive_keys) = self.backend.with_config(|c| {
+            (
+                chord_solo_member_names_by_vid(c),
+                c.chord_exclusive_keys.clone(),
+            )
+        });
         /* ★v24.49: 把"已勾选但已不再是候选"的残留项也列出来 ——
          * 例如勾了 LB 之后删掉了 LB+X 组合, LB 就不再满足"组合成员∩单键"而消失;
          * 若此时不显示, 用户无法取消这项配置 (虽因交集为空而不生效, 但会一直残留)。 */
-        let mut stale: Vec<String> = self
-            .config
-            .chord_exclusive_keys
+        let mut stale: Vec<String> = exclusive_keys
             .iter()
             .filter(|k| {
                 !candidates
@@ -722,11 +767,9 @@ impl SorahkGui {
              牺牲 1 个键可换来「该键 + 其它键」的多个组合键。",
         ));
         ui.add_space(2.0);
-        let mut changed = false;
+        let mut pending: Vec<(String, bool)> = Vec::new();
         for name in &candidates {
-            let on = self
-                .config
-                .chord_exclusive_keys
+            let on = exclusive_keys
                 .iter()
                 .any(|k| k.eq_ignore_ascii_case(name));
             let mut checked = on;
@@ -745,19 +788,29 @@ impl SorahkGui {
                 )
                 .changed()
             {
-                if checked {
-                    if !on {
-                        self.config.chord_exclusive_keys.push(name.clone());
-                    }
-                } else {
-                    self.config
-                        .chord_exclusive_keys
-                        .retain(|k| !k.eq_ignore_ascii_case(name));
-                }
-                changed = true;
+                /* egui 的 changed() 只在勾选态翻转时触发: checked=true = 新勾上, false = 取消勾选 */
+                pending.push((name.clone(), checked));
             }
         }
-        if changed {
+        if !pending.is_empty() {
+            let _ = self
+                .backend
+                .update_config(crate::ui_api::Commit::Memory, |c| {
+                    for (name, add) in &pending {
+                        if *add {
+                            if !c
+                                .chord_exclusive_keys
+                                .iter()
+                                .any(|k| k.eq_ignore_ascii_case(name))
+                            {
+                                c.chord_exclusive_keys.push(name.clone());
+                            }
+                        } else {
+                            c.chord_exclusive_keys
+                                .retain(|k| !k.eq_ignore_ascii_case(name));
+                        }
+                    }
+                });
             self.gp_save_and_reload();
             self.set_gamepad_toast("独占设置已保存");
         }

@@ -58,8 +58,10 @@ macro_rules! audio_check {
 }
 
 impl SorahkGui {
-    /// ★ AI 智能增强卡片: A 经典 / B 智能 一键切换 + 两条滑条 + 实时远近高低反馈。
+    /// ★ 智能模式卡片: A 经典 / B 智能增强 / C 事件模式 一键切换 + 滑条 + 实时反馈。
     /// 纯算法, 无模型。A 模式 (smart_enabled=false) 输出与旧版逐字节一致。
+    /// ★C 模式轮: 增加 C 选项 (B 下一代: 事件颗粒度 + 纯算法 BGM 筛选) 与 C 专属
+    /// 滑条; B 的强度/持续时间滑条语义不变 (C 内部先跑 B 核心)。
     fn audio_smart_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -67,47 +69,112 @@ impl SorahkGui {
         audio: &crate::config::AudioHapticsConfig,
         tele: &Option<AudioTelemetry>,
     ) -> bool {
+        use crate::audio_haptics::c_mode::{MUSIC_LOCK, MUSIC_UNKNOWN};
+        use crate::state::audio_state::{
+            resolve_algorithm_mode, AUDIO_ALGO_A, AUDIO_ALGO_B, AUDIO_ALGO_C,
+        };
         let mut dirty = false;
+        let mode =
+            resolve_algorithm_mode(audio.audio_algorithm_mode.as_deref(), audio.smart_enabled);
+        let (is_a, is_b, is_c) = (
+            mode == AUDIO_ALGO_A,
+            mode == AUDIO_ALGO_B,
+            mode == AUDIO_ALGO_C,
+        );
         let on = audio.smart_enabled;
-        th.card(ui, Some("AI 智能增强（远近 · 高低感知）"), |ui| {
+        th.card(ui, Some("智能模式（A 经典 · B 智能增强 · C 事件模式）"), |ui| {
             ui.label(th.hint_text(
-                "纯算法判断声音的远近与高低：近的声音更猛更脆、收得快；远的声音更轻、拖尾更长。不装模型、不联网。",
+                "A = 原手感。B = 纯算法判断声音远近与高低：近的更猛更脆、收得快；远的更轻、拖尾长。C = B 的下一代：再拆出「一记一记」的事件，纯算法压低 BGM 背景（锁定后压持续声、规律鼓点中压、技能音宽带逃逸），换曲/静音快速重收敛。全部不装模型、不联网。",
             ));
             ui.add_space(SP_S);
             ui.horizontal(|ui| {
-                let a = ui.selectable_label(!on, "A 经典模式（原手感，逐字节不变）");
-                if a.clicked() && on {
-                    self.backend.update_audio_config(|a| a.smart_enabled = false);
+                let a = ui.selectable_label(is_a, "A 经典模式（原手感，逐字节不变）");
+                if a.clicked() && !is_a {
+                    self.backend.update_audio_config(|cfg| {
+                        cfg.smart_enabled = false;
+                        cfg.audio_algorithm_mode = Some("a".into());
+                    });
                     dirty = true;
                 }
-                let b = ui.selectable_label(on, "B AI 智能模式（远近高低自适应）");
-                if b.clicked() && !on {
-                    self.backend.update_audio_config(|a| a.smart_enabled = true);
+                let b = ui.selectable_label(is_b, "B AI 智能模式（远近高低自适应）");
+                if b.clicked() && !is_b {
+                    self.backend.update_audio_config(|cfg| {
+                        cfg.smart_enabled = true;
+                        cfg.audio_algorithm_mode = Some("b".into());
+                    });
+                    dirty = true;
+                }
+                let c = ui.selectable_label(is_c, "C 事件模式（BGM 筛选 + 事件包络）");
+                if c.clicked() && !is_c {
+                    self.backend.update_audio_config(|cfg| {
+                        cfg.smart_enabled = true; // C 内部先跑 B 核心
+                        cfg.audio_algorithm_mode = Some("c".into());
+                    });
                     dirty = true;
                 }
             });
             ui.add_space(SP_XS);
-            dirty |= audio_check!(self, ui, th, audio, smart_enabled,
-                "AI 智能增强开关（与上方 A/B 等价）",
-                "关 = A 经典；开 = B 智能",
-                "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。"
-            );
+            if !is_c {
+                dirty |= audio_check!(self, ui, th, audio, smart_enabled,
+                    "AI 智能增强开关（与上方 A/B 等价）",
+                    "关 = A 经典；开 = B 智能",
+                    "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。"
+                );
+            }
             split_cols(ui, 2, SP_L, |ui, i| {
                 if i == 0 {
                     dirty |= audio_slider!(self, ui, th, audio, smart_strength_pct, 0..=100u32, 5.0, "%",
                         ic::LIGHTNING, "智能增强强度",
                         "调 0 = 自动回到 A 手感；调大差异更明显",
-                        "智能层和经典手感的混合比例。调到 0 就等于完全关掉智能增强（和 A 模式一模一样），想对比效果就拖到 0 再拖回来。"
+                        "智能层和经典手感的混合比例。调到 0 就等于完全关掉智能增强（和 A 模式一模一样），想对比效果就拖到 0 再拖回来。B/C 模式通用。"
                     );
                 } else {
                     dirty |= audio_slider!(self, ui, th, audio, smart_duration_pct, 0..=100u32, 5.0, "%",
                         ic::WIND, "持续时间影响",
                         "调大：近音更短促、远音余韵更长",
-                        "控制智能层对震动持续时间的改写力度。调 0 = 只改强度和左右马达分配，不改收尾快慢。"
+                        "控制智能层对震动持续时间的改写力度。调 0 = 只改强度和左右马达分配，不改收尾快慢。B/C 模式通用。"
                     );
                 }
             });
+            if is_c {
+                split_cols(ui, 2, SP_L, |ui, i| {
+                    if i == 0 {
+                        dirty |= audio_slider!(self, ui, th, audio, c_upgrade_pct, 0..=100u32, 5.0, "%",
+                            ic::LIGHTNING, "事件层增强",
+                            "调 0 = 等同 B 模式；调大事件冲击更明显",
+                            "C 模式相对 B 的升级强度：0% 时 C 完全旁路（输出和 B 一模一样），100% 为完整事件层。想对比 B/C 差别就拖到 0 再拖回来。"
+                        );
+                    } else {
+                        dirty |= audio_slider!(self, ui, th, audio, c_sustain_suppress_pct, 0..=100u32, 5.0, "%",
+                            ic::WIND, "BGM 节奏抑制",
+                            "调大：锁定 BGM 后背景压得更狠；调小：背景保留更多",
+                            "识别到高置信 BGM（多证据锁定）后，对持续背景震动的最大压制比例。技能音/受击音不受它影响，会自动逃逸。"
+                        );
+                    }
+                });
+            }
             if let Some(t) = tele {
+                if is_c {
+                    let music_txt = match t.c_music_state {
+                        MUSIC_LOCK => "BGM 锁定",
+                        MUSIC_UNKNOWN => "过渡中",
+                        _ => "未锁定",
+                    };
+                    let evt_txt = match t.c_event_state {
+                        1 | 2 => "事件中",
+                        3 => "收尾",
+                        _ => "空闲",
+                    };
+                    let line = format!(
+                        "C 实时：{}（置信 {:.2}） · 节拍锁 {} · 事件 {}{}",
+                        music_txt,
+                        t.c_conf,
+                        if t.c_beat_lock { "✓" } else { "—" },
+                        evt_txt,
+                        if t.c_degraded { " · ⚠ 已降级到 B" } else { "" }
+                    );
+                    ui.label(th.hint_text(line));
+                }
                 if t.smart_active {
                     use crate::audio_haptics::smart::{distance_label, pitch_label};
                     let line = format!(
@@ -117,7 +184,7 @@ impl SorahkGui {
                         t.smart_duration_ms, t.level_l * 100.0, t.level_r * 100.0
                     );
                     ui.label(th.hint_text(line));
-                } else {
+                } else if !is_c {
                     ui.label(th.hint_text("当前 A 经典模式 / 静音中 —— 智能层未参与输出。"));
                 }
             }

@@ -97,6 +97,10 @@ fn no_gui_dep_outside_gui() {
 /// 数据读写唯一入口 = backend (配置权威 RwLock + 三档提交 + 快照/事件/命令)。
 /// 清单内剩余模块只允许**契约词汇类型与纯函数** (AppConfig/InputDevice 等类型、
 /// 键名/序列解析、预设表、状态名), 不含任何可变状态入口。
+/// ★I 轮登记 "shell" (G/H 轮混合架构的有意接线, 契约 §11/§11.6): egui「外观 MOD」页
+/// 应用/停用按钮走 shell::hybrid::Hybrid::apply 同路径 (appearance_page); main_window
+/// 帧头 take_exit_mode 消费 shell.stop{mode} + win32_resize_egui; headless (--open-mod
+/// 自动化验收通道) 与 gui/mod.rs 汇出共享 HybridState。零新增系统层依赖, 仅壳会话控制面。
 #[test]
 fn gui_dependency_allowlist() {
     const ALLOWED: &[&str] = &[
@@ -105,6 +109,7 @@ fn gui_dependency_allowlist() {
         "backend",      // ★R2.14 后端服务门面 (配置权威/快照/事件/命令/领域 API)
         "config",       // 契约词汇类型 (AppConfig/KeyMapping/... 仅类型, 数据读写走 backend)
         "state",        // 契约词汇类型 (InputDevice/LiveHidState/... 同上)
+        "shell",        // ★I 轮登记: 混合架构 egui↔mod 窗会话控制面 (G/H 轮既成事实, 见上)
         "i18n", "util", "job_presets", "sequence",
         "hid_layout",   // 键名映射纯函数
         "audio_haptics",// 音频状态名/模式常量/预设表 (纯展示词汇)

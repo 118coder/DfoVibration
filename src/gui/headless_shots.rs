@@ -45,6 +45,8 @@ impl Default for ShotPlan {
                 Page::Vibration,
                 Page::JobPresets,
                 Page::AudioHaptics,
+                // ★G 轮: 外观 MOD 页纳入默认导出 (与 Page::TABS 同步)
+                Page::AppearanceMods,
             ],
             dialogs: true,
             scroll_steps: 3,
@@ -197,6 +199,8 @@ fn page_slug(page: Page) -> &'static str {
         Page::Vibration => "vibration",
         Page::JobPresets => "jobs",
         Page::AudioHaptics => "audio_haptics",
+        // ★G 轮外观 MOD 页 (默认 ShotPlan 未收录; 显式指定 --pages 时可用)
+        Page::AppearanceMods => "appearance",
     }
 }
 

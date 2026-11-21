@@ -23,6 +23,7 @@
 //! - 音频专属白名单: 独立列表 + 可关闭 + fail-closed + 按 PID 精确环回;
 //! - 自检脉冲: 绕过 DSP 直写马达, 一击区分"音频链"与"马达链"。
 
+pub mod c_mode;
 pub mod dsp;
 pub mod mapping;
 pub mod resample;
@@ -646,6 +647,8 @@ fn finish_tick(
     let ah = &state.audio_hap;
     let params = EngineParams::load(ah);
     let now = crate::vibration::now_ms_u64();
+    // ★C 模式: 左右平衡系数给 C 事件级声道路由 (B 的最终 pan 乘法保持不变)
+    an.set_pan(pan.0, pan.1);
     let out = an.process(now, &params);
 
     // 立体声平衡系数 (只做左右微调, 不当增益; 单声道 = 1.0/1.0)
@@ -709,6 +712,13 @@ fn finish_tick(
         t.smart_proximity = out.smart_proximity;
         t.smart_pitch = out.smart_pitch;
         t.smart_duration_ms = out.smart_duration_ms;
+        t.c_active = out.c_active;
+        t.c_music = out.c_music;
+        t.c_conf = out.c_conf;
+        t.c_music_state = out.c_music_state;
+        t.c_beat_lock = out.c_beat_lock;
+        t.c_event_state = out.c_event_state;
+        t.c_degraded = out.c_degraded;
         if hit {
             t.last_onset_ms = now;
         }

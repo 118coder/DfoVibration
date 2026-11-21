@@ -4,6 +4,8 @@
 //! including the main window, dialogs, and utility functions.
 
 mod about_dialog;
+/// ★G 轮外观 MOD 页 (契约 v1.4 §11): 混合 UI 的应用/停用入口
+mod appearance_page;
 mod device_info;
 pub mod device_manager_dialog;
 mod error_dialog;
@@ -75,6 +77,19 @@ pub struct SorahkGui {
     /// ★R2.14 前后端分离: 后端服务句柄 —— 配置权威/运行态/命令全走它。
     /// UI 侧不再直接持有 AppConfig / AppState / UpdateManager。
     pub(crate) backend: crate::backend::Backend,
+    /// ★G 轮混合 UI 状态机 (契约 v1.4 §11): 与 mod 窗线程共享 (应用/停用/还原)。
+    pub hybrid: std::sync::Arc<crate::shell::hybrid::Hybrid>,
+    /// ★G 轮: 外部 MOD 清单缓存 (页内低频重扫; 复用 shell::mods 扫描口径)。
+    pub(crate) mods_cache: Vec<crate::shell::mods::ModMeta>,
+    /// 清单缓存时间戳 (过期重扫)。
+    pub(crate) mods_cache_at: Option<std::time::Instant>,
+    /// 外观页错误提示条 (应用失败等; 会话内瞬态)。
+    pub(crate) mods_error: Option<String>,
+    /// ★G 轮补充: `--open-mod <id>` 启动参数 —— 帧循环跑稳后自动走与「应用」按钮
+    /// 完全相同的 apply 路径 (None = 无此参数)。消费即清零。
+    pub(crate) open_mod_request: Option<String>,
+    /// --open-mod 的触发时刻 (eframe 循环跑稳 ~1s 后执行, spike 时序)。
+    pub(crate) open_mod_at: Option<std::time::Instant>,
     /// Cached translations for rendering
     translations: CachedTranslations,
     /// 当前激活的页面 (顶部选项卡, 见 types::Page)
@@ -342,7 +357,12 @@ impl SorahkGui {
     ///
     /// ★R2.14 前后端分离: 配置权威已归 backend (含「仅用连发→震动关」启动修正,
     /// 该修正移到 main.rs 装配处、AppState 构造前), GUI 只从 backend 读初值。
-    pub fn new(backend: crate::backend::Backend) -> Self {
+    /// ★G 轮: `hybrid` = 混合 UI 状态机 (main.rs 分流段创建, 与 mod 窗线程共享;
+    /// 无头截图/测试传 `Arc::new(Hybrid::new())` 即可, 不会拉 mod 窗)。
+    pub fn new(
+        backend: crate::backend::Backend,
+        hybrid: std::sync::Arc<crate::shell::hybrid::Hybrid>,
+    ) -> Self {
         let (dark_mode, language, switch_key, minimal_cfg, classic_cfg, minimal_vib_preset_job, audio_whitelist_edit) =
             backend.with_config(|c| {
                 (
@@ -383,6 +403,12 @@ impl SorahkGui {
 
         Self {
             backend,
+            hybrid,
+            mods_cache: Vec::new(),
+            mods_cache_at: None,
+            mods_error: None,
+            open_mod_request: None,
+            open_mod_at: None,
             translations,
             active_page: Page::Gamepad,
             gamepad_texture: None,
@@ -646,11 +672,19 @@ impl SorahkGui {
     /// Launches the GUI application.
     ///
     /// ★R2.14 前后端分离: 入参改为后端句柄 (配置权威在 backend)。
+    /// ★G 轮 (契约 v1.4 §11): 入参加混合 UI 状态机 —— main.rs 分流段创建并
+    /// 同时持有, mod 窗线程与 egui 共享同一实例。
+    /// ★G 轮补充: `open_mod` = `--open-mod <id>` 启动参数, 帧循环跑稳后自动
+    /// 走与「应用」按钮完全相同的 `Hybrid::apply` 路径 (None = 无)。
     ///
     /// # Errors
     ///
     /// Returns an error if the GUI framework fails to initialize or run.
-    pub fn run(backend: crate::backend::Backend) -> anyhow::Result<()> {
+    pub fn run(
+        backend: crate::backend::Backend,
+        hybrid: std::sync::Arc<crate::shell::hybrid::Hybrid>,
+        open_mod: Option<String>,
+    ) -> anyhow::Result<()> {
         let icon = crate::gui::utils::create_icon();
 
         let (always_on_top, language) = backend.with_config(|c| (c.always_on_top, c.language));
@@ -694,7 +728,11 @@ impl SorahkGui {
                     })
                     .expect("spawn ui-keepalive thread");
 
-                Ok(Box::new(SorahkGui::new(backend)))
+                Ok(Box::new({
+                    let mut gui = SorahkGui::new(backend, hybrid);
+                    gui.open_mod_request = open_mod;
+                    gui
+                }))
             }),
         )
         .map_err(|e| anyhow::anyhow!("Failed to run GUI: {}", e))

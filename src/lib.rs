@@ -13,6 +13,8 @@ pub mod hid_layout;
  * 并还原 config.rs / gui 三处接线 (详见 docs/frozen/hidhide.rs 文件头)。 */
 // pub mod hidhide;
 pub mod i18n;
+/// ★双 UI 壳 (契约 docs/双UI桥契约_v1.md): tao 窗口 + wry WebView2 界面壳
+pub mod shell;
 /// ★R2.14 前后端分离: UI↔后端 契约层 (UiSnapshot/UiEvent/UiCommand)
 pub mod ui_api;
 /// ★R2.14 前后端分离: 后端服务门面 (配置权威/快照/事件/命令/领域 API)

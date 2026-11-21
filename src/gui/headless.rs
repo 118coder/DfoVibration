@@ -248,7 +248,11 @@ impl HeadlessGui {
         let backend: crate::backend::Backend = std::sync::Arc::new(
             crate::backend::BackendService::new(state, config, "Config.toml"),
         );
-        let gui = SorahkGui::new(backend);
+        let gui = SorahkGui::new(
+            backend,
+            // 无头截图不拉 mod 窗: 给一个空的状态机实例即可 (G 轮构造签名)
+            std::sync::Arc::new(crate::shell::hybrid::Hybrid::new()),
+        );
         Ok(Self { headless, gui })
     }
 

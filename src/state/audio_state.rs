@@ -33,6 +33,40 @@ pub fn audio_status_name(status: u8) -> &'static str {
     }
 }
 
+/// ★C 模式 音频算法模式编号 (algorithm_mode 原子量取值)。
+pub const AUDIO_ALGO_A: u8 = 0; // A 经典 (智能层旁路)
+pub const AUDIO_ALGO_B: u8 = 1; // B AI 智能 (SmartEnhancer)
+pub const AUDIO_ALGO_C: u8 = 2; // C 事件模式 (B 下一代: 多带事件 + BGM 筛选)
+
+/// 算法模式编号 → 名 (GUI/日志用)。
+pub fn algorithm_mode_name(m: u8) -> &'static str {
+    match m {
+        AUDIO_ALGO_B => "B",
+        AUDIO_ALGO_C => "C",
+        _ => "A",
+    }
+}
+
+/// ★C 模式 模式解析 (纯函数, 可单测; 语义对齐设计文档 §5.2):
+/// * `Some("a"/"b"/"c")` = 显式选择 (大小写不敏感);
+/// * `Some(其他)` = 非法 → 降级 B (调用方记一次日志);
+/// * `None` = 旧配置无此字段 → 由 smart_enabled 推导 (升级零变化)。
+pub fn resolve_algorithm_mode(mode_cfg: Option<&str>, smart_enabled: bool) -> u8 {
+    match mode_cfg {
+        Some(m) if m.eq_ignore_ascii_case("a") => AUDIO_ALGO_A,
+        Some(m) if m.eq_ignore_ascii_case("b") => AUDIO_ALGO_B,
+        Some(m) if m.eq_ignore_ascii_case("c") => AUDIO_ALGO_C,
+        Some(_) => AUDIO_ALGO_B,
+        None => {
+            if smart_enabled {
+                AUDIO_ALGO_B
+            } else {
+                AUDIO_ALGO_A
+            }
+        }
+    }
+}
+
 /// GUI 遥测 (引擎 try_lock 写, GUI try_lock 读; 拿不到锁跳过本帧, 永不阻塞)。
 #[derive(Debug, Clone, Default)]
 pub struct AudioTelemetry {
@@ -75,6 +109,21 @@ pub struct AudioTelemetry {
     pub smart_pitch: f32,
     /// 估算的震动持续时间 ms (近短远长)
     pub smart_duration_ms: f32,
+    // ── ★C 模式 (B 下一代事件层) 实时反馈 ──
+    /// C 层本 tick 是否实际参与输出 (mode=C 且未旁路)
+    pub c_active: bool,
+    /// BGM 背景置信度原始分 0..1 (多证据组合, 文档 C_music_raw)
+    pub c_music: f32,
+    /// 综合置信度 0..1 (证据一致性加权, 文档 C_conf)
+    pub c_conf: f32,
+    /// 音乐门控状态 (0=未判定 1=过渡 2=BGM 锁定)
+    pub c_music_state: u8,
+    /// 节拍锁是否建立 (周期稳定 + 相关达标)
+    pub c_beat_lock: bool,
+    /// 事件状态机 (0=空闲 1=起振 2=保持 3=释放)
+    pub c_event_state: u8,
+    /// C 层是否处于故障旁路 (自动降级到 B)
+    pub c_degraded: bool,
 }
 
 /// 音频震动运行态 (AppState 持有)。
@@ -126,6 +175,15 @@ pub struct AudioHapState {
     pub smart_strength: AtomicU32,
     /// 持续时间/收尾影响 % 0..=100
     pub smart_duration: AtomicU32,
+    // ── ★C 模式 (B 下一代) 参数镜像 ──
+    /// 音频算法模式 (AUDIO_ALGO_A/B/C; 由 audio_algorithm_mode + smart_enabled 解析)
+    pub algorithm_mode: AtomicU8,
+    /// C 事件层增强 % 0..=100 (0 = 整层旁路 = 无损回 B)
+    pub c_upgrade: AtomicU32,
+    /// BGM 持续层抑制 % 0..=100 (MUSIC_LOCK 时生效)
+    pub c_sustain_suppress: AtomicU32,
+    /// BGM 筛选开关 (false = 只做事件增强)
+    pub c_bgm_filter: AtomicBool,
     /// 马达自检脉冲截止时刻 (now_ms_u64 口径, 0 = 无)
     pub self_check_until: AtomicU64,
     // ── 输出 (引擎写, 震动线程合流读; 关闭/暂停/静默时恒 0) ──
@@ -173,6 +231,10 @@ impl Default for AudioHapState {
             smart_enabled: AtomicBool::new(false),
             smart_strength: AtomicU32::new(70),
             smart_duration: AtomicU32::new(70),
+            algorithm_mode: AtomicU8::new(AUDIO_ALGO_A),
+            c_upgrade: AtomicU32::new(70),
+            c_sustain_suppress: AtomicU32::new(90),
+            c_bgm_filter: AtomicBool::new(true),
             self_check_until: AtomicU64::new(0),
             out_l: AtomicU16::new(0),
             out_r: AtomicU16::new(0),
@@ -252,6 +314,24 @@ impl AudioHapState {
         self.smart_enabled.store(c.smart_enabled, rel);
         self.smart_strength.store(c.smart_strength_pct.clamp(0, 100), rel);
         self.smart_duration.store(c.smart_duration_pct.clamp(0, 100), rel);
+        /* ★C 模式: 解析显式模式字段 (None = 旧配置按 smart_enabled 推导)。
+         * 非法字符串降级 B 并记一次日志 (不刷屏)。 */
+        let mode = resolve_algorithm_mode(c.audio_algorithm_mode.as_deref(), c.smart_enabled);
+        if let Some(raw) = c.audio_algorithm_mode.as_deref() {
+            if !matches!(raw.to_ascii_lowercase().as_str(), "a" | "b" | "c") {
+                static LOGGED: AtomicBool = AtomicBool::new(false);
+                if !LOGGED.swap(true, Ordering::Relaxed) {
+                    crate::vibration::vib_log(&format!(
+                        "[AUDIO] audio_algorithm_mode=\"{raw}\" 非法 → 降级 B"
+                    ));
+                }
+            }
+        }
+        self.algorithm_mode.store(mode, rel);
+        self.c_upgrade.store(c.c_upgrade_pct.clamp(0, 100), rel);
+        self.c_sustain_suppress
+            .store(c.c_sustain_suppress_pct.clamp(0, 100), rel);
+        self.c_bgm_filter.store(c.c_bgm_filter, rel);
         if !c.enabled {
             self.set_idle(AUDIO_STATUS_OFF);
         }
@@ -355,6 +435,35 @@ mod tests {
             until > now && until - now <= 3100,
             "校准窗口应为 3 秒: until={until} now={now}"
         );
+    }
+
+    /// ★C 模式: apply_config 镜像 algorithm_mode/C 参数; 旧配置 (无 mode 字段)
+    /// 由 smart_enabled 推导, 升级零变化。
+    #[test]
+    fn c_mode_config_mirror_and_legacy_derive() {
+        let st = AudioHapState::default();
+        // 旧配置形态: audio_algorithm_mode=None + smart_enabled=false → A
+        let mut c = AudioHapticsConfig::default();
+        assert!(c.audio_algorithm_mode.is_none(), "默认配置必须无模式字段 (升级零变化)");
+        st.apply_config(&c);
+        assert_eq!(st.algorithm_mode.load(Ordering::Relaxed), AUDIO_ALGO_A);
+        // smart_enabled=true → B (旧行为)
+        c.smart_enabled = true;
+        st.apply_config(&c);
+        assert_eq!(st.algorithm_mode.load(Ordering::Relaxed), AUDIO_ALGO_B);
+        // 显式 C: 参数镜像 + clamp
+        c.audio_algorithm_mode = Some("c".into());
+        c.c_upgrade_pct = 300; // 超界 → 100
+        c.c_sustain_suppress_pct = 90;
+        st.apply_config(&c);
+        assert_eq!(st.algorithm_mode.load(Ordering::Relaxed), AUDIO_ALGO_C);
+        assert_eq!(st.c_upgrade.load(Ordering::Relaxed), 100);
+        assert_eq!(st.c_sustain_suppress.load(Ordering::Relaxed), 90);
+        assert!(st.c_bgm_filter.load(Ordering::Relaxed));
+        // 非法字符串 → 降级 B
+        c.audio_algorithm_mode = Some("bogus".into());
+        st.apply_config(&c);
+        assert_eq!(st.algorithm_mode.load(Ordering::Relaxed), AUDIO_ALGO_B);
     }
 
     /// ★v24.60 一致性兜底: config.rs 是叶子模块, 默认值硬编码 (不许引用

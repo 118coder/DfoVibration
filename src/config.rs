@@ -1534,6 +1534,22 @@ pub struct AudioHapticsConfig {
     /// 智能增强对"持续时间/收尾"的影响程度 % (0..=100)。
     #[serde(default = "default_ah_smart_duration")]
     pub smart_duration_pct: u32,
+    /// ★C 模式 音频算法选择: None = 旧配置 (无此字段, 由 smart_enabled 推导 A/B,
+    /// 行为与升级前逐字节一致); Some("a"/"b"/"c") = 显式模式, "c" = B 下一代事件层。
+    /// 非法字符串降级 B (记一次日志)。C 默认关闭 (None), 升级不改变现状。
+    #[serde(default)]
+    pub audio_algorithm_mode: Option<String>,
+    /// ★C 模式 事件层增强 % (0..=100): 0 = 整层旁路 (逐字节回 B, 无损回退旋钮),
+    /// 100 = 完整 C 事件层。语义对齐 smart_strength_pct (B 相对 A 的混合比例)。
+    #[serde(default = "default_ah_c_upgrade")]
+    pub c_upgrade_pct: u32,
+    /// ★C 模式 BGM 持续层抑制 % (0..=100): MUSIC_LOCK (高置信 BGM) 时对持续
+    /// 分量的最大压制比例; 未锁定时不生效 (输出保持 B)。
+    #[serde(default = "default_ah_c_sustain")]
+    pub c_sustain_suppress_pct: u32,
+    /// ★C 模式 BGM 筛选开关 (默认开): false = 只做事件增强, 不压背景。
+    #[serde(default = "default_ah_c_bgm_filter")]
+    pub c_bgm_filter: bool,
 }
 
 impl Default for AudioHapticsConfig {
@@ -1575,6 +1591,10 @@ impl Default for AudioHapticsConfig {
             smart_enabled: false,
             smart_strength_pct: default_ah_smart_strength(),
             smart_duration_pct: default_ah_smart_duration(),
+            audio_algorithm_mode: None,
+            c_upgrade_pct: default_ah_c_upgrade(),
+            c_sustain_suppress_pct: default_ah_c_sustain(),
+            c_bgm_filter: default_ah_c_bgm_filter(),
         }
     }
 }
@@ -1585,6 +1605,10 @@ fn default_ah_whitelist_mode() -> String { "process".to_string() }
 fn default_ah_whitelist_tree() -> bool { true }
 fn default_ah_smart_strength() -> u32 { 70 }
 fn default_ah_smart_duration() -> u32 { 70 }
+/* ★C 模式默认值 (设计文档 §4.12: 升级强度 70 / 持续层抑制 90 / 筛选开) */
+fn default_ah_c_upgrade() -> u32 { 70 }
+fn default_ah_c_sustain() -> u32 { 90 }
+fn default_ah_c_bgm_filter() -> bool { true }
 /* serde default 函数与 Default::default() 同值 (旧 Config.toml 缺字段时逐项兜底) */
 fn default_ah_master() -> u32 { 72 }
 fn default_ah_low() -> u32 { 100 }

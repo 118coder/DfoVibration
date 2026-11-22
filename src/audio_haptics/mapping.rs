@@ -65,6 +65,14 @@ pub struct EngineParams {
     pub smart_strength: u32,
     /// 智能增强对持续时间/收尾的影响 % (0..=100)。
     pub smart_duration: u32,
+    /// ★C 模式 音频算法模式 (state::audio_state::AUDIO_ALGO_A/B/C)。
+    pub algorithm_mode: u8,
+    /// ★C 模式 事件层增强 % (0..=100; 0 = 整层旁路 = 无损回 B)。
+    pub c_upgrade: u32,
+    /// ★C 模式 BGM 持续层抑制 % (0..=100; MUSIC_LOCK 时生效)。
+    pub c_sustain_suppress: u32,
+    /// ★C 模式 BGM 筛选开关 (false = 只做事件增强)。
+    pub c_bgm_filter: bool,
 }
 
 impl EngineParams {
@@ -95,6 +103,10 @@ impl EngineParams {
             smart_enabled: ah.smart_enabled.load(Relaxed),
             smart_strength: ah.smart_strength.load(Relaxed),
             smart_duration: ah.smart_duration.load(Relaxed),
+            algorithm_mode: ah.algorithm_mode.load(Relaxed),
+            c_upgrade: ah.c_upgrade.load(Relaxed),
+            c_sustain_suppress: ah.c_sustain_suppress.load(Relaxed),
+            c_bgm_filter: ah.c_bgm_filter.load(Relaxed),
         }
     }
 }

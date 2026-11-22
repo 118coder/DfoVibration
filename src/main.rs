@@ -19,6 +19,8 @@ mod mouse;
 mod rawinput;
 mod safety;
 mod sequence;
+/// ★双 UI 壳 (契约 docs/双UI桥契约_v1.md): 内嵌 WebView2 界面壳 (与 lib.rs 同步声明)
+mod shell;
 mod signal;
 mod state;
 mod tray;
@@ -91,6 +93,32 @@ fn main() -> Result<()> {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if let Some(plan) = gui::headless_shots::ShotPlan::from_args(&argv) {
         return run_headless_shots(&plan);
+    }
+
+    /* ★K 轮 --install-mod <路径.dvmod>: .dvmod 单文件格式包导入 CLI 通道 (契约 v1.8;
+     * 自动化验收用)。不起钩子/震动/音频/注入/托盘/窗口, 逐包安装打印结果后退出,
+     * 任一失败 → 非 0 退出码。 */
+    let install_mods = shell::dvmod::parse_install_mod_args(&argv);
+    if !install_mods.is_empty() {
+        return shell::dvmod::run_install_mod(&install_mods);
+    }
+
+    /* ★双 UI 壳 --shell-smoke (契约 §8): 不起钩子/震动/音频/注入/托盘, 只装配
+     * BackendService + shell 窗口, hello 握手 → 打印 [shell-smoke] OK → 退出。
+     * 无人工干预的端到端验收通道, 必须在一切系统钩子之前分流。 */
+    if shell::hybrid::startup_mode(&argv, std::env::var("SORAHK_SHELL").ok().as_deref())
+        == shell::hybrid::StartupMode::ShellSmoke
+    {
+        let smoke_config = AppConfig::load_or_create("Config.toml").unwrap_or_default();
+        let smoke_state = Arc::new(AppState::new(smoke_config.clone()).map_err(|e| {
+            anyhow::anyhow!("shell-smoke AppState 初始化失败: {e}")
+        })?);
+        let smoke_backend = Arc::new(backend::BackendService::new(
+            smoke_state,
+            smoke_config,
+            "Config.toml",
+        ));
+        return shell::run_smoke(smoke_backend);
     }
 
     signal::set_control_ctrl_handler()?;
@@ -205,7 +233,44 @@ fn main() -> Result<()> {
     let backend =
         std::sync::Arc::new(backend::BackendService::new(app_state.clone(), config, "Config.toml"));
 
-    let gui_result = SorahkGui::run(backend);
+    /* ★G 轮混合 UI 分流 (契约 v1.4 §8/§11, 默认翻转):
+     * 默认 (无参) → egui 原生界面 (混合模式入口, 「外观 MOD」页按需拉 mod 窗);
+     * --shell / SORAHK_SHELL=1 → 旧纯 web 壳 (开发/测试逃生门, 行为不变);
+     * --gui / SORAHK_SHELL=0 → 保留接受, 语义 = 默认 (egui)。
+     * --open-mod <id> → 启动自动应用外观 MOD (egui 路径; WebShell/Smoke 忽略)。
+     * 既有装配一行未改。 */
+    let open_mod = shell::hybrid::parse_open_mod(&argv);
+    let gui_result = match shell::hybrid::startup_mode(
+        &argv,
+        std::env::var("SORAHK_SHELL").ok().as_deref(),
+    ) {
+        shell::hybrid::StartupMode::WebShell => {
+            if open_mod.is_some() {
+                crate::backend::BackendService::log(
+                    "[hybrid] --open-mod 在 --shell 纯壳模式下被忽略 (MOD 切换走页内 shell.apply)",
+                );
+            }
+            shell::run(backend)
+        }
+        // NativeEgui (含 --gui / SORAHK_SHELL=0 兼容): egui + 混合状态机
+        shell::hybrid::StartupMode::NativeEgui => {
+            let hybrid = Arc::new(shell::hybrid::Hybrid::new());
+            if let Some(id) = &open_mod {
+                crate::backend::BackendService::log(&format!(
+                    "[hybrid] 启动参数 --open-mod {id} (帧循环跑稳后自动应用)"
+                ));
+            }
+            let r = SorahkGui::run(backend.clone(), hybrid.clone(), open_mod);
+            /* 退出语义 (契约 §11): egui 关闭 = 全进程退出 —— mod 窗线程收编
+             * (pump 50ms 内见 should_exit → 会话退出; 这里 join 兜底收尾)。 */
+            hybrid.join_mod_window();
+            r
+        }
+        // ShellSmoke 已在钩子装配前分流, 正常不会走到 (兜底: 同 smoke)
+        shell::hybrid::StartupMode::ShellSmoke => {
+            anyhow::bail!("--shell-smoke 应在系统钩子装配前分流 (main.rs 前置块), 不应走到此处")
+        }
+    };
 
     gui_result
 }

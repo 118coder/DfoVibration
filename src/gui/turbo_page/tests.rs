@@ -215,7 +215,11 @@ mod sequence_apply_tests {
             config,
             &path.to_string_lossy(),
         ));
-        let gui = SorahkGui::new(backend);
+        let gui = SorahkGui::new(
+            backend,
+            // 测试不拉 mod 窗: 空 Hybrid 状态机 (G 轮构造签名)
+            std::sync::Arc::new(crate::shell::hybrid::Hybrid::new()),
+        );
         let dev = crate::backend::BackendService::input_name_to_device("F8").unwrap();
         (gui, state, dev, idx, path)
     }

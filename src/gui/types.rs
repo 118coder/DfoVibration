@@ -20,12 +20,15 @@ pub enum Page {
     JobPresets,
     /// ★v24.50 音频震动 (独立可选模式, 任何游戏; 默认关)
     AudioHaptics,
+    /// ★G 轮外观 MOD (契约 v1.4 §11): 应用/停用外观 MOD, 混合 UI 切换入口
+    AppearanceMods,
 }
 
 impl Page {
     /// 选项卡从左到右的固定顺序。
     /// ★v24.49: AudioHaptics 放最后 —— 独立可选模式 (非 DFO 玩家也可见)。
-    pub const TABS: &'static [Page] = &[Page::Gamepad, Page::Turbo, Page::Whitelist, Page::Vibration, Page::JobPresets, Page::AudioHaptics];
+    /// ★G 轮: 外观 MOD 追加为最后一项 (混合 UI 切换入口)。
+    pub const TABS: &'static [Page] = &[Page::Gamepad, Page::Turbo, Page::Whitelist, Page::Vibration, Page::JobPresets, Page::AudioHaptics, Page::AppearanceMods];
 
     /// 导航文案 (左侧选项卡; 2026-09-08 用户定稿: 除手柄映射外带「修改」后缀)。
     pub fn label(self) -> &'static str {
@@ -36,6 +39,7 @@ impl Page {
             Page::Vibration => "通用震动修改",
             Page::JobPresets => "全职业预设修改",
             Page::AudioHaptics => "音频震动",
+            Page::AppearanceMods => "外观 MOD",
         }
     }
 
@@ -48,6 +52,7 @@ impl Page {
             Page::Vibration => "通用震动",
             Page::JobPresets => "全职业预设",
             Page::AudioHaptics => "音频震动",
+            Page::AppearanceMods => "外观 MOD",
         }
     }
 
@@ -60,6 +65,7 @@ impl Page {
             Page::Vibration => crate::gui::widgets::Icon::Wave,
             Page::JobPresets => crate::gui::widgets::Icon::Wand,
             Page::AudioHaptics => crate::gui::widgets::Icon::SoundWave,
+            Page::AppearanceMods => crate::gui::widgets::Icon::Palette,
         }
     }
 
@@ -72,6 +78,7 @@ impl Page {
             Page::Vibration => "震动参数实时生效, 进图自动驱动",
             Page::JobPresets => "按职业加载震动预设, 滑块修改自动保存到 JobVibration.toml",
             Page::AudioHaptics => "听游戏声音自动震手柄 (免注入, 任何游戏); 独立开关, 不影响连发与 DLL 震动",
+            Page::AppearanceMods => "应用外观 MOD 切换界面主题; 本窗口收进托盘, 停用即还原原生界面",
         }
     }
 }

@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DfoVibration-V3 连发与映射工具 · 原版 1:1 复刻（内置默认主题）</title>
+<link rel="stylesheet" href="./assets/replica.css">
+<!-- v10 双 UI 架构：本文件 = 原版经典宿主（1:1 复刻，默认入口）。
+     「终末地风格」是第一个外观 MOD 包（endfield.html），管理页在本文件左侧导航「外观 MOD」。 -->
+</head>
+<body>
+<div id="stage-root">
+
+<!-- ═══════════ SVG 图标库（矢量，照 widgets.rs 的 Phosphor regular 风格） ═══════════ -->
+<svg style="display:none" xmlns="http://www.w3.org/2000/svg">
+  <symbol id="i-gamepad" viewBox="0 0 24 24"><path d="M6.5 7h11a4.5 4.5 0 0 1 4.42 5.36l-.86 4.5a2.6 2.6 0 0 1-4.66 1.08L14.9 15.5h-5.8L7.6 17.94a2.6 2.6 0 0 1-4.66-1.08l-.86-4.5A4.5 4.5 0 0 1 6.5 7Z"/><path d="M8 10.5v3M6.5 12h3"/><path d="M15.5 11h.01M17.5 13h.01"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4.5 13.5H11L9.5 22 19 9.5h-6.5L13 2Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.5 20 5.5v6c0 5-3.4 8.6-8 10-4.6-1.4-8-5-8-10v-6l8-3Z"/><path d="m8.8 11.8 2.3 2.3 4.3-4.3"/></symbol>
+  <symbol id="i-vibrate" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="18" rx="2"/><path d="M5 8v8M2.5 10v4M19 8v8M21.5 10v4"/></symbol>
+  <symbol id="i-wand" viewBox="0 0 24 24"><path d="m4 20 11.5-11.5M15 6l3-3M17.5 10.5l3.5 1M13.5 3.5 14 0M20 7l3-.5M17.5 6.5 21 3"/></symbol>
+  <symbol id="i-waveform" viewBox="0 0 24 24"><path d="M3 10v4M6.5 7v10M10 4v16M13.5 8v8M17 5.5v13M20.5 10v4"/></symbol>
+  <symbol id="i-mod" viewBox="0 0 24 24"><path d="M13.5 5.5V4A1.5 1.5 0 0 0 12 2.5 1.5 1.5 0 0 0 10.5 4v1.5H8A1.5 1.5 0 0 0 6.5 7v2.5H5A1.5 1.5 0 0 0 3.5 11 1.5 1.5 0 0 0 5 12.5h1.5V15A1.5 1.5 0 0 0 8 16.5h2.5V18A1.5 1.5 0 0 0 12 19.5 1.5 1.5 0 0 0 13.5 18v-1.5H16a1.5 1.5 0 0 0 1.5-1.5v-2.5H19A1.5 1.5 0 0 0 20.5 11 1.5 1.5 0 0 0 19 9.5h-1.5V7A1.5 1.5 0 0 0 16 5.5h-2.5Z"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.6M12 18.6v2.6M21.2 12h-2.6M5.4 12H2.8M18.5 5.5l-1.8 1.8M7.3 16.7l-1.8 1.8M18.5 18.5l-1.8-1.8M7.3 7.3 5.5 5.5"/></symbol>
+  <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12.5" rx="2"/><path d="M9 20.5h6M12 16.5v4"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.6h.01"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5Z"/><path d="m17 4 .4 1.1L18.5 5.5l-1.1.4L17 7l-.4-1.1L15.5 5.5l1.1-.4L17 4Z"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.8v2.4M12 18.8v2.4M21.2 12h-2.4M5.2 12H2.8M18.5 5.5l-1.7 1.7M7.2 16.8l-1.7 1.7M18.5 18.5l-1.7-1.7M7.2 7.2 5.5 5.5"/></symbol>
+  <symbol id="i-question" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.4 9.2a2.7 2.7 0 0 1 5.2 1c0 1.8-2.4 2.2-2.4 3.8M12 17.2h.01"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.5 5.5v13M15.5 5.5v13"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.8v14.4L19 12 7 4.8Z"/></symbol>
+  <symbol id="i-kb" viewBox="0 0 24 24"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6 10h.01M9.5 10h.01M13 10h.01M16.5 10h.01M6 13h.01M9.5 13h.01M13 13h.01M16.5 13h.01M8 15.8h8"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+</svg>
+
+<!-- ═══════════ 顶栏（main_window.rs render_top_bar / render_top_bar_actions / render_window_controls） ═══════════ -->
+<header class="topbar">
+  <span class="brand-logo" aria-hidden="true"></span>
+  <span class="brand-title">DfoVibration-V3 连发与映射工具</span>
+  <span class="brand-page" id="tb-page">手柄映射</span>
+  <span class="spacer"></span>
+  <div class="tb-combo">
+    <select id="tb-preset" data-act="preset-pick" aria-label="预设快切">
+      <option selected>（无）</option>
+      <option>PVE通用</option>
+      <option>搬砖-风法</option>
+      <option>决斗专用</option>
+      <option>测试-全零</option>
+      <option>旧版备份</option>
+    </select>
+  </div>
+  <button class="btn-primary" data-act="open-settings"><svg class="ic-svg" style="width:15px;height:15px"><use href="#i-gear"/></svg>设置</button>
+  <button class="btn-word" data-act="classic-mode" title="经典模式: 老版布局窗口 (820×600, 连发映射/通用型震动设定/全职业预设 三页签)">典</button>
+  <button class="btn-word" data-act="minimal-mode" title="极简模式: 只保留连发/震动两个开关的小窗">简</button>
+  <button class="btn-icon" data-act="open-devices" title="设备管理"><svg><use href="#i-monitor"/></svg></button>
+  <button class="btn-icon" data-act="open-about" title="❤  关于"><svg><use href="#i-info"/></svg></button>
+  <button class="btn-icon" data-act="toggle-dark" title="切换深浅主题"><svg><use href="#i-moon"/></svg></button>
+  <button class="btn-icon" data-act="show-guide" title="使用说明 / 重新选择向导 (DFO·版本)"><svg><use href="#i-question"/></svg></button>
+  <button class="btn-win" data-act="win-min" style="margin-left:8.5px" title="最小化"><svg viewBox="0 0 14 14"><path d="M3 7h8" stroke="currentColor" stroke-width="1.3" fill="none"/></svg></button>
+  <button class="btn-win" data-act="win-max" title="最大化"><svg viewBox="0 0 14 14"><rect x="3.5" y="3.5" width="7" height="7" stroke="currentColor" stroke-width="1.2" fill="none"/></svg></button>
+  <button class="btn-win danger" data-act="win-close" title="关闭"><svg viewBox="0 0 14 14"><path d="m4 4 6 6M10 4l-6 6" stroke="currentColor" stroke-width="1.3" fill="none"/></svg></button>
+</header>
+
+<div class="main">
+<!-- ═══════════ 侧栏（render_nav_rail: 导航 + 底部全局状态; 外观 MOD 为原型新增页签） ═══════════ -->
+<aside class="sidebar">
+  <div class="nav-label">导航</div>
+  <div class="nav-list" role="tablist" aria-label="页面导航">
+    <button class="nav-item is-active" data-pg="gamepad"><svg class="ic"><use href="#i-gamepad"/></svg><span class="lbl">手柄映射</span></button>
+    <button class="nav-item" data-pg="turbo"><svg class="ic"><use href="#i-bolt"/></svg><span class="lbl">连发映射修改</span></button>
+    <button class="nav-item" data-pg="whitelist"><svg class="ic"><use href="#i-shield"/></svg><span class="lbl">白名单修改</span></button>
+    <button class="nav-item" data-pg="vibration"><svg class="ic"><use href="#i-vibrate"/></svg><span class="lbl">通用震动修改</span></button>
+    <button class="nav-item" data-pg="jobs"><svg class="ic"><use href="#i-wand"/></svg><span class="lbl">全职业预设修改</span></button>
+    <button class="nav-item" data-pg="audio"><svg class="ic"><use href="#i-waveform"/></svg><span class="lbl">音频震动</span></button>
+    <button class="nav-item" data-pg="mod"><svg class="ic"><use href="#i-mod"/></svg><span class="lbl">外观 MOD</span></button>
+  </div>
+  <div class="side-status">
+    <button class="status-pill" id="st-pill" data-act="toggle-vib" title="震动总开关">震动 开</button>
+    <label class="ckb demo-row" style="margin-top:10px" title="原型演示开关（正式软件没有）: 打开后填充演示数据 —— 手柄映射 chips / 6 条连发 / 3 条白名单 / 键盘亮键。默认关 = 与原版一致的空态（连发页保留 1 条占位映射）">
+      <input type="checkbox" id="demo-toggle">
+      <span class="box"><svg><use href="#i-check"/></svg></span>
+      <span class="dlab">原型演示</span>
+    </label>
+    <div class="status-row" style="margin-top:8px">
+      <span class="status-dot" id="st-dot"></span>
+      <span class="status-text" id="st-text">运行中</span>
+      <button class="status-pause" id="btn-st-pause" data-act="toggle-pause" title="暂停连发"><svg><use href="#i-pause"/></svg></button>
+    </div>
+  </div>
+</aside>
+
+<!-- ═══════════ 内容区（每页独立滚动; page_header = h1 22 + hint 12） ═══════════ -->
+<div class="content">
+
+  <!-- ─────────── 页 1 · 手柄映射（page.rs + panel.rs + quick_connect.rs） ─────────── -->
+  <section class="page is-active" data-pg="gamepad">
+    <div class="page-header">
+      <div class="page-h1">手柄映射</div>
+      <div class="page-hint">点击手柄按键设置映射, 修改后自动保存并立即生效</div>
+    </div>
+
+    <div class="gp-banner">
+      <svg class="ic"><use href="#i-gamepad"/></svg>
+      <span class="t">未校对 / 未识别</span>
+      <span class="d">新手请先「快速校对手柄按键」; 老手可直接点图上的键</span>
+      <button class="btn primary right small" data-act="calibrate" title="新手先点这个: 按提示把手柄上全部热点校对一遍 (约 20 秒), 自动记住键位; 中途不能跳过&#10;完整流程: ① 一键校对一次 → ② 手柄按键快速映射设/改键位 → ③ 有遗漏按同一个手柄键重设">快速校对手柄按键</button>
+    </div>
+
+    <div class="card gp-main">
+      <div class="gp-left">
+        <div class="pad-wrap" id="pad-art"><!-- Generator: Adobe Illustrator 27.0.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<svg version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="22 135 545 401" style="enable-background:new 0 0 595.3 704.2;" xml:space="preserve">
+<style type="text/css">
+	.st0{fill:#05060A;}
+	.st1{fill:#222629;}
+	.st2{fill:#1D2122;}
+	.st3{fill:#2F3336;}
+	.st4{fill:#101010;}
+	.st5{fill:#22272A;}
+	.st6{fill:#1C1D21;}
+	.st7{opacity:0.4165;fill:#373F42;enable-background:new    ;}
+	.st8{fill:#FFFFFF;}
+	.st9{fill:#009CD3;}
+	.st10{fill:#DDB42C;}
+	.st11{fill:#CF3930;}
+	.st12{fill:#88BF57;}
+	.st13{fill:#C0C0C0;}
+	.st14{fill:#222629;stroke:#373F42;stroke-width:5;stroke-miterlimit:10;}
+	.st15{font-family:'AlimamaYuanTi-Bold';}
+	.st16{font-size:28.8px;}
+	.st17{fill:#222629;stroke:#373F42;stroke-width:5;stroke-linejoin:round;stroke-miterlimit:4.8;}
+	.st18{font-size:18px;}
+	.st19{fill:#222629;stroke:#373F42;stroke-width:3.6;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:4.8;}
+	.st20{fill:#222629;stroke:#373F42;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:4.8;}
+</style>
+<g id="图层_1">
+	<g transform="matrix(.32978 0 0 .32978 103.66 -1.2829)">
+		<path class="st0" d="M875.3,494.1c-11.2,0-20.7,1.6-29.9,5.4c-11.3,4.7-22,13-30.3,18.1c-8.3,5.1-14.3,7.2-23.9,8
+			c-9.6,0.8-23,0.2-51.1,0c-18.4-0.2-44.1-0.2-72.2-0.2c-3.4,0-7.2,0-12.2,0H497.3c-5,0-8.8,0-12.2,0c-28,0-53.8,0.1-72.2,0.2
+			c-28.1,0.3-41.4,0.8-51.1,0c-9.6-0.8-15.6-2.9-23.9-8c-8.3-5.1-19-13.4-30.3-18.1c-9.2-3.9-18.8-5.4-29.9-5.4
+			c-2.6,0-5.2,0.1-8,0.2c-14.7,0.7-32.3,3.5-52.5,7.3c-20.1,3.8-42.8,8.7-70.2,19.1c-27.4,10.4-59.4,26.3-80.5,37.8
+			s-31.3,18.6-39.4,39c-2.7,6.7-5.1,14.9-7.7,24.9c8-5.7,17.4-11.5,28.8-17.8c24.3-13.3,57.8-28.5,91.8-40.7
+			c34.1-12.2,68.8-21.4,93.5-24.7c7.7-1,14.5-1.5,20.6-1.5c13.5,0,24,2,35.4,4.7c16.5,3.8,34.8,8.9,50.1,10.9
+			c15.3,2,27.6,0.9,76,0.4c28.7-0.3,69.5-0.4,107.3-0.5c0.3,0,0.5-0.1,0.6-0.1c0.3,0,0.3,0,42.6,0c3.4,0,8.4,0,12.3,0
+			c3.9,0,8.9,0,12.3,0c42.2,0,42.2,0,42.6,0c0.1,0,0.3,0,0.6,0.1c37.7,0.1,78.6,0.2,107.2,0.5c48.4,0.5,60.7,1.6,76-0.4
+			c15.3-2,33.6-7.1,50.1-10.9c16.5-3.8,31.3-6.5,56-3.1c24.7,3.3,59.4,12.5,93.5,24.7s67.6,27.4,91.8,40.7
+			c9.3,5.1,17.3,9.9,24.3,14.6c-2.2-8.5-4.5-15.7-6.9-21.8c-8.1-20.4-18.3-27.5-39.4-39c-21.1-11.5-53.2-27.4-80.5-37.8
+			c-27.4-10.4-50.1-15.3-70.2-19.1c-20.1-3.8-37.7-6.5-52.5-7.3C880.5,494.2,877.9,494.1,875.3,494.1L875.3,494.1z"/>
+		<path class="st1" d="M254.2,534.5c-6.1,0-12.9,0.5-20.6,1.5c-24.7,3.3-59.4,12.5-93.5,24.7s-67.6,27.4-91.8,40.7
+			c-24.3,13.3-39.3,24.7-51.7,36.9c-12.4,12.3-22,25.5-39.5,65.6c-17.4,40.1-42.6,107.3-76.7,204.8s-77.1,225.5-93.5,332.3
+			c-16.4,106.8-6.3,192.5,14.4,245.5c20.7,53,51.5,73.2,75.4,87.3s40.6,21.9,50.6,26.1c10,4.3,13.2,5,18.7,3.1
+			c5.5-1.9,13.4-6.3,26.9-15.4c13.5-9.1,32.8-22.9,51.6-42.4c18.8-19.5,37.3-44.7,60.2-75.2c22.9-30.5,50.3-66.4,73.7-96.2
+			c23.5-29.9,43-53.8,72.1-66.6c29.1-12.8,67.8-14.6,132.1-15.4c63-0.9,150.3-0.9,215.8-0.9c65.5,0,152.8,0,215.8,0.9
+			c64.3,0.9,102.9,2.6,132.1,15.4c29.1,12.8,48.7,36.7,72.1,66.6c23.5,29.9,50.8,65.7,73.7,96.2c22.9,30.5,41.4,55.7,60.2,75.2
+			c18.8,19.5,38.1,33.3,51.6,42.4c13.5,9.1,21.4,13.6,26.9,15.4c5.5,1.9,8.8,1.2,18.7-3.1c10-4.3,26.7-12.1,50.6-26.1
+			s54.8-34.2,75.4-87.3c20.7-53,30.8-138.7,14.4-245.5c-16.4-106.8-59.4-234.8-93.5-332.3c-34.1-97.5-59.3-164.7-76.7-204.8
+			c-17.4-40.1-27.1-53.3-39.5-65.6c-12.4-12.3-27.4-23.7-51.7-36.9c-24.3-13.3-57.8-28.5-91.8-40.7c-34.1-12.2-68.8-21.4-93.5-24.7
+			c-24.7-3.3-39.5-0.7-56,3.1c-16.5,3.8-34.8,8.9-50.1,10.9c-15.3,2-27.6,0.9-76,0.4c-28.7-0.3-69.5-0.4-107.2-0.5
+			c-0.3,0-0.5-0.1-0.6-0.1c-0.3,0-0.3,0-42.6,0c-3.4,0-8.4,0-12.3,0c-3.9,0-8.9,0-12.3,0c-42.2,0-42.2,0-42.6,0
+			c-0.1,0-0.3,0-0.6,0.1c-37.7,0.1-78.6,0.2-107.3,0.5c-48.4,0.5-60.7,1.6-76-0.4c-15.3-2-33.6-7.1-50.1-10.9
+			C278.2,536.5,267.7,534.5,254.2,534.5L254.2,534.5z"/>
+		<circle class="st2" cx="362.8" cy="1059" r="136.9"/>
+		<path d="M992.7,852.4c-30.7,0-55.5,24.9-55.5,55.5l0,0c0,30.7,24.9,55.5,55.5,55.5l0,0c30.7,0,55.5-24.9,55.5-55.5l0,0
+			C1048.2,877.3,1023.3,852.4,992.7,852.4L992.7,852.4z"/>
+		<path d="M1110.9,741.2c-30.7,0-55.5,24.9-55.5,55.5s24.9,55.5,55.5,55.5c30.7,0,55.5-24.9,55.5-55.5l0,0
+			C1166.4,766.1,1141.6,741.2,1110.9,741.2L1110.9,741.2z"/>
+		<path d="M881.5,741.2c-30.7,0-55.5,24.9-55.5,55.5s24.9,55.5,55.5,55.5c30.7,0,55.5-24.9,55.5-55.5l0,0
+			C937,766.1,912.2,741.2,881.5,741.2C881.5,741.2,881.5,741.2,881.5,741.2z"/>
+		<path d="M992.7,630.1c-30.7,0-55.5,24.9-55.5,55.5c0,30.7,24.9,55.5,55.5,55.5l0,0c30.7,0,55.5-24.9,55.5-55.5c0,0,0,0,0,0
+			C1048.2,654.9,1023.3,630.1,992.7,630.1z"/>
+		<path class="st3" d="M459.7,760.3c-19.5,0.1-35.2,15.9-35.2,35.3c0,19.5,15.8,35.3,35.3,35.3s35.3-15.8,35.3-35.3
+			C495.1,776.2,479.3,760.3,459.7,760.3C459.8,760.3,459.7,760.3,459.7,760.3L459.7,760.3z"/>
+		<path class="st3" d="M696.8,760.3c-19.5,0.1-35.2,15.9-35.2,35.3c0,19.5,15.8,35.3,35.3,35.3s35.3-15.8,35.3-35.3
+			C732.2,776.2,716.4,760.3,696.8,760.3C696.9,760.3,696.8,760.3,696.8,760.3L696.8,760.3z"/>
+		<path class="st4" d="M362.6,933.9c-20.5,0-37.1,4.7-37,10.3v66.9c0,5.9-4.7,10.6-10.6,10.6H248c-5.7,0-10.3,16.7-10.3,37.3
+			c0,0,0,0,0,0c0,20.6,4.6,37.3,10.3,37.3c0,0,0,0,0,0c0,0,0,0,0.1,0h66.8c5.9,0,10.6,4.7,10.6,10.6v66.9c0,5.7,16.7,10.3,37.3,10.3
+			c0,0,0,0,0,0c20.6,0,37.3-4.6,37.3-10.3c0,0,0,0,0,0c0,0,0,0,0-0.1v-66.8c0-5.9,4.7-10.6,10.6-10.6h66.8c0,0,0,0,0.1,0
+			c5.7,0,10.3-16.7,10.3-37.3c0,0,0,0,0,0c0-0.1,0-0.2,0-0.2c0-20.5-4.7-37.1-10.3-37h-66.9c-5.9,0-10.6-4.7-10.6-10.6v-66.8
+			c0,0,0,0,0-0.1c0-5.7-16.7-10.3-37.3-10.3c0,0,0,0,0,0C362.8,933.9,362.7,933.9,362.6,933.9L362.6,933.9z"/>
+		<circle class="st3" cx="164.1" cy="797.5" r="118.3"/>
+		<circle cx="164.1" cy="797.5" r="101.3"/>
+		<circle class="st5" cx="164.1" cy="797.5" r="91.6"/>
+		<circle class="st6" cx="164.1" cy="797.5" r="65.1"/>
+		<path class="st7" d="M254.2,534.5c-6.1,0-12.9,0.5-20.6,1.5c-24.7,3.3-59.4,12.5-93.5,24.7s-67.6,27.4-91.8,40.7
+			c-24.3,13.3-39.3,24.7-51.7,36.9c-5,4.9-9.5,10.1-14.3,17c13.6-8.7,30.5-19.1,49.2-29.1c30.8-16.4,66.3-31.5,94.1-43
+			c27.9-11.5,48.1-19.2,69.6-22.8s44.1-3,57.8-2.6c13.7,0.4,18.4,0.5,26.1,6.2c7.7,5.7,18.2,16.8,35.4,34.5
+			c17.1,17.7,40.8,42,59,60.9c18.1,18.9,30.8,32.6,43.7,41.2c34.6,16.8,68.2,15.4,92.3,15.4c17.7,0,43.2,0,70.1-0.1
+			c26.8,0.2,52.4,0.1,70.1,0.1c28.4,0.2,70.6-1.2,92.3-15.4c12.8-8.6,25.5-22.2,43.7-41.2c18.1-18.9,41.9-43.2,59-60.9
+			c17.1-17.7,27.7-28.9,35.4-34.5c7.7-5.7,12.4-5.8,14.8-5.9c2.4-0.1,2.4-0.1,13.7-0.4c11.3-0.3,33.9-0.9,55.4,2.7
+			c21.5,3.6,41.7,11.4,69.6,22.8c27.9,11.5,63.3,26.6,94.1,43c17,9.1,32.6,18.5,45.5,26.7c-4.2-5.8-8.3-10.3-12.7-14.7
+			c-12.4-12.3-27.4-23.7-51.7-36.9c-24.3-13.3-57.8-28.5-91.8-40.7c-34.1-12.2-68.8-21.4-93.5-24.7c-24.7-3.3-39.5-0.7-56,3.1
+			c-16.5,3.8-34.8,8.9-50.1,10.9c-15.3,2-27.6,0.9-76,0.4c-28.7-0.3-69.5-0.4-107.2-0.5c-0.3,0-0.5-0.1-0.6-0.1c-0.3,0-0.3,0-42.6,0
+			c-3.4,0-8.4,0-12.3,0c-3.9,0-8.9,0-12.3,0c-42.2,0-42.2,0-42.6,0c-0.1,0-0.3,0-0.6,0.1c-37.7,0.1-78.6,0.2-107.3,0.5
+			c-48.4,0.5-60.7,1.6-76-0.4c-15.3-2-33.6-7.1-50.1-10.9C278.2,536.5,267.7,534.5,254.2,534.5L254.2,534.5z"/>
+		<path color-rendering="auto" image-rendering="auto" shape-rendering="auto" class="st8" d="M439.3,778.6V800h11.3v-5.7H445v-10.1
+			h16v5.4h5.7v-11L439.3,778.6z M452.8,791.3v21.4h27.4v-21.4H452.8z M458.5,797h16v10.1h-16V797z"/>
+		
+			<ellipse transform="matrix(4.531444e-02 -0.999 0.999 4.531444e-02 -286.4352 1784.0292)" class="st3" cx="790.2" cy="1041.9" rx="39" ry="39"/>
+		<circle cx="790.2" cy="1041.9" r="101.3"/>
+		<circle class="st5" cx="790.2" cy="1041.9" r="91.6"/>
+		<circle class="st6" cx="790.2" cy="1041.9" r="65.1"/>
+		<path class="st9" d="M914.3,828l-24.4-33.6l20.4-28.9h-17.7l-11.5,17l-11.5-17h-17l19.7,28.9L848.7,828h17.6l14.8-21.3l14.8,21.3
+			H914.3z"/>
+		<path class="st10" d="M962.5,654.4l23,34.5v28h14.2v-28l23-34.5h-17.1l-13,20l-13-20H962.5z"/>
+		<path class="st11" d="M1092.6,765.6V828h23.7c12.9,0,20.4-7.1,20.4-17.4c0-10.1-5.5-14.4-13.3-15.8c5.3-2.7,7.8-7.6,7.8-13.4
+			c0-11.9-8.5-15.9-19.2-15.9H1092.6z M1106.8,790v-13.5h1.1c6.2,0,9.5,1.9,9.5,6.4c0,5.2-3.3,7.1-9.5,7.1H1106.8z M1106.8,817
+			v-14.8h4.5c6.7,0,10.4,2,10.4,7.8c0,4.9-3.7,7-10.4,7H1106.8z"/>
+		<path class="st12" d="M999.2,876.7h-13.2l-25.2,62.5h15.3l4.6-12.5h23.8l4.6,12.5h15.3L999.2,876.7z M999.7,914.2h-14.1l7-18.2
+			h0.2L999.7,914.2z"/>
+		<path color-rendering="auto" image-rendering="auto" shape-rendering="auto" class="st8" d="M679.9,782.3c-1.6,0-2.9,1.2-2.9,2.8
+			c0,1.6,1.2,2.9,2.8,2.9c0,0,0.1,0,0.1,0h34.1c1.6,0,2.9-1.2,2.9-2.8c0-1.6-1.2-2.9-2.8-2.9c0,0-0.1,0-0.1,0H679.9z M679.9,792.8
+			c-1.6,0-2.9,1.2-2.9,2.8s1.2,2.9,2.8,2.9c0,0,0.1,0,0.1,0h34.1c1.6,0,2.9-1.2,2.9-2.8c0-1.6-1.2-2.9-2.8-2.9c0,0-0.1,0-0.1,0
+			H679.9z M679.9,803.4c-1.6,0-2.9,1.2-2.9,2.8c0,1.6,1.2,2.9,2.8,2.9c0,0,0.1,0,0.1,0h34.1c1.6,0,2.9-1.2,2.9-2.8
+			c0-1.6-1.2-2.9-2.8-2.9c0,0-0.1,0-0.1,0H679.9z"/>
+		<path color-rendering="auto" image-rendering="auto" shape-rendering="auto" class="st13" d="M577.5,571.3
+			c-35.1,0-63.6,28.5-63.6,63.6s28.5,63.6,63.6,63.6c35.1,0,63.6-28.5,63.6-63.6S612.6,571.3,577.5,571.3z M577.5,577
+			c32,0,58,25.9,58,58c0,32-25.9,58-58,58c-32,0-58-25.9-58-58C519.6,602.9,545.5,577,577.5,577z"/>
+	</g>
+</g>
+</svg></div>
+        <div class="row" style="margin-top:6px;justify-content:center">
+          <button class="btn ghost" data-act="demo-live" title="原型演示：模拟手柄实体按下（热点亮色填充 + 白环 + 雷达扩散 1.4 秒）">演示：实体按下</button>
+        </div>
+      </div>
+      <div class="gp-right">
+        <div class="gp-actions">
+          <button class="btn primary" data-act="calibrate">快速校对手柄按键</button>
+          <button class="btn outline" data-act="start-identify" title="读取你的手柄, 之后按手柄上的键即可快速设置映射">手柄按键快速映射</button>
+        </div>
+        <div class="panel gp-slot-panel" id="gp-slot-panel" style="flex:1;display:none"></div>
+        <div class="panel gp-quickcard" id="gp-quickcard" style="flex:1">
+          <div class="qc-title">快速连接</div>
+          <div class="qc-row">
+            <button class="chip-wide" id="qc-run" data-act="toggle-run">连发 · 开启中</button>
+            <button class="chip-wide" id="qc-vib" data-act="toggle-vib">震动 · 开启</button>
+          </div>
+          <div class="qc-row" style="margin-top:11px">
+            <span class="t-12 t-weak">映射选择</span>
+            <div class="combo"><select data-act="preset-pick" style="width:130px">
+              <option selected>（无）</option><option>PVE通用</option><option>搬砖-风法</option><option>决斗专用</option><option>测试-全零</option><option>旧版备份</option>
+            </select></div>
+          </div>
+          <div class="seg2" role="radiogroup" aria-label="震动预设段" style="margin-top:8px">
+            <button class="on" data-act="seg-general">通用预设</button>
+            <button data-act="seg-job">全职业预设</button>
+          </div>
+          <div class="qc-row" id="qc-preset-row" style="margin-top:26px">
+            <span class="t-12 t-weak">通用预设</span>
+            <div class="combo wide"><select data-act="vib-preset-pick">
+              <option selected>默认</option><option>低频攻击职业</option><option>高频攻击职业</option><option>高振幅</option><option>节奏律动</option><option>极简轻巧</option><option>实战竞技</option><option>测试版(全0)</option>
+            </select></div>
+          </div>
+          <button class="chip-wide" data-act="toast-s4" style="margin-top:2px;height:26px" title="DfoVibration_OLD.dll 放入游戏目录即可自动注入 (未检测到则不注入)">S4 震动模块自动注入 · 已启用</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <span class="card-title" id="gp-set-title">我设好的映射</span>
+        <span class="right t-12 t-hint" id="gp-set-hint" hidden>点下面任一条可回去修改</span>
+      </div>
+      <div class="t-12 t-hint" id="gp-chips-empty" style="line-height:16px">还没有可用的映射 — 点左边手柄图上的按键, 再按键盘上要代替的键, 两步即可</div>
+      <div class="row wrap" id="gp-chips" style="gap:5px"></div>
+    </div>
+
+    <div class="card chord-card">
+      <div class="card-title-row">
+        <span class="badge accent">手柄组合键</span>
+        <span class="t-12 t-hint">多键组合 → 任意键盘/鼠标键 (如 RB+X = Space)</span>
+        <button class="btn primary right small" data-act="add-chord">＋ 添加组合键</button>
+      </div>
+      <div class="t-12 t-hint" style="line-height:16px;margin-top:12px">还没有组合键。添加后按住组合 (如 RB+X) 即触发目标键;<br>按组合时不会带出成员的单独功能; 想让某个键彻底让位给组合, 可在下方勾选「独占」。</div>
+    </div>
+  </section>
+
+  <!-- ─────────── 页 2 · 连发映射（turbo_page: hero → 预设管理 → 键盘 → 连发映射） ─────────── -->
+  <section class="page" data-pg="turbo">
+    <div class="page-header">
+      <div class="page-h1">连发映射</div>
+      <div class="page-hint">连发映射与全局配置, 由切换键控制启停</div>
+    </div>
+
+    <div class="hero">
+      <div class="hero-top">
+        <div>
+          <div class="row" style="margin-top:2px;gap:2px">
+            <span class="status-dot" id="hero-dot"></span>
+            <span class="hero-state t-good" id="hero-state">连发中</span>
+          </div>
+          <div class="row" style="margin-top:14px">
+            <button class="status-pill-btn on" id="hero-vibpill" data-act="toggle-vib">震动: 开</button>
+            <span class="t-12 t-hint">由 DfoVibration.dll 战斗事件驱动 (进图后自动)</span>
+          </div>
+        </div>
+        <span class="right row" style="margin-top:14px;gap:16px">
+          <button class="btn warn-fill" id="btn-hero-pause" data-act="toggle-pause">暂停</button>
+          <button class="btn danger" data-act="quit-app" title="优雅退出, 保证托盘/震动线程清理与 on_exit 执行">⏹ 退出</button>
+        </span>
+      </div>
+      <div class="stat-strip">
+        <div class="stat-cell"><div class="stat-val" id="hero-count">6</div><div class="stat-lbl">映射条目</div></div>
+        <div class="stat-cell"><div class="stat-val t-text">5 ms</div><div class="stat-lbl">默认间隔</div></div>
+        <div class="stat-cell"><div class="stat-val t-text">5 ms</div><div class="stat-lbl">默认时长</div></div>
+        <div class="stat-cell"><div class="stat-val"><span class="keycap">DELETE</span></div><div class="stat-lbl">切换热键</div></div>
+      </div>
+    </div>
+
+    <div class="card mt21">
+      <div class="card-title-row"><span class="card-title">预设管理</span></div>
+      <div class="form-line">
+        <span class="lab">切换预设:</span>
+        <div class="combo wide"><select data-act="preset-pick">
+          <option selected>（无）</option><option>PVE通用</option><option>搬砖-风法</option><option>决斗专用</option><option>测试-全零</option><option>旧版备份</option>
+        </select></div>
+        <span class="t-12 t-hint">选择后立即应用映射</span>
+      </div>
+      <div class="form-line">
+        <span class="lab">保存预设:</span>
+        <input class="text-input" style="width:220px" placeholder="名称 (留空 = 覆盖当前预设)" aria-label="保存预设名称">
+        <button class="btn primary" data-act="save-preset">保存预设</button>
+        <span class="t-12 t-hint">保存当前整页映射为预设</span>
+      </div>
+      <div class="t-12 t-hint mb12">顶栏选择「(无)」时映射未入档: 用上方「保存预设」起名入档后可切换/重命名/删除；预设里一条映射都没有(空预设)是合法状态，可长期保存使用</div>
+      <hr class="sep">
+      <div class="form-line" style="margin-bottom:0">
+        <span class="lab">切换键:</span>
+        <div class="combo"><select data-act="switch-key-pick" aria-label="切换键快捷选择"><option selected>默认</option><option>F6</option><option>CTRL+F6</option></select></div>
+        <span class="t-12 t-weak">（未设置）</span>
+        <button class="btn secondary" data-act="capture-switch" title="点一下再按一个键 —— 可连续点多次追加, 拼成组合键 (如先 CTRL 再 F6); Esc 取消"><svg><use href="#i-gamepad"/></svg>捕获</button>
+        <button class="btn secondary" data-act="del-last" title="点击移除这个键">⌫ 删除末键</button>
+        <button class="btn secondary" data-act="save-switch">✓ 保存</button>
+        <button class="btn secondary" data-act="clear-switch">清除</button>
+        <span class="t-12 t-hint">只能捕获不能手输; 可连续捕获多个键组成组合键 (如 CTRL + F6)</span>
+      </div>
+    </div>
+
+    <div class="kb-head" data-act="kb-collapse" aria-expanded="true">
+      <span class="tri">▼</span><svg class="ic-svg" style="width:16px;height:16px"><use href="#i-kb"/></svg>
+      <span>键盘 (点按键 = 批量添加同名连发)</span>
+    </div>
+    <div class="kb-panel" id="kb-panel">
+      <div class="kb-note">点键盘上的按键选中 (可多选) → 「确认修改连发」一次性生效: 添加已选键的同名连发 (如 S→S) + 移除标红键。<br>已存在的同名映射标绿, 点击绿键 = 标记移除 (再点取消, 确认后才真删); 触发键已被其他映射占用 (如 S→X) 时, 确认会提示是否覆盖。</div>
+      <div class="kb-grid" id="kb-grid"></div>
+      <div class="row mt12" style="justify-content:center;gap:10px">
+        <button class="btn primary" data-act="kb-apply">确认修改连发</button>
+        <button class="btn secondary" data-act="kb-clear">清空选择</button>
+        <span class="t-12 t-hint" id="kb-pickcount">已选 0 键</span>
+      </div>
+    </div>
+
+    <div class="card mt12">
+      <div class="card-title-row">
+        <span class="card-title">连发映射</span>
+        <span class="right row" style="gap:10px"><span class="t-12 t-hint" id="turbo-count">1 条</span><button class="btn primary small" data-act="add-turbo">＋ 新增映射</button></span>
+      </div>
+      <div id="turbo-rows"></div>
+    </div>
+
+    <details class="adv card macro-card" id="adv-macro">
+      <summary><span class="tri">▶</span>宏（高级）· 新手可跳过</summary>
+      <div class="mt12">
+        <div class="seq-bar" id="seq-bar">
+          <span class="t-12 t-weak">序列宏</span>
+          <button class="btn secondary small" data-act="seq-rec">● 录制按键</button>
+          <button class="btn secondary small" data-act="seq-step">＋ 按键步</button>
+          <button class="btn secondary small" data-act="seq-press">＋ 按下步</button>
+          <button class="btn secondary small" data-act="seq-release">＋ 抬起步</button>
+          <button class="btn secondary small" data-act="seq-wait">＋ 等待步</button>
+          <button class="btn secondary small" data-act="seq-20ms">⏱ 全部 20ms</button>
+          <button class="btn secondary small" data-act="seq-clear">清空序列</button>
+          <span class="t-12 t-hint">无需记语法: 点按钮 → 按键盘键 → 自动加入 (即时生效)</span>
+        </div>
+        <div class="seq-fail mt8" id="seq-fail" hidden>✗ 序列解析失败: 第 3 步引用的通用宏「连招A」不存在 —— 本条映射当前不生效! (引擎不再回退目标键; 修正后自动恢复, 或点「清空序列」退回普通模式)</div>
+        <div class="seq-steps" id="seq-steps"></div>
+        <div class="seq-lock-line" id="seq-lock" hidden>🔒 已由序列宏接管 —— 按下触发键时目标键不生效 (序列非空时输出由序列完全接管; 目标键保留只是数据未删, 引擎不会模拟它们)</div>
+        <div class="t-12 t-hint mt8">录制 = 按键盘按键自动生成完整时序 (按下→等待→抬起, 含按住时长与间隔, 尽量还原真实操作; 手柄按键无法录)。录完点「停止并填入」立即生效。</div>
+      </div>
+    </details>
+  </section>
+
+  <!-- ─────────── 页 3 · 白名单（whitelist_page.rs） ─────────── -->
+  <section class="page" data-pg="whitelist">
+    <div class="page-header">
+      <div class="page-h1">白名单</div>
+      <div class="page-hint">只允许列表内进程使用连发, 防止误触其他程序</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">进程过滤</span></div>
+      <div class="row mb8">
+        <button class="status-pill-btn on" id="wl-toggle" data-act="wl-toggle">过滤 · 开启</button>
+        <span class="t-12 t-hint" id="wl-sub">只有列表内的进程会响应连发</span>
+      </div>
+      <div class="t-12 t-hint" style="line-height:1.9">白名单防止连发热键在其他程序里误触: 比如只添加 dnf.exe, 切到浏览器时连发自动暂停。<br>条目可以是进程名 (匹配任意位置的同名程序) 或完整路径 (只匹配该文件 —— 有两个同名但版本不同的 exe 时, 用「浏览…」分别登记各自的完整路径即可)。</div>
+      <div class="row mt8">
+        <button class="status-pill-btn on" id="wl-mode" data-act="wl-mode">匹配 · 精细</button>
+        <span class="t-12 t-hint" id="wl-mode-sub">路径条目精确到完整路径 —— 同名不同版本的 exe 各归各 (双版本场景)</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <span class="card-title">进程列表</span>
+        <span class="badge accent right" id="wl-count">0 个</span>
+      </div>
+      <div class="wl-add">
+        <input class="text-input" id="wl-input" style="width:220px;flex:none" placeholder="进程名或完整路径" aria-label="进程名或完整路径">
+        <button class="btn primary" data-act="wl-add">＋ 添加</button>
+        <button class="btn secondary" data-act="wl-browse">浏览…</button>
+      </div>
+      <div class="t-12 t-bad mt8" id="wl-error" hidden></div>
+      <div id="wl-rows" class="mt8"></div>
+    </div>
+
+    <div class="t-12 t-hint mt12">修改实时保存并立即生效, 无需重启; 与「设置 → 白名单」编辑的是同一份列表。</div>
+  </section>
+
+  <!-- ─────────── 页 4 · 通用震动（vibration_page/page.rs；分区容器 = Theme::panel card_alt r8 p12，egui 外层 Frame margin 6） ─────────── -->
+  <section class="page page-vib" data-pg="vibration">
+    <div class="page-header">
+      <div class="page-h1">通用震动</div>
+      <div class="page-hint">震动参数实时生效, 进图自动驱动</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">震动控制中心</span></div>
+      <div class="vib-hero-row mb12">
+        <span class="vib-hero-title">通用型震动设定 (DFO 战斗事件 → 手柄马达)</span>
+        <button class="status-pill-btn on" id="vib-pill" data-act="toggle-vib">震动: 开</button>
+        <button class="test-btn" data-act="test-vib">测试震动 1 秒</button>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🧪 调试模式 (独立测试)</div>
+        <div class="row">
+          <label class="ckb"><input type="checkbox" id="vib-indep"><span class="box"><svg><use href="#i-check"/></svg></span>评分/移动通道独立于全局总调整</label>
+          <span class="badge good right" id="vib-mode-badge">正常模式</span>
+        </div>
+        <div class="t-12 t-hint" id="vib-mode-hint" style="margin-top:16px">正常模式: 全局总调整统一作用于所有通道。需要单通道调试时再打开。</div>
+      </div>
+      <div class="form-line" style="margin-top:13px">
+        <span class="t-accent-text bold t-13">预设:</span>
+        <div class="combo"><select data-act="vib-preset-pick" style="width:130px">
+          <option selected>默认</option><option>低频攻击职业</option><option>高频攻击职业</option><option>高振幅</option><option>节奏律动</option><option>极简轻巧</option><option>实战竞技</option><option>测试版(全0)</option>
+        </select></div>
+        <button class="btn secondary" data-act="apply-vib">应用</button>
+        <button class="btn secondary" data-act="save-cur">保存当前</button>
+        <span class="t-12 t-hint">保存为:</span>
+        <input class="text-input" style="width:120px" placeholder="名称" aria-label="预设名称">
+        <button class="btn secondary" data-act="save-as">保存</button>
+        <button class="btn secondary" data-act="del-preset">删除</button>
+        <button class="btn secondary" data-act="export-vib">导出当前设置</button>
+        <button class="btn secondary" data-act="import-vib">导入设置</button>
+        <button class="btn secondary" data-act="restore-vib">还原默认</button>
+      </div>
+      <div class="t-12 t-hint" style="line-height:25px;margin-top:8px">内置: 默认/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)<br>提示: 仅「默认」与「测试版(全0)」不可删除; 误删可用「还原默认」恢复。</div>
+      <hr class="sep">
+      <div class="vib-status"><span class="orb" style="width:10px;height:10px;border-radius:50%;border:2px solid var(--info);display:inline-block"></span>未连接 (请先启动游戏)</div>
+    </div>
+
+    <hr class="vib-sep">
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">马达区 (实时输出检测)</span></div>
+      <div class="t-11 t-hint" style="margin-bottom:10px">左右马达实时输出检测 (测试按钮或进图战斗时观察)。</div>
+      <div class="motor-row">
+        <span class="motor-lab l">左马达</span>
+        <div class="motor-bar"><span class="motor-dot" style="left:1px;background:var(--motor-l)"></span></div>
+        <span class="motor-val">0</span>
+        <button class="test-btn" data-act="test-left" hidden>只测左</button>
+      </div>
+      <div class="motor-row">
+        <span class="motor-lab r">右马达</span>
+        <div class="motor-bar"><span class="motor-dot" style="left:1px;background:var(--motor-r)"></span></div>
+        <span class="motor-val">0</span>
+        <button class="test-btn" data-act="test-right" hidden>只测右</button>
+      </div>
+    </div>
+
+    <hr class="vib-sep">
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">评分特效震动 (等级 + 细分事件)</span></div>
+      <div class="t-12 t-hint mb8">评分事件由 DLL 采集, 每项强度独立可调 (0 = 关闭)。</div>
+      <div class="slider-grid">
+        <div class="slider-row"><span class="lbl">评分等级强度 % (等级 F~SSS)</span><input type="range" class="slider" min="0" max="100" value="70" data-slider><span class="val">70</span></div>
+        <div class="slider-row"><span class="lbl">最低反馈倍率 % (评级 0, 保底)</span><input type="range" class="slider" min="0" max="100" value="20" data-slider><span class="val">20</span></div>
+        <div class="slider-row"><span class="lbl">最高反馈倍率 % (满评分, 预设×此值)</span><input type="range" class="slider" min="0" max="200" value="100" data-slider><span class="val">100</span></div>
+        <div class="slider-row"><span class="lbl">满幅脉冲时长 ms (所有评分事件)</span><input type="range" class="slider" min="0" max="200" value="60" data-slider><span class="val">60</span></div>
+      </div>
+    </div>
+
+    <details class="adv card" id="adv-vib">
+      <summary><span class="tri">▶</span>高级震动调校 (精细微调, 玩家可选)</summary>
+      <div class="adv-head-row mt12">
+        <label class="ckb"><input type="checkbox" id="adv-allow" checked><span class="box"><svg><use href="#i-check"/></svg></span><span class="bold" style="color:var(--heading)">允许高级调校</span></label>
+        <span class="t-12 t-hint">关 = 高级全部不生效 (下方所有滑杆/开关不参与输出)</span>
+      </div>
+      <div class="t-12 t-hint" style="font-size:11px">开启后可在下方精细调整 L/R 马达比例/衰减/窗口/连击/脉冲。</div>
+      <hr class="sep">
+      <div class="adv-group-title">S1 输出引擎模式 (S4 特调)</div>
+      <div class="t-12 t-hint" style="font-size:11px;line-height:1.7">经典 = 现行 ACT1 管线 (默认, 手感与升级前一致); S4 纯 = 换成 S4 输出整形 (低于死区的轻反馈会被吞掉); S4+不丢震动 = 同 S4 整形, 但轻反馈攒厚再出, 不丢震动。</div>
+      <div class="seg2" style="max-width:420px" role="radiogroup" aria-label="S1 输出引擎模式">
+        <button class="on" data-act="s1-engine">经典</button><button data-act="s1-engine">S4 纯</button><button data-act="s1-engine">S4+不丢震动</button>
+      </div>
+      <div class="row mt8" style="align-items:flex-start">
+        <label class="ckb" style="margin-top:2px"><input type="checkbox" id="move-indep"><span class="box"><svg><use href="#i-check"/></svg></span></label>
+        <div>
+          <div class="t-13" style="color:var(--text)">角色移动持续震动独立于全局强度开关</div>
+          <div class="t-12 t-hint mt4">角色移动持续震动 (0 停)。与高级调校「走路质感与走位能量」配合。</div>
+        </div>
+      </div>
+      <div id="vib-adv" class="mt12"></div>
+      <div class="t-12 t-hint mt8">拖动即时生效, 1 秒后自动落盘。</div>
+      <hr class="sep">
+      <div class="card-title-row">
+        <span class="card-title" style="font-size:14px">评分特效震动 — 细分事件独立强度 (0 = 关闭)</span>
+        <span class="mini-badge-demo right">原型演示 · 数值取演示快照</span>
+      </div>
+      <div class="t-12 t-hint mb8">评分事件由 DLL 采集, 括号内为累计触发次数, 用于区分哪个事件真正触发了。</div>
+      <div id="vib-rank" class="slider-grid"></div>
+      <div class="rank-status" id="rank-status">● 评分事件累计: 2149 次 · 最近触发: 命中第一击</div>
+      <hr class="sep">
+      <div class="card-title-row">
+        <span class="card-title" style="font-size:14px">逐项 L/R 马达权重 (-100 = 全左 … +100 = 全右)</span>
+      </div>
+      <div class="t-12 t-hint mb8">0 = 两颗马达平分。正偏右 (高频「脆」), 负偏左 (低频「轰」)。</div>
+      <div class="adv-group-title">通用参数 (item_lr × 26)</div>
+      <div id="vib-lr-item" class="slider-grid"></div>
+      <div class="adv-group-title">评分与衰减 (rank_lr × 30)</div>
+      <div id="vib-lr-rank" class="slider-grid"></div>
+    </details>
+  </section>
+
+  <!-- ─────────── 页 5 · 全职业预设（vibration_page/page.rs job 分支；分区容器同通用震动页） ─────────── -->
+  <section class="page page-vib" data-pg="jobs">
+    <div class="page-header">
+      <div class="page-h1">全职业预设</div>
+      <div class="page-hint">按职业加载震动预设, 滑块修改自动保存到 JobVibration.toml</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">震动控制中心</span></div>
+      <div class="vib-hero-row mb12">
+        <span class="vib-hero-title">通用型震动设定 (DFO 战斗事件 → 手柄马达)</span>
+        <button class="status-pill-btn on" data-act="toggle-vib">震动: 开</button>
+        <button class="test-btn" data-act="test-vib">测试震动 1 秒</button>
+      </div>
+      <div class="panel">
+        <div class="panel-title">🧪 调试模式 (独立测试)</div>
+        <div class="row">
+          <label class="ckb"><input type="checkbox" id="job-indep"><span class="box"><svg><use href="#i-check"/></svg></span>评分/移动通道独立于全局总调整</label>
+          <span class="badge good right" id="job-mode-badge">正常模式</span>
+        </div>
+        <div class="t-12 t-hint" id="job-mode-hint" style="margin-top:16px">正常模式: 全局总调整统一作用于所有通道。需要单通道调试时再打开。</div>
+      </div>
+      <div class="form-line" style="margin-top:17px">
+        <span class="t-accent-text bold t-13">全职业预设:</span>
+        <label class="ckb"><input type="checkbox" id="job-on"><span class="box orb-radio"></span>应用全职业预设 (开: 职业参数覆盖震动设置; 关: 不应用, 恢复震动设置默认)</label>
+      </div>
+      <div class="form-line">
+        <span class="t-accent-text bold t-13">基础职业:</span>
+        <div class="combo wide"><select id="job-base" data-act="job-base-pick"></select></div>
+        <span class="t-accent-text bold t-13">转职:</span>
+        <div class="combo wide"><select id="job-class" data-act="job-class-pick"></select></div>
+        <button class="btn secondary" data-act="apply-job">应用该职业</button>
+        <button class="btn secondary" data-act="export-job">导出当前职业</button>
+        <button class="btn secondary" data-act="import-job">导入职业设置</button>
+      </div>
+      <div class="t-12 t-hint" id="job-desc" style="line-height:25px;margin-top:7px">开关已关闭: 全职业预设不应用, 使用通用型震动设定参数<br>光剑连击大师, 极快轻盈, 连击伤害可观 (专属算法: 1)</div>
+      <hr class="sep">
+      <div class="t-12 t-hint">下方参数与高级震动调校与【通用型震动设定】一致, 修改实时生效并自动保存到 JobVibration.toml</div>
+      <div class="vib-status mt4"><span class="orb" style="width:10px;height:10px;border-radius:50%;border:2px solid var(--info);display:inline-block"></span>未连接 (请先启动游戏)</div>
+    </div>
+
+    <hr class="vib-sep">
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">马达区 (实时输出检测)</span></div>
+      <div class="t-11 t-hint" style="margin-bottom:10px">左右马达实时输出检测 (测试按钮或进图战斗时观察)。</div>
+      <div class="motor-row">
+        <span class="motor-lab l">左马达</span>
+        <div class="motor-bar"><span class="motor-dot" style="left:1px;background:var(--motor-l)"></span></div>
+        <span class="motor-val">0</span>
+        <button class="test-btn" data-act="test-left" hidden>只测左</button>
+      </div>
+      <div class="motor-row">
+        <span class="motor-lab r">右马达</span>
+        <div class="motor-bar"><span class="motor-dot" style="left:1px;background:var(--motor-r)"></span></div>
+        <span class="motor-val">0</span>
+        <button class="test-btn" data-act="test-right" hidden>只测右</button>
+      </div>
+    </div>
+
+    <hr class="vib-sep">
+
+    <details class="adv card" id="adv-job">
+      <summary><span class="tri">▶</span>职业参数区 (与【通用型震动设定】一致 · 自动保存到 JobVibration.toml)</summary>
+      <div class="t-12 t-hint mt12" style="font-size:11px">下方参数与高级震动调校和【通用型震动设定】一致, 修改实时生效并自动保存到 JobVibration.toml。评分细分/逐项权重同款 —— 原型共用同一组渲染（数值随所选职业档）。</div>
+      <div id="job-adv" class="mt12"></div>
+    </details>
+  </section>
+
+  <!-- ─────────── 页 6 · 音频震动（audio_page.rs） ─────────── -->
+  <section class="page" data-pg="audio">
+    <div class="page-header">
+      <div class="page-h1">音频震动</div>
+      <div class="page-hint">听游戏声音自动震手柄 (免注入, 任何游戏); 独立开关, 不影响连发与 DLL 震动</div>
+    </div>
+
+    <div class="card">
+      <div class="audio-hero">
+        <span class="audio-icon"><svg><use href="#i-waveform"/></svg></span>
+        <div>
+          <div class="card-title" id="audio-title">音频震动已关闭</div>
+          <div class="t-12 t-hint mt4" id="audio-sub">独立开关：关掉它，连发与 DLL 震动完全不受影响</div>
+        </div>
+        <div class="audio-toggle-row">
+          <span id="audio-state-lab">已关闭</span>
+          <button class="switch" id="audio-switch" data-act="audio-toggle" role="switch" aria-checked="false" aria-label="音频震动总开关"></button>
+        </div>
+      </div>
+      <hr class="sep">
+      <div class="row">
+        <span class="orb" style="width:9px;height:9px;border-radius:50%;background:var(--text-weak);opacity:.7;display:inline-block"></span>
+        <span class="t-13 t-weak">音频震动未开启</span>
+        <span class="right row" style="gap:8px">
+          <button class="btn secondary small" data-act="motor-self-check">马达自检 (0.5 秒)</button>
+          <button class="btn secondary small" data-act="mask-calib">屏蔽校准 (3 秒)</button>
+        </span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">智能模式（A 经典 · B 智能增强 · C 事件模式）</span></div>
+      <div class="t-12 t-hint mb8">A = 原手感。B = 纯算法判断声音远近与高低：近的更猛更脆、收得快；远的更轻、拖尾长。C = B 的下一代：再拆出「一记一记」的事件，纯算法压低 BGM 背景（锁定后压持续声、规律鼓点中压、技能音宽带逃逸），换曲/静音快速重收敛。全部不装模型、不联网。</div>
+      <div class="ab-tabs">
+        <button class="ab-tab on" data-act="ab-classic">A 经典模式（原手感，逐字节不变）</button>
+        <button class="ab-tab" data-act="ab-ai">B AI 智能模式（远近高低自适应）</button>
+        <button class="ab-tab" data-act="ab-c">C 事件模式（BGM 筛选 + 事件包络）</button>
+      </div>
+      <div class="row" id="ai-on-row">
+        <label class="ckb"><input type="checkbox" id="ai-on"><span class="box"><svg><use href="#i-check"/></svg></span>AI 智能增强开关（与上方 A/B 等价）</label>
+      </div>
+      <div class="t-12 t-hint mt4">关 = A 经典；开 = B 智能</div>
+      <div class="row mt12" style="align-items:flex-start;gap:28px">
+        <div style="flex:1">
+          <div class="row mb8"><svg class="ic-svg" style="width:14px;height:14px;color:var(--text-weak)"><use href="#i-bolt"/></svg><span class="t-12.5 t-weak">智能增强强度</span><span class="right t-12.5 bold" style="color:var(--text)">70%</span></div>
+          <input type="range" class="slider" min="0" max="100" value="70" data-slider data-cfg-path="audio_haptics.smart_strength_pct">
+          <div class="t-12 t-hint mt4">调 0 = 自动回到 A 手感；调大差异更明显</div>
+        </div>
+        <div style="flex:1">
+          <div class="row mb8"><svg class="ic-svg" style="width:14px;height:14px;color:var(--text-weak)"><use href="#i-waveform"/></svg><span class="t-12.5 t-weak">持续时间影响</span><span class="right t-12.5 bold" style="color:var(--text)">70%</span></div>
+          <input type="range" class="slider" min="0" max="100" value="70" data-slider data-cfg-path="audio_haptics.smart_duration_pct">
+          <div class="t-12 t-hint mt4">调大: 近音更短促, 远音余韵更长</div>
+        </div>
+      </div>
+      <div class="row mt12" id="audio-c-sliders" style="display:none;align-items:flex-start;gap:28px">
+        <div style="flex:1">
+          <div class="row mb8"><svg class="ic-svg" style="width:14px;height:14px;color:var(--text-weak)"><use href="#i-bolt"/></svg><span class="t-12.5 t-weak">事件层增强</span><span class="right t-12.5 bold" style="color:var(--text)">70%</span></div>
+          <input type="range" class="slider" min="0" max="100" value="70" data-slider data-cfg-path="audio_haptics.c_upgrade_pct">
+          <div class="t-12 t-hint mt4">调 0 = 等同 B 模式；调大事件冲击更明显</div>
+        </div>
+        <div style="flex:1">
+          <div class="row mb8"><svg class="ic-svg" style="width:14px;height:14px;color:var(--text-weak)"><use href="#i-waveform"/></svg><span class="t-12.5 t-weak">BGM 节奏抑制</span><span class="right t-12.5 bold" style="color:var(--text)">90%</span></div>
+          <input type="range" class="slider" min="0" max="100" value="90" data-slider data-cfg-path="audio_haptics.c_sustain_suppress_pct">
+          <div class="t-12 t-hint mt4">调大: 锁定 BGM 后背景压得更狠；调小: 背景保留更多</div>
+        </div>
+      </div>
+      <div class="t-12 t-hint mt12">当前 A 经典模式 / 静音中 —— 智能层未参与输出。</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <span class="card-title">听哪些声音</span>
+        <span class="right audio-toggle-row" style="margin:0"><span>听整个电脑</span><button class="switch" data-act="listen-all" role="switch" aria-checked="false" aria-label="听整个电脑"></button></span>
+      </div>
+      <div class="t-12 t-hint">现在听整个电脑的声音（音乐、视频、语音全算）。只想对某个游戏生效，就打开右上角的开关。</div>
+      <div class="audio-mine-row">
+        <span class="t-13 t-weak">名单用</span>
+        <button class="link-chip" data-act="src-turbo">连发白名单那份</button>
+        <button class="link-chip plain" data-act="src-custom">单独填一份</button>
+        <span class="badge faint right" id="audio-wl-badge">未启用 · 全局听</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <span class="card-title">预设</span>
+        <span class="badge accent" id="audio-cur-badge">当前：人声清晰</span>
+      </div>
+      <div class="t-12 t-hint mb8">先点一个场景，再到下面「手感调节」按自己的口味微调。实测推荐「人声清晰」——打游戏、看剧情都合适。</div>
+      <div class="row wrap" id="audio-presets" style="gap:8px"></div>
+    </div>
+
+    <div class="card" id="audio-monitor-card">
+      <div class="card-title-row"><span class="card-title">实时监测</span><span class="mini-badge-demo right">原型演示 · 引擎 6 态可点</span></div>
+      <div id="audio-monitor"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row">
+        <span class="card-title">手感调节</span>
+        <span class="badge good right">拖动即时生效</span>
+      </div>
+      <div class="t-12 t-hint mb8">不确定就先用上面的预设，这里不用动。鼠标悬停在名称上能看到完整说明。</div>
+      <div class="adv-group-title">力度与对比</div>
+      <div class="slider-grid">
+        <div class="slider-row"><span class="lbl">全局总强度 % (建议 60-80)</span><input type="range" class="slider" min="0" max="150" value="75" data-slider data-cfg-path="audio_haptics.master_gain_pct" title="所有震动一起变大/变小。建议 60-80；觉得整体太猛就往下调，觉得没劲就往上调。"><span class="val">75</span></div>
+        <div class="slider-row"><span class="lbl">打击对比度 % (100% = 标准手感)</span><input type="range" class="slider" min="0" max="200" value="100" data-slider title="100% 是标准手感，不是音量。调大 → 轻攻击变轻、只有大招和重击才猛震；调小 → 每一下攻击都有明显反馈。"><span class="val">100</span></div>
+      </div>
+      <div class="adv-group-title">双马达分频</div>
+      <div class="slider-grid">
+        <div class="slider-row"><span class="lbl">低频量感 % (左马达 · 轰)</span><input type="range" class="slider" min="0" max="200" value="100" data-slider data-cfg-path="audio_haptics.low_gain_pct" title="爆炸、重击、贝斯这种“轰”的感觉。调 0 = 左马达基本不震。"><span class="val">100</span></div>
+        <div class="slider-row"><span class="lbl">高频量感 % (右马达 · 脆)</span><input type="range" class="slider" min="0" max="200" value="100" data-slider data-cfg-path="audio_haptics.high_gain_pct" title="枪声、打击、碎裂声这种“脆”的感觉。调 0 = 右马达基本不震。"><span class="val">100</span></div>
+        <div class="slider-row"><span class="lbl">节奏力度 % (跟鼓点)</span><input type="range" class="slider" min="0" max="100" value="0" data-slider data-cfg-path="audio_haptics.rhythm_pct" title="听歌/挂机时跟着鼓点震的强度。0 = 听歌完全不跟鼓点；听歌想要节奏感就调到 40-70。"><span class="val">0</span></div>
+        <div class="slider-row"><span class="lbl"></span><span class="val" style="visibility:hidden">0</span></div>
+      </div>
+      <div class="adv-group-title">动态与门槛</div>
+      <div class="slider-grid">
+        <div class="slider-row"><span class="lbl">背景屏蔽门槛 (默认 400)</span><input type="range" class="slider" min="0" max="1200" value="400" data-slider data-cfg-path="audio_haptics.mask_threshold" title="比这个响度小的声音一律不震。调高 = 更安静；调低 = 更灵敏。不确定就点上面的「屏蔽校准」。"><span class="val">400</span></div>
+        <div class="slider-row"><span class="lbl">响应速度 % (打游戏建议 60+)</span><input type="range" class="slider" min="5" max="90" value="65" data-slider title="调高 = 声一响手立刻震，更跟手；调低 = 更柔和。打游戏建议 60 以上。"><span class="val">65</span></div>
+        <div class="slider-row"><span class="lbl">余韵 % (2-60)</span><input type="range" class="slider" min="2" max="60" value="18" data-slider data-cfg-path="audio_haptics.release_pct" title="声音停下后震动收尾多快。调高 = 拖尾长、更绵；调低 = 干脆利落。"><span class="val">18</span></div>
+        <div class="slider-row"><span class="lbl"></span><span class="val" style="visibility:hidden">0</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">屏蔽选项</span></div>
+      <div class="t-12 t-hint mb8">防 BGM 和杂音乱震。三个开关都建议开着，剩下两条滑条按口味调。</div>
+      <div class="slider-grid">
+        <div class="col" style="gap:10px">
+          <label class="ckb" title="推荐开着。软件会自动判断现在放的是游戏音效还是背景音乐：放 BGM 时压住连续震动只留鼓点和真音效，安静时手柄完全不动。嫌它误判就关掉，关掉后完全按下面的滑条来。"><input type="checkbox" id="audio-adaptive" checked><span class="box"><svg><use href="#i-check"/></svg></span>智能识别（自动分辨游戏 / 音乐 / 安静）</label>
+          <label class="ckb" title="推荐开着。软件会一直听着背景噪音有多大，自动把门槛抬高到噪音之上。背景越吵门槛越高，BGM 和环境音就不容易震到手。"><input type="checkbox" id="audio-noise" checked><span class="box"><svg><use href="#i-check"/></svg></span>自动屏蔽背景噪音</label>
+          <label class="ckb" title="推荐开着。没有游戏音效时（挂机/读图/大厅安静下来）手柄保持零震动。关掉 = 安静时也保留一半的轻微跟随。"><input type="checkbox" id="audio-quiet" checked><span class="box"><svg><use href="#i-check"/></svg></span>安静时手柄完全不动</label>
+        </div>
+        <div class="col" style="gap:12px">
+          <div>
+            <div class="t-12 t-weak mb8">音乐段压制强度 % (识别到 BGM 时额外压掉多少震动)</div>
+            <input type="range" class="slider" min="0" max="100" value="60" data-slider data-cfg-path="audio_haptics.music_mask_pct" title="识别到背景音乐时，连续震动额外压掉多少。默认 60%；嫌听歌时手还是一直震就调到 80-100；嫌压制太狠就调低。">
+          </div>
+          <div>
+            <div class="t-12 t-weak mb8">细腻麻感 % (听人声 / ASMR 的微颤质感 · 打游戏建议 0-30)</div>
+            <input type="range" class="slider" min="0" max="100" value="15" data-slider data-cfg-path="audio_haptics.texture_pct" title="听人声/ASMR/轻声内容时的微弱麻颤质感。不打游戏只听声音的话可以调高一点；打游戏建议 0-30。">
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <details class="adv card" id="adv-audio">
+      <summary><span class="tri">▶</span>高级选项（默认值就够用，不建议乱调）</summary>
+      <div class="panel mt12">
+        <div class="adv-group-title" style="margin-top:0">马达与频带</div>
+        <div class="col" style="gap:8px;margin-bottom:10px">
+          <label class="ckb" title="推荐开。左马达管“轰”（爆炸/贝斯），右马达管“脆”（枪声/打击），层次更分明。关掉 = 两颗马达一起同步震，感觉更“整”，但少了层次。"><input type="checkbox" id="audio-dual" checked><span class="box"><svg><use href="#i-check"/></svg></span>双马达分频（低频走左、高频走右）</label>
+          <label class="ckb" title="开了以后只跟人声频段的能量，音乐/环境音基本不震。适合看剧/听书。"><input type="checkbox" id="audio-vocal"><span class="box"><svg><use href="#i-check"/></svg></span>只跟人声频段（双马达关闭时生效）</label>
+        </div>
+        <div class="slider-grid">
+          <div class="slider-row"><span class="lbl">低频上限 Hz (默认 750)</span><input type="range" class="slider" min="200" max="1000" value="750" data-slider data-cfg-path="audio_haptics.bass_high_hz" title="低于这个频率的声音算“低频”走左马达。默认 750；觉得低频抢戏就调低，觉得轰得不够就调高。"><span class="val">750</span></div>
+          <div class="slider-row"><span class="lbl">人声下限 Hz (默认 600)</span><input type="range" class="slider" min="300" max="1500" value="600" data-slider data-cfg-path="audio_haptics.vocal_low_hz" title="人声频段的下边界，默认 600。一般不用动。"><span class="val">600</span></div>
+          <div class="slider-row"><span class="lbl">人声上限 Hz (默认 4200)</span><input type="range" class="slider" min="1500" max="8000" value="4200" data-slider data-cfg-path="audio_haptics.vocal_high_hz" title="人声频段的上边界，默认 4200。一般不用动。"><span class="val">4200</span></div>
+          <div class="slider-row"><span class="lbl"></span><span class="val" style="visibility:hidden">0</span></div>
+        </div>
+      </div>
+      <div class="panel mt12">
+        <div class="adv-group-title" style="margin-top:0">响度标尺</div>
+        <div class="slider-grid">
+          <div class="slider-row"><span class="lbl">满格响度 (默认 6000)</span><input type="range" class="slider" min="1000" max="12000" value="6000" data-slider data-cfg-path="audio_haptics.map_max" title="声音响到什么程度算“震满格”。默认 6000；觉得动静大了调高，觉得不够劲调低。（配合「背景屏蔽门槛」用：门槛决定“震不震”，这条决定“震多满”。）"><span class="val">6000</span></div>
+          <div class="slider-row"><span class="lbl">震动死区 % (默认 4)</span><input type="range" class="slider" min="0" max="20" value="4" data-slider data-cfg-path="audio_haptics.dead_zone_pct" title="低于这个强度的输出直接归零，消除马达细微的“嗡嗡”底噪。默认 4；嫌轻微动静太黏就加到 6-8。"><span class="val">4</span></div>
+        </div>
+      </div>
+    </details>
+
+    <div class="card">
+      <div class="card-title-row"><span class="card-title">说明</span></div>
+      <div class="audio-notes-grid">
+        <div class="audio-note"><span class="dot"></span><span>本引擎是纯算法（频带分析 + 自动门槛），不需要下载任何模型文件。</span></div>
+        <div class="audio-note"><span class="dot"></span><span>Xbox 手柄只有 2 颗马达（低频 + 高频），震动层次受马达物理限制，不是软件问题。</span></div>
+        <div class="audio-note"><span class="dot"></span><span>与 DLL 震动同时开启时两者取最大值合并（互不覆盖）；DNF 内建议只用 DLL 模式（受击更精准），音频模式适合免注入场景与其他游戏。</span></div>
+        <div class="audio-note"><span class="dot"></span><span>马达保护：持续高输出 10 秒自动限幅 60% 持续 5 秒（防马达过热）。</span></div>
+        <div class="audio-note"><span class="dot"></span><span>换了耳机/音箱/环境之后，建议重新点一次「屏蔽校准」。</span></div>
+        <div class="audio-note"><span class="dot"></span><span>白名单条目默认直接复用连发白名单；关掉音频震动时，连发/组合键/DLL 注入行为与旧版完全一致。</span></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── 页 7 · 外观 MOD（原型新增：主题包管理） ─────────── -->
+  <section class="page" data-pg="mod">
+    <div class="page-header">
+      <div class="page-h1">外观 MOD</div>
+      <div class="page-hint">管理界面主题包：同一份数据与命令契约, 不同外观</div>
+    </div>
+
+    <!-- ★K 轮：.dvmod 单文件格式包导入入口（壳侧原生文件对话框，文件字节不过 IPC） -->
+    <div class="row mt8" style="gap:8px;flex-wrap:wrap">
+      <button class="btn primary" data-act="mod-import" style="justify-content:center" title="选择 .dvmod 主题包文件导入（同 id 覆盖替换）">导入 .dvmod 包</button>
+      <button class="btn ghost" data-act="mods-refresh" title="重新扫描 mods 目录与内置包">刷新清单</button>
+    </div>
+
+    <div class="mod-grid">
+      <!-- 主题卡 1 · 原版经典（内置默认） -->
+      <div class="mod-card">
+        <div class="head">
+          <span class="mod-name">原版经典</span>
+          <span class="badge accent">内置默认 · 使用中</span>
+        </div>
+        <div class="meta">
+          <span><span class="k">类型</span>内置默认主题（宿主本体）</span>
+          <span><span class="k">作者</span>DfoVibration（随软件发布）</span>
+          <span><span class="k">版本</span>R2.13（与软件同版本号）</span>
+        </div>
+        <div class="desc">随软件发布的基础界面（egui 深色「石墨靛蓝」）。永远可用、不可卸载 —— 停用任何 MOD 之后回到的就是它。</div>
+        <div class="mod-theme-info">
+          <span class="badge faint">egui dark</span>
+          <span class="badge faint">强调色 #818CF8</span>
+          <span class="badge faint">圆角 6/8/10/12</span>
+        </div>
+        <button class="btn secondary" disabled style="opacity:.45;cursor:default">使用中（内置默认）</button>
+      </div>
+
+      <!-- 主题卡 2 · 终末地风格（外观 MOD 包） -->
+      <div class="mod-card">
+        <div class="head">
+          <span class="mod-name">终末地风格</span>
+          <span class="badge trigger">外观 MOD 包</span>
+        </div>
+        <div class="meta">
+          <span><span class="k">作者</span>118coder</span>
+          <span><span class="k">版本</span>1.0.0 · 适配 R2.14+</span>
+        </div>
+        <div class="desc">工业风 / 明黄 #FFFA00 / 切角面板 / 赛博机甲 —— 面向 DNF 手柄工具的全新视觉。同一份数据、同一套命令契约，只换外观；应用 / 停用只切换 UI 壳层，配置与后端会话不动。</div>
+        <div class="mod-theme-info">
+          <span class="badge trigger">强调色 #FFFA00</span>
+          <span class="badge trigger">面板切角</span>
+          <span class="badge trigger">明暗双主题</span>
+          <span class="badge trigger">动效快切</span>
+        </div>
+        <div class="mod-preview">
+          <img src="./shots/v8-overview.png" alt="终末地风格主题预览（概览页）" title="终末地风格 · 概览页截图">
+        </div>
+        <a class="btn primary" href="endfield.html" data-act="mod-apply" style="justify-content:center;text-decoration:none" title="应用「终末地风格」外观 MOD（0.6 秒假加载后跳转）">应用此 MOD</a>
+      </div>
+    </div>
+
+    <details class="adv card mt12" id="adv-mod">
+      <summary><span class="tri">▶</span>MOD 开发文档（开发者接入说明 · 精简版）</summary>
+      <div class="mod-doc mt12">
+        <h4>外观 MOD 是什么</h4>
+        <p>同一个后端、同一份 <code>UiSnapshot</code> 六域快照、同一套 <code>UiCommand</code> 动作词表 —— 不同的「皮」。宿主（本页所在的经典界面）负责数据与命令；主题包只负责外观与壳层。</p>
+        <h4>包结构</h4>
+        <ul>
+          <li><code>mod.json</code> —— 清单：name / version / author / description / theme 信息；</li>
+          <li><code>theme.css</code> + <code>theme.js</code> —— 主题样式与壳层脚本；</li>
+          <li>预览图（本页主题卡上那张）。</li>
+        </ul>
+        <h4>宿主契约</h4>
+        <ul>
+          <li>前端只消费 <code>UiSnapshot</code> 六域快照，不直连后端；</li>
+          <li>全部动作走 <code>UiCommand</code> 动作 id：<code>toggle-pause</code> / <code>save</code> / <code>test-vibration</code> / <code>audio-self-check</code> / <code>check-update</code> 等（完整词表见完整文档）；</li>
+          <li>提交档位语义：Memory（不落盘）→ Save（落盘）→ Reload（落盘 + 热重载）五档。</li>
+        </ul>
+        <h4>生命周期</h4>
+        <p>安装 → 加载 → 应用 → 停用 → 卸载。<b>应用 = 切换 UI 壳层</b>，后端会话不动；停用后回到内置默认「原版经典」。</p>
+        <h4>约束</h4>
+        <ul>
+          <li>不得绕过命令契约直连后端；</li>
+          <li>主题不得改变数据语义（只换视觉）；</li>
+          <li>跟随宿主安全边界（白名单 / 注入保护提示等必须保留）。</li>
+        </ul>
+        <h4>参考实现</h4>
+        <p>「终末地风格」mod —— 即本目录 <code>endfield.html</code>（源码 <code>endfield.template.html</code> + <code>assets/proto.css/js</code>）。</p>
+        <p class="mt8">完整文档见 <code>MOD开发文档.md</code>（与原型同目录）。</p>
+      </div>
+    </details>
+  </section>
+
+</div><!-- /content -->
+</div><!-- /main -->
+
+<!-- ═══════════ 弹窗（照 settings_dialog.rs / about_dialog.rs / device_manager_dialog.rs） ═══════════ -->
+
+<!-- 设置（模态大弹窗 · 五个分区 + 底部保存/取消） -->
+<div class="ovl" id="dlg-settings" role="dialog" aria-modal="true" aria-label="设置">
+  <div class="dlg" style="width:760px">
+    <div class="dlg-head">
+      <span class="dlg-title">⚙ 设置 ~ 配置面板 ~</span>
+      <button class="dlg-x" data-act="close-dlg" aria-label="关闭">x</button>
+    </div>
+    <div class="dlg-body">
+      <!-- 分区 1 · settings_section_toggle_key_and_presets (settings_dialog.rs:654-954) -->
+      <div class="set-card">
+        <div class="st">⌨ 开关键</div>
+        <div class="form-line" style="margin-bottom:0">
+          <span class="t-14" style="color:var(--text)">按键:</span>
+          <button class="cap-btn" id="set-switch-key" data-act="capture-switch" style="min-width:200px;max-width:200px" title="点击后按任意键 (Esc 取消); 也可捕获手柄键">DELETE</button>
+        </div>
+      </div>
+      <div class="set-card">
+        <div class="st">📋 预设管理</div>
+        <div class="form-line" style="margin-bottom:4px">
+          <div class="combo" style="min-width:180px"><select id="set-preset-pick" data-act="set-preset-pick">
+            <option selected>（无）</option><option>PVE通用</option><option>搬砖-风法</option><option>决斗专用</option><option>测试-全零</option><option>旧版备份</option>
+          </select></div>
+          <button class="btn primary" style="min-width:90px" data-act="set-preset-save">💾 保存预设</button>
+        </div>
+        <div class="form-line" id="set-preset-name-row" hidden style="margin-bottom:4px">
+          <input class="text-input" style="width:160px" placeholder="预设名称..." aria-label="预设名称">
+          <button class="btn small good" style="background:var(--good);color:var(--on-emphasis);width:36px;justify-content:center;height:32px" data-act="set-preset-confirm">✓</button>
+          <button class="btn small danger" style="width:36px;justify-content:center;height:32px" data-act="set-preset-cancel">✕</button>
+        </div>
+        <div class="form-line" id="set-preset-mgr-row" hidden style="margin-bottom:0">
+          <button class="btn danger" style="min-width:88px;height:32px" data-act="set-preset-del">🗑 删除</button>
+          <button class="btn primary" style="min-width:88px;height:32px" data-act="set-preset-ren">✏ 重命名</button>
+          <span class="row" id="set-preset-ren-row" hidden style="gap:6px">
+            <input class="text-input" style="width:140px" placeholder="预设名称..." aria-label="新名称">
+            <button class="btn small" style="background:var(--good);color:var(--on-emphasis);width:36px;justify-content:center;height:32px" data-act="set-preset-ren-ok">✓</button>
+            <button class="btn small danger" style="width:36px;justify-content:center;height:32px" data-act="set-preset-ren-cancel">✕</button>
+          </span>
+        </div>
+      </div>
+      <!-- 分区 2 · settings_section_global (settings_dialog.rs:957-1185) -->
+      <div class="set-card">
+        <div class="st">⚙ 全局配置</div>
+        <div class="set-grid">
+          <span class="lab">语言:</span>
+          <span class="row"><div class="combo"><select id="set-language" data-act="set-language" aria-label="语言"><option value="SimplifiedChinese" selected>简体中文</option><option value="TraditionalChinese">繁體中文</option><option value="English">English</option><option value="Japanese">日本語</option></select></div></span>
+          <span class="lab">Raw Input 捕获判定:</span>
+          <span class="row"><div class="combo"><select data-act="rawinput-mode"><option selected>智能自适应</option><option>持续时间最长</option><option>最大变化量</option><option>最大激活量</option><option>最终稳定状态</option><option>摇杆方向优化</option><option>模拟摇杆优化</option></select></div></span>
+          <span class="lab">XInput 捕获判定:</span>
+          <span class="row"><div class="combo"><select data-act="xinput-mode"><option selected>持续时间最长</option><option>最终稳定状态</option><option>斜方向优先</option></select></div></span>
+          <span class="lab">输入超时 (毫秒):</span>
+          <span class="row"><input class="text-input w140" value="1000" aria-label="输入超时"></span>
+          <span class="lab">默认间隔 (毫秒):</span>
+          <span class="row"><input class="text-input w140" value="5" aria-label="默认间隔"></span>
+          <span class="lab">默认时长 (毫秒):</span>
+          <span class="row"><input class="text-input w140" value="5" aria-label="默认时长"></span>
+          <span class="lab">连发线程数:</span>
+          <span class="row"><input class="text-input w140" value="4" placeholder="0 = auto" aria-label="连发线程数"></span>
+          <span class="lab">显示托盘图标:</span>
+          <span class="row"><label class="ckb"><input type="checkbox" id="set-tray" checked><span class="box"><svg><use href="#i-check"/></svg></span></label></span>
+          <span class="lab">显示通知:</span>
+          <span class="row"><label class="ckb"><input type="checkbox" id="set-notif" checked><span class="box"><svg><use href="#i-check"/></svg></span></label></span>
+          <span class="lab">置顶:</span>
+          <span class="row"><label class="ckb"><input type="checkbox" id="set-top"><span class="box"><svg><use href="#i-check"/></svg></span></label></span>
+          <span class="lab">DFO 震动功能 (震动中心/全职业预设):</span>
+          <span class="row"><label class="ckb"><input type="checkbox" id="set-dfo" checked><span class="box"><svg><use href="#i-check"/></svg></span></label></span>
+          <span class="lab">客户端版本 (震动方案)</span>
+          <span class="row" id="set-route-row"><div class="combo"><select data-act="route-pick"><option selected>S4+ 新版本方案</option><option>S1 ACT 老版本方案 (推荐)</option></select></div><span class="t-12 t-hint">仅 DFO 玩家可用; 切换 = 换整套震动参数</span></span>
+          <span class="lab">暗黑模式:</span>
+          <span class="row"><label class="ckb"><input type="checkbox" id="set-dark" checked><span class="box"><svg><use href="#i-check"/></svg></span></label></span>
+        </div>
+      </div>
+      <!-- 分区 3 · settings_section_mappings (settings_dialog.rs:1188-2280) -->
+      <div class="set-card">
+        <div class="st">🎯 按键映射</div>
+        <details class="set-hint-box" id="adv-diag" open>
+          <summary>🌸 ✨ 斜方向使用提示 ✨ 🌸</summary>
+          <div class="body">RawInput设备的斜向输入需单独配置。例如：若要 ↗ 同时触发 ↑ 和 →，需为 ↗ 单独添加包含两个直向目标键的映射规则</div>
+        </details>
+        <div id="set-mapping-rows" class="mt8"></div>
+        <hr class="sep">
+        <div class="t-14 bold" style="color:var(--accent-text)">➕ 添加连发映射</div>
+        <div class="set-mapping-row mt8">
+          <div class="form-line" style="margin-bottom:6px">
+            <span class="t-13 bold" style="color:var(--accent-text)">触发键:</span>
+            <button class="cap-btn" id="set-new-trigger" data-act="set-new-trigger">点击设置按键</button>
+          </div>
+          <div class="form-line" style="margin-bottom:6px">
+            <span class="t-13 bold" style="color:var(--accent-text)">目标键:</span>
+            <button class="cap-btn" id="set-new-target" data-act="set-new-target">点击设置按键</button>
+            <button class="btn-sq accent" data-act="set-new-target" title="➕ 添加目标键">＋</button>
+            <button class="btn-sq danger" data-act="set-new-target-clear" title="🗑 清除所有目标键">✖</button>
+            <span class="row" id="set-new-chips" style="gap:4px;flex-wrap:wrap"></span>
+          </div>
+          <div class="form-line" style="margin-bottom:6px">
+            <span class="t-13" style="color:var(--text)">间隔:</span>
+            <input class="mini-input" placeholder="5" aria-label="间隔">
+            <span class="t-13" style="color:var(--text)">时长:</span>
+            <input class="mini-input" placeholder="5" aria-label="时长">
+          </div>
+          <div class="form-line" style="margin-bottom:6px">
+            <button class="tgl-btn dir" data-act="set-mouse-dir" title="设置鼠标移动方向">⌖ 方向</button>
+            <button class="tgl-btn scroll" data-act="set-mouse-scroll" title="设置鼠标滚动方向">🎡 滚动</button>
+            <button class="tgl-btn" data-act="set-turbo" title="连发开启 - 自动重复输入">○ 连发</button>
+            <button class="tgl-btn" data-act="set-doubletap" title="简易奔跑关闭 - 按一次触发一次按键">简易奔跑</button>
+          </div>
+          <div class="form-line" style="margin-bottom:6px" id="set-new-note-row" hidden>
+            <span class="t-12" style="color:var(--text-weak)">备注:</span>
+            <input class="slot-note-input" style="max-width:220px" placeholder="输入备注文字..." aria-label="备注">
+          </div>
+          <button class="add-row-btn" data-act="set-mapping-add">➕ 添加</button>
+          <div class="err-red mt8" id="set-dup-err" hidden>⚠ 该触发键已存在！</div>
+        </div>
+      </div>
+      <!-- 分区 4 · settings_section_whitelist (settings_dialog.rs:2297-2504) -->
+      <div class="set-card">
+        <div class="st">进程白名单（空=全部启用）</div>
+        <div class="t-12 t-hint mb8">与左侧「白名单修改」页是同一份名单 —— 增删即时保存生效, 无需点保存配置</div>
+        <div id="set-wl-rows"></div>
+        <div class="wl-add mt8">
+          <input class="text-input" id="set-wl-input" style="flex:1;max-width:220px" placeholder="如：notepad.exe" aria-label="进程名">
+          <button class="btn primary wl-add-btn" data-act="set-wl-add">➕ 添加</button>
+          <button class="btn primary wl-browse-btn" data-act="set-wl-browse" title="登记完整路径 —— 同名不同版本的 exe 可各登记一条">🗂&nbsp; 浏览</button>
+        </div>
+        <div class="err-red mt8" id="set-wl-err" hidden>⚠ 该进程已在白名单中！</div>
+      </div>
+      <!-- 分区 5 · settings_section_update (update_ui.rs:606-688) -->
+      <div class="set-card">
+        <div class="st">检查更新</div>
+        <div class="form-line" style="margin-bottom:6px">
+          <span class="t-13 bold" style="color:var(--heading)">当前版本 R2.13</span>
+          <span class="badge faint">已是最新</span>
+          <span class="right row" style="gap:8px">
+            <button class="btn secondary small" data-act="open-update-panel">打开更新面板</button>
+            <button class="btn secondary small" data-act="check-update">立即检查</button>
+          </span>
+        </div>
+        <div class="form-line" style="margin-bottom:6px">
+          <label class="ckb"><input type="checkbox" checked><span class="box"><svg><use href="#i-check"/></svg></span>启动时自动检查（只弹提示，不强制更新）</label>
+        </div>
+        <div class="form-line" style="margin-bottom:0">
+          <span class="t-12 t-hint">自定义清单地址</span>
+          <input class="text-input" style="flex:1;max-width:300px" placeholder="留空 = 内置源（jsDelivr / GitHub）" aria-label="自定义清单地址">
+        </div>
+        <div class="err-red mt8" id="set-update-err" hidden>上次检查失败：HTTP 404 (演示占位)</div>
+      </div>
+    </div>
+    <div class="dlg-foot" style="flex-direction:column;gap:8px">
+      <div class="row" style="justify-content:center;gap:15px;width:100%">
+        <button class="btn primary save-btn-lg" data-act="settings-save">💾&nbsp; 保存配置</button>
+        <button class="btn secondary save-btn-lg" data-act="close-dlg">↩&nbsp; 取消</button>
+      </div>
+      <div class="set-foot-hint">* 配置将在保存后立即生效</div>
+    </div>
+  </div>
+</div>
+
+<!-- 关于（about_dialog.rs 500×550） -->
+<div class="ovl" id="dlg-about" role="dialog" aria-modal="true" aria-label="关于">
+  <div class="dlg about-dlg" style="width:500px">
+    <div class="t1">DfoVibration-Sorahk</div>
+    <div class="t2">~ Auto Key Press Tool ~</div>
+    <div class="about-card">
+      <div class="t-accent-text" style="font-size:16px;font-weight:700">✨ Version vR2.13</div>
+      <div class="t-13 mt8" style="color:var(--text-weak)">基于 Sorahk 连发工具<br>对老版本 DFO 特化修改的版本</div>
+    </div>
+    <div class="about-grid">
+      <span class="k">👤 作者:</span><span>118coder</span>
+      <span class="k">🔗 GitHub:</span><a href="https://github.com/118coder/DfoVibration/tree/main" target="_blank" rel="noopener">https://github.com/118coder/DfoVibration</a>
+      <span class="k">📜 许可证:</span><span>MIT License</span>
+      <span class="k">⚙ 构建工具:</span><span>Rust + egui</span>
+    </div>
+    <div class="t-12 mt12" style="font-style:italic;color:var(--hint)">DOF特化版本，同时也泛用</div>
+    <button class="btn primary mt12" style="width:200px;height:36px;justify-content:center;border-radius:12px;font-size:15px" data-act="close-dlg">✨ 关闭</button>
+  </div>
+</div>
+
+<!-- 设备管理（device_manager_dialog.rs 700×530: 标题/头部卡/XInput 分区/HID 分区/关闭钮） -->
+<div class="ovl" id="dlg-devices" role="dialog" aria-modal="true" aria-label="设备管理">
+  <div class="dlg dev-dlg" style="width:700px">
+    <div class="dlg-body" style="padding:24px 20px 14px">
+      <div style="text-align:center;margin-bottom:18px"><span class="dlg-title" style="font-size:18px;color:#98A2FF">🌸 设备管理 🌸</span></div>
+      <!-- 头部卡: 已连接设备 + 刷新/重置 -->
+      <div class="dev-section" style="padding:12px 16px">
+        <div class="row">
+          <span class="t-16 bold" style="color:#98A2FF">✨ 已连接设备 ✨</span>
+          <span class="right row" style="gap:8px">
+            <button class="btn small" style="background:#98A2FF;color:var(--on-emphasis);border-radius:12px;height:32px" data-act="dev-refresh">🔄 刷新</button>
+            <button class="btn danger small" style="border-radius:12px;height:32px" data-act="dev-reset" title="重置手柄连接 (蓝牙重连)">🔄 重置</button>
+          </span>
+        </div>
+      </div>
+      <div style="max-height:420px;overflow-y:auto;margin-top:12px">
+        <!-- XInput 分区 -->
+        <div class="dev-section">
+          <div class="t-16 bold mb8" style="color:var(--accent)">🎮 XInput 控制器 ♡</div>
+          <div class="dev-card" id="dev-xcard">
+            <div class="row">
+              <span class="dev-icon">🎮</span>
+              <div style="min-width:0">
+                <div class="dtitle">Xbox 360 Controller</div>
+                <div class="dsub">Microsoft │ ✨ 插槽 0 │ 045E:028E</div>
+              </div>
+              <span class="right row" style="gap:8px">
+                <button class="btn small" style="background:var(--accent);color:var(--on-emphasis);border-radius:10px;height:32px" data-act="dev-toggle-settings">⚙ 设置</button>
+                <button class="btn small" style="background:var(--good);color:var(--on-emphasis);border-radius:10px;height:32px" data-act="dev-reactivate" hidden title="RawInput API + 已激活的设备才显示">🔄 重新激活</button>
+              </span>
+            </div>
+            <div class="dev-expander" id="dev-settings-panel" hidden>
+              <div class="row" style="align-items:flex-start;gap:14px">
+                <div style="flex:1">
+                  <div class="gt">💫 振动控制</div>
+                  <div class="dev-slider-row mt8">
+                    <span class="slab">✨ 左侧：</span>
+                    <input type="range" class="slider" min="0" max="65535" value="32767" data-slider><span class="val" style="width:52px">32767</span>
+                  </div>
+                  <div class="dev-slider-row">
+                    <span class="slab">✨ 右侧：</span>
+                    <input type="range" class="slider" min="0" max="65535" value="32767" data-slider><span class="val" style="width:52px">32767</span>
+                  </div>
+                  <div class="row mt8">
+                    <button class="btn small" style="background:var(--good);color:var(--on-emphasis);border-radius:10px;height:32px" data-act="dev-test">测试震动</button>
+                    <button class="btn danger small" style="border-radius:10px;height:32px" data-act="dev-stopall">停止震动</button>
+                  </div>
+                </div>
+                <div style="flex:1">
+                  <div class="gt">🎯 死区设置</div>
+                  <div class="dev-slider-row mt8">
+                    <span class="slab">🕹 摇杆：</span>
+                    <input type="range" class="slider" min="0" max="32767" value="7849" data-slider><span class="val" style="width:52px">7849</span>
+                  </div>
+                  <div class="dev-slider-row">
+                    <span class="slab">⚡ 扳机：</span>
+                    <input type="range" class="slider" min="0" max="255" value="30" data-slider><span class="val" style="width:52px">30</span>
+                  </div>
+                </div>
+              </div>
+              <div class="row mt12">
+                <span class="t-14 bold" style="color:var(--accent)">输入API：</span>
+                <label class="dev-radio"><input type="radio" name="dev-api" checked><span class="orb"></span>自动</label>
+                <label class="dev-radio"><input type="radio" name="dev-api"><span class="orb"></span>XInput</label>
+                <label class="dev-radio"><input type="radio" name="dev-api"><span class="orb"></span>RawInput</label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <!-- HID 分区 -->
+        <div class="dev-section">
+          <div class="row mb8">
+            <span class="t-16 bold" style="color:var(--accent)">🕹 HID 设备 ★</span>
+            <span class="right">
+              <button class="btn small" id="dev-hid-filter" style="background:var(--text-weak);color:var(--on-emphasis);border-radius:12px;height:32px" data-act="dev-hid-filter" title="切换 HID 列表过滤: 仅游戏设备 ↔ 全部设备">🎮 仅游戏设备</button>
+            </span>
+          </div>
+          <div id="dev-hid-list">
+            <div class="dev-card">
+              <div class="row">
+                <span class="dev-icon">🕹</span>
+                <div style="min-width:0">
+                  <div class="dtitle">虚拟手柄 (HidHide) · Gamepad</div>
+                  <div class="dsub">Nefarius │ 045E:028E │ Usage 0001:0005</div>
+                </div>
+                <span class="right row" style="gap:8px">
+                  <button class="btn small" style="background:var(--good);color:var(--on-emphasis);border-radius:10px;height:32px" data-act="open-hid" title="建立 HID 基线 (四态激活向导)">🔄 重新激活</button>
+                </span>
+              </div>
+            </div>
+          </div>
+          <div class="dev-empty" id="dev-hid-empty" hidden>
+            <div class="face">(｡•́︿•̀｡)</div>
+            <div class="txt" id="dev-hid-empty-txt">未检测到游戏设备</div>
+          </div>
+        </div>
+      </div>
+      <div style="text-align:center;margin-top:16px">
+        <button class="btn dev-close-btn" data-act="close-dlg">关闭</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- HID 激活（hid_activation_dialog.rs 500×450: 四态状态机 + 三条警告 + 取消） -->
+<div class="ovl" id="dlg-hid" role="dialog" aria-modal="true" aria-label="HID 设备激活">
+  <div class="dlg hid-dlg">
+    <div class="hid-title" id="hid-title">🎮 ✨ 设备激活 ✨ 🎮</div>
+    <div class="hid-device-card">
+      <div class="icon">🎮</div>
+      <div class="name">虚拟手柄 (HidHide)</div>
+      <div class="sub">Nefarius │ 045E:028E</div>
+    </div>
+    <div id="hid-state">
+      <!-- JS 填充四态 -->
+    </div>
+    <div class="row mt12" style="justify-content:center;gap:10px">
+      <button class="btn secondary small" data-act="hid-next" title="原型演示: 真实版由 HID 原始报文差分自动推进 (按下→松开→成功)">下一步（原型演示推进）</button>
+      <button class="btn primary hid-cancel" data-act="close-dlg" style="min-width:200px">✖ 取消</button>
+    </div>
+  </div>
+</div>
+
+<!-- 退出确认弹窗（main_window.rs render_close_dialog 三选一语义: 最小化到托盘/退出程序/取消；
+     契约 v1.1: win-close 与 "ShellCloseRequested" 事件均走此弹窗；真桥下 托盘=win.hide / 退出=cmd quit） -->
+<div class="ovl" id="dlg-exit" role="dialog" aria-modal="true" aria-label="关闭窗口">
+  <div class="dlg exit-dlg" style="width:400px">
+    <div class="dlg-body" style="padding:24px 20px 8px;text-align:center">
+      <div class="dlg-title" style="font-size:20px;display:block;text-align:center">💫 关闭窗口</div>
+      <div class="t-13 mt8" style="font-style:italic;color:var(--hint)">想做什么呢？</div>
+    </div>
+    <div class="dlg-foot" style="flex-direction:column;gap:10px;border-top:none;padding-top:10px">
+      <button class="btn primary" style="width:100%;height:34px;justify-content:center;border-radius:12px" data-act="win-hide" title="隐藏窗口到托盘继续运行，托盘图标可恢复">🗕&nbsp; 最小化到托盘</button>
+      <button class="btn danger" style="width:100%;height:34px;justify-content:center;border-radius:12px" data-act="exit-app" title="保存配置并退出程序">🚪&nbsp; 退出程序</button>
+      <button class="btn secondary" style="width:100%;height:32px;justify-content:center;border-radius:10px" data-act="close-dlg">↩&nbsp; 取消</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast-root" aria-live="polite"></div>
+
+</div><!-- /stage-root -->
+
+<script src="./assets/bridge.js"></script>
+<script src="./assets/replica.js"></script>
+</body>
+</html>

@@ -31,6 +31,8 @@ pub enum Icon {
     Sliders,
     /// ★v24.50 音频震动页 (声波)
     SoundWave,
+    /// ★G 轮外观 MOD 页 (调色板)
+    Palette,
     /// ★v24.40b 关闭 ✕ (弹窗角标)
     X,
 }
@@ -56,6 +58,7 @@ impl Icon {
             Icon::Exit => ic::SIGN_OUT,
             Icon::Sliders => ic::SLIDERS_HORIZONTAL,
             Icon::SoundWave => ic::WAVEFORM,
+            Icon::Palette => ic::PALETTE,
             Icon::X => ic::X,
         }
     }

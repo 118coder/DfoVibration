@@ -177,14 +177,103 @@ impl SorahkGui {
         self.was_focused = focused;
 
 
+        /* ★G 轮混合模式 (契约 v1.4 §11): mod 窗停用/关闭 → mod 线程已用 Win32
+         * 直连还原本窗口 (spike: egui 隐藏期 update 停摆, 不能只靠这里); 本帧头
+         * 再补 ViewportCommand 双保险 (还原最小化态/焦点)。 */
+        if self.hybrid.take_restore() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        /* ★H 轮 (契约 v1.5 §11.6): mod 窗内「完整/极简/经典模式」→ shell.stop{mode}
+         * 停用会话时带目标模式 → 还原后本帧头消费应用。运行时切换**照抄标题栏按钮
+         * 路径** (set_minimal_mode / set_classic_mode) —— UiCommand::SetMode 只落盘
+         * config, 不动 GUI 本地模式标记, 不能用。 */
+        if let Some(mode) = self.hybrid.take_exit_mode() {
+            crate::backend::BackendService::log(&format!("[hybrid] 应用退出模式: {mode:?}"));
+            match mode {
+                crate::shell::hybrid::UiMode::Minimal => {
+                    self.set_minimal_mode(ctx, true);
+                    /* ★H 轮: 还原后 ViewportCommand::InnerSize 实测不生效, Win32 直连兜几何 */
+                    crate::shell::hybrid::win32_resize_egui(430.0, 520.0, None);
+                }
+                crate::shell::hybrid::UiMode::Classic => {
+                    self.set_classic_mode(ctx, true);
+                    crate::shell::hybrid::win32_resize_egui(
+                        crate::gui::classic_mode::CLASSIC_SIZE.x as f64,
+                        crate::gui::classic_mode::CLASSIC_SIZE.y as f64,
+                        None,
+                    );
+                }
+                crate::shell::hybrid::UiMode::Full => {
+                    /* 完整界面: 与极简/经典标题栏「⤺ 完整界面」按钮同语义 */
+                    if self.minimal_mode {
+                        self.set_minimal_mode(ctx, false);
+                    }
+                    if self.classic_mode {
+                        self.set_classic_mode(ctx, false);
+                    }
+                    /* 完整模式几何 = 上次完整矩形 (config 记忆); 有记忆则 Win32 兜 */
+                    if let Some(r) = self.backend.with_config(|c| c.window_rect_normal) {
+                        crate::shell::hybrid::win32_resize_egui(
+                            r[2] as f64,
+                            r[3] as f64,
+                            Some((r[0] as f64, r[1] as f64)),
+                        );
+                    }
+                }
+            }
+        }
+        /* mod 窗停用报告: 崩溃 → 本页提示条 (托盘气泡已由 mod 线程发) */
+        if let Some(report) = self.hybrid.poll_stopped()
+            && report.reason == crate::shell::hybrid::StopReason::Crashed
+        {
+            self.mods_error = Some(format!(
+                "外观 MOD「{}」已停止 (异常退出), 已还原原生界面",
+                report.id
+            ));
+        }
+
+        /* ★G 轮补充 `--open-mod <id>`: 帧循环跑稳 ~1s 后自动应用 (spike 实测
+         * 第二事件循环必须在主循环运行后拉起 —— creator 阶段会秒崩)。
+         * 走与「应用」按钮完全相同的 apply_mod_from_page 路径 (自动化验收通道)。 */
+        if self.open_mod_request.is_some() && self.open_mod_at.is_none() {
+            self.open_mod_at = Some(std::time::Instant::now());
+        }
+        if let (Some(id), Some(at)) = (self.open_mod_request.clone(), self.open_mod_at)
+            && at.elapsed() >= std::time::Duration::from_millis(1000)
+        {
+            self.open_mod_request = None;
+            self.open_mod_at = None;
+            let meta = crate::gui::appearance_page::scan_all_mods()
+                .into_iter()
+                .find(|m| m.id == id)
+                .or_else(|| {
+                    // 内置包永远在 scan_all_mods 里; 走到这里 = id 不存在
+                    if id == "classic" {
+                        self.mods_error =
+                            Some("classic 即原生 egui 界面, 无需 --open-mod".into());
+                    } else {
+                        self.mods_error = Some(format!("--open-mod: MOD 不存在: {id}"));
+                    }
+                    crate::backend::BackendService::log(&format!("[hybrid] --open-mod 未命中: {id}"));
+                    None
+                });
+            if let Some(meta) = meta {
+                self.apply_mod_from_page(ctx, &meta);
+            }
+        }
+
         // Handle window visibility requests
-        if self.backend.take_show_window_request() {
+        // ★G 轮门控: mod 窗活跃期托盘 ShowWindow 由 mod 会话泵消费 (还原 mod 窗),
+        // egui 不吞 (egui 必须保持隐藏); ShowAbout 同理留给 mod 停用后的本页弹。
+        if !self.hybrid.is_active() && self.backend.take_show_window_request() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
 
-        if self.backend.take_show_about_request() {
+        if !self.hybrid.is_active() && self.backend.take_show_about_request() {
             self.show_about_dialog = true;
         }
 
@@ -1002,6 +1091,15 @@ impl SorahkGui {
                             .auto_shrink([false; 2])
                             .show(ui, |ui| {
                                 self.render_audio_haptics_page(ui, ctx);
+                                ui.add_space(12.0);
+                            });
+                    }
+                    /* ★G 轮外观 MOD 页 (契约 v1.4 §11): 混合 UI 应用/停用入口 */
+                    Page::AppearanceMods => {
+                        egui::ScrollArea::vertical()
+                            .auto_shrink([false; 2])
+                            .show(ui, |ui| {
+                                self.render_appearance_page(ui, ctx);
                                 ui.add_space(12.0);
                             });
                     }

@@ -105,6 +105,9 @@ pub struct SorahkGui {
     /// ★v20: 高级调校内的「专家参数」显示开关 (会话内瞬态, 默认关) ——
     /// 关时只显示各算法的高层旋钮, 低频微调收进专家模式, 减少参数噪音
     pub vib_show_expert: bool,
+    /// ★v24.61 排版: 参数说明小字显示开关 (会话内瞬态, 默认开) ——
+    /// 关掉即紧凑模式: 每行只留 名称 + 数值 + 滑轨, 方便快速对比数值。
+    pub vib_show_hints: bool,
     /// 导出提示 (显示最近一次导出文件名)
     pub vib_export_msg: Option<String>,
     /// 导入文件选择索引 (通用震动设定页 / 全职业预设页共用布局)
@@ -401,6 +404,7 @@ impl SorahkGui {
             vib_job_snapshot: Vec::new(),
             vib_job_adv_on: true,
             vib_show_expert: false,
+            vib_show_hints: true,
             vib_export_msg: None,
             vib_import_sel: 0,
             job_import_sel: 0,

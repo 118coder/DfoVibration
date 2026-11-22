@@ -1,170 +1,266 @@
-//! 震动页主体渲染 render_vibration_full_page —— 原 vibration_page.rs 466-3234, 2026-09-27 架构重构 C1 归位 (C1b 将继续按卡片拆分本函数)。
+//! 震动页 (通用型震动设定 / 全职业预设) —— ★v24.61 版式重排。
+//!
+//! 版面自上而下:
+//! ①**状态头**: 连接状态 + 累计事件 + 最近评分 + 左右马达实时电平 + 总开关 + 测试;
+//! ②**预设/职业工具条**: 选预设/选职业 + 全部操作按钮 (分组排列, 不再糊成一长串);
+//! ③**参数双列**: 左 (力度总闸 / 评分特效) 右 (马达电平 / 评分衰减 / 伤害飘字);
+//! ④**高级调校**: 折叠, 展开后按 6 个主题面板双列排布。
+//!
+//! 版式口径 (与音频震动页同一套语言):
+//! * 一行一个参数 = 图标 + 名称 + 右对齐数值 / 满宽滑轨 / 一句人话; 不再"标签 + 内置
+//!   数值滑轨 + 三行说明"堆成文字墙;
+//! * L/R 马达权重从"两项各占一行"收成"一行两半", 左右对比一眼可见;
+//! * 卡片之间不再插 `separator` 横线 (卡片本身就是分隔), 页面靠留白呼吸;
+//! * 全部功能/按钮/参数一个不少 —— 只改排布与行样式, 写入路径与语义逐字未变。
+//!
+//! 数据流 (★R2.14 起): 帧首 gather config 快照 + 运行态快照, 渲染期间只读局部;
+//! 写入一律走 backend 单一写路径 (vib_slot_update / vib_slider_update)。
 
+use crate::backend::Backend;
+use crate::config::VibrationConfig;
 use crate::gui::SorahkGui;
-use crate::gui::theme::{self};
+use crate::gui::main_window::FrameState;
+use crate::gui::theme::{self, Theme};
+use crate::gui::widgets::{self, Row};
+use crate::ui_api::VibSnap;
 
 use eframe::egui;
-use crate::gui::main_window::FrameState;
+use egui_phosphor::variants::regular as ic;
+
+/// 参数行: 图标 + 名称, tip 自动取 `param_hint` 的"调高/调低"说明。
+fn vib_row<'a>(icon: &'a str, label: &'a str) -> Row<'a> {
+    let tip = SorahkGui::param_hint(label);
+    Row::new(icon, label).tip(tip)
+}
+
+/// 60 槽参数行 (分数档 0-100 之类)。
+fn slot_row(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    backend: &Backend,
+    job_mode: bool,
+    row: Row<'_>,
+    slot: usize,
+    value: u32,
+    lo: f32,
+    hi: f32,
+) {
+    let mut v = value as f32;
+    if widgets::row_f32(ui, th, &row, &mut v, lo..=hi, 1.0) {
+        SorahkGui::vib_slot_update(backend, job_mode, slot, v as u32);
+    }
+}
+
+/// 非槽位 (config 字段) 参数行。
+fn cfg_row(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    backend: &Backend,
+    job_mode: bool,
+    row: Row<'_>,
+    value: u32,
+    lo: f32,
+    hi: f32,
+    set: impl FnOnce(&mut VibrationConfig, u32),
+) {
+    let mut v = value as f32;
+    if widgets::row_f32(ui, th, &row, &mut v, lo..=hi, 1.0) {
+        let n = v as u32;
+        SorahkGui::vib_slider_update(backend, job_mode, |c| set(c, n));
+    }
+}
+
+/// 卡片标题行右侧的"当前状态"摘要: 让每张卡在收起/扫读时也能回答"现在是多少"。
+fn card_note(ui: &mut egui::Ui, th: &Theme, text: &str) {
+    ui.label(egui::RichText::new(text).size(11.5).color(th.hint));
+}
+
+/// 60 槽参数卡 + 该参数自己的 L/R 权重 (同一个卡里, 不拆成两块)。
+fn slot_row_lr(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    backend: &Backend,
+    job_mode: bool,
+    row: Row<'_>,
+    slot: usize,
+    value: u32,
+    lo: f32,
+    hi: f32,
+    lr: impl FnOnce(&mut egui::Ui),
+) {
+    let mut v = value as f32;
+    widgets::row_card(ui, th, |ui| {
+        if widgets::row_f32_inner(ui, th, &row, &mut v, lo..=hi, 1.0) {
+            SorahkGui::vib_slot_update(backend, job_mode, slot, v as u32);
+        }
+        lr(ui);
+    });
+}
+
+/// config 字段参数卡 + 该参数自己的 L/R 权重。
+fn cfg_row_lr(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    backend: &Backend,
+    job_mode: bool,
+    row: Row<'_>,
+    value: u32,
+    lo: f32,
+    hi: f32,
+    set: impl FnOnce(&mut VibrationConfig, u32),
+    lr: impl FnOnce(&mut egui::Ui),
+) {
+    let mut v = value as f32;
+    widgets::row_card(ui, th, |ui| {
+        if widgets::row_f32_inner(ui, th, &row, &mut v, lo..=hi, 1.0) {
+            let n = v as u32;
+            SorahkGui::vib_slider_update(backend, job_mode, |c| set(c, n));
+        }
+        lr(ui);
+    });
+}
+
+/// 竖向细分隔线 (状态头里分列用)。
+fn vsep(ui: &mut egui::Ui, th: &Theme) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(1.0, 22.0), egui::Sense::hover());
+    ui.painter()
+        .vline(rect.center().x, rect.y_range(), egui::Stroke::new(1.0, th.stroke));
+}
+
+/// 状态头里的一项统计: 小标签 + 数值。
+fn head_stat(ui: &mut egui::Ui, th: &Theme, label: &str, value: &str, color: egui::Color32) {
+    ui.vertical(|ui| {
+        ui.label(egui::RichText::new(label).size(10.5).color(th.hint));
+        ui.label(
+            egui::RichText::new(value)
+                .size(13.0)
+                .strong()
+                .family(Theme::font_bold())
+                .color(color),
+        );
+    });
+}
+
+/// 实时电平条: 小标题 + 8px 轨道 + 百分比 (+可选原始读数)。
+fn level_bar(
+    ui: &mut egui::Ui,
+    th: &Theme,
+    label: &str,
+    out: u32,
+    color: egui::Color32,
+    width: f32,
+    raw: bool,
+) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(label).size(11.5).color(color).strong());
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 10.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 5.0, th.faint.gamma_multiply(if th.dark { 1.15 } else { 1.0 }));
+        let pct = (out as f32 / 65535.0).clamp(0.0, 1.0);
+        if pct > 0.0 {
+            let mut fill = rect;
+            fill.set_width((rect.width() * pct).max(3.0));
+            ui.painter().rect_filled(fill, 5.0, color);
+        }
+        ui.label(
+            egui::RichText::new(format!("{:>3}%", (pct * 100.0).round() as i32))
+                .size(11.0)
+                .monospace()
+                .color(th.text_weak),
+        );
+        if raw {
+            ui.label(
+                egui::RichText::new(format!("{out:>5}"))
+                    .size(10.5)
+                    .monospace()
+                    .color(th.hint),
+            );
+        }
+    });
+}
 
 impl SorahkGui {
-    /// Full vibration settings page (all params + status + test).
-    pub(in crate::gui) fn render_vibration_full_page(&mut self, ui: &mut egui::Ui, _frame_state: &FrameState, job_mode: bool) {
+    /// 振动设置整页 (job_mode=false: 通用型震动设定 / true: 全职业预设)。
+    pub(in crate::gui) fn render_vibration_full_page(
+        &mut self,
+        ui: &mut egui::Ui,
+        _frame_state: &FrameState,
+        job_mode: bool,
+    ) {
         let th = self.theme();
-        let title_color = th.heading;
 
         /* ★R2.14 帧首 gather: config 子结构 clone + 运行态快照各取一次,
-         * 之后整帧渲染只读局部、随时发 backend 命令 (引擎读数不再逐原子读)。 */
+         * 之后整帧渲染只读局部、随时发 backend 命令。 */
         let vib = self.backend.with_config(|c| c.vibration.clone());
         let legacy = self.backend.with_config(|c| c.vib_legacy_client);
-        let snap = self.backend.snapshot();
+        let snap = self.backend.snapshot().vibration;
 
-        /* 放大字号与控件: 震动页全局风格; 滑块宽度随窗口自适应, 宽屏不再挤在左侧 */
+        /* 字号与控件密度 (整页统一, 行样式由 widgets::Row 负责) */
         ui.style_mut().text_styles.insert(
             egui::TextStyle::Body,
-            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
         );
         ui.style_mut().text_styles.insert(
             egui::TextStyle::Button,
-            egui::FontId::new(14.0, egui::FontFamily::Proportional),
+            egui::FontId::new(13.0, egui::FontFamily::Proportional),
         );
-        ui.style_mut().spacing.slider_width = ((ui.available_width() - 240.0) * 0.5).clamp(200.0, 340.0);
-        ui.style_mut().spacing.interact_size.y = 26.0;
+        ui.style_mut().spacing.interact_size.y = 24.0;
+        ui.style_mut().spacing.slider_rail_height = 5.0;
+        /* 滑轨已由 widgets::rail 自绘 (轨道/已选段/手柄三层色), 不再需要改全局
+         * visuals —— 旧做法把 inactive.bg_fill 提亮会把检查框/下拉一起染灰,
+         * 而且滑块手柄与轨道同色 = 看不出能拖。 */
+        widgets::set_form_hints(ui, self.vib_show_hints);
 
-        /* 初始化参数(仅一次): 仅"全新安装"(master/attack 全 0 = 从未应用过
-         * 任何预设)才应用内置"默认"预设。已有用户配置时 params 已由
-         * AppState::new 从 config.vibration 恢复 —— 旧实现无条件覆盖, 会把
-         * 用户"保存当前"落盘的参数在首渲染时替换回内置默认, 与持久化语义矛盾。 */
         self.vib_first_render_init();
-        egui::Frame::NONE
-            .inner_margin(egui::Margin::same(6))
-            .show(ui, |ui| {
-                /* ★v24.46 排版: 宽屏居中 + 内容限宽 1180px。
-                 * 旧行为 `set_min_width(available_width())` 在大屏/最大化时把滑块
-                 * 与卡片拉满整屏, 右侧大片空白且两列间距过大。窄窗口 (<1180) 保持
-                 * 原样铺满, 不引入横向滚动。 */
-                let avail_w = ui.available_width();
-                let content_w = 1180.0_f32.min(avail_w);
-                let side = ((avail_w - content_w) * 0.5).max(0.0);
-                ui.horizontal_top(|ui| {
-                    if side > 0.0 {
-                        ui.add_space(side);
-                    }
-                    ui.vertical(|ui| {
-                        ui.set_min_width(content_w);
-                        ui.set_max_width(content_w);
 
-                /* 标题行 */
-                Self::vib_section(ui, self.dark_mode, "震动控制中心", |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("通用型震动设定 (DFO 战斗事件 → 手柄马达)")
-                            .size(17.0)
-                            .strong()
-                            .color(title_color),
-                    );
-                    ui.add_space(20.0);
-                    let vib_on = snap.vibration.enabled;
-                    let (vtext, vcolor) = if vib_on {
-                        ("震动: 开", th.good)
-                    } else {
-                        ("震动: 关", th.bad)
-                    };
-                    if ui
-                        .button(egui::RichText::new(vtext).size(14.0).color(vcolor))
-                        .clicked()
-                    {
-                        /* ★R2.14: 总开关走 UiCommand (config → 镜像 → 立即落盘);
-                         * 旧实现只写原子不持久化, 这里统一到单一写路径 */
-                        self.backend
-                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(!vib_on));
-                    }
-                    ui.add_space(12.0);
-                    if ui
-                        .button(egui::RichText::new("测试震动 1 秒").size(13.0))
-                        .clicked()
-                    {
-                        self.backend
-                            .dispatch(crate::ui_api::UiCommand::TestVibration);
-                    }
-                });
-                ui.add_space(6.0);
+        /* 宽屏居中 + 内容限宽 (窄窗口铺满, 不引入横向滚动) */
+        let avail_w = ui.available_width();
+        let content_w = 1240.0_f32.min(avail_w);
+        let side = ((avail_w - content_w) * 0.5).max(0.0);
 
-                /* 独立测试开关 (v24.2): 控制中心主开关 */
-                self.render_independent_test_toggle(ui, vib.independent_test);
-                ui.add_space(6.0);
+        ui.horizontal_top(|ui| {
+            if side > 0.0 {
+                ui.add_space(side);
+            }
+            ui.vertical(|ui| {
+                ui.set_max_width(content_w);
 
-                self.vib_hero_or_presets(ui, job_mode, legacy, &vib, &snap.vibration);
+                self.vib_status_card(ui, job_mode, &vib, &snap);
+                if job_mode {
+                    self.vib_job_card(ui, legacy, &vib, &snap);
+                } else {
+                    self.vib_preset_card(ui, legacy, &vib, &snap);
+                }
+                self.vib_params_section(ui, job_mode, legacy, &vib, &snap);
+                self.vib_advanced_section(ui, job_mode, legacy, &vib, &snap);
 
-                self.vib_status_section(ui, &snap.vibration);
-                /* 标题卡「震动控制中心」在此收口 (原 778): 卡内含标题行/独立测试开关/预设行/状态 */
-                });
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                self.vib_summon_abs_freq_section(ui, job_mode, &vib);
-
-                self.vib_motor_section(ui, &snap.vibration);
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                self.vib_global_gain_section(ui, job_mode, &vib, &snap.vibration);
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                self.vib_damage_font_section(ui, job_mode, legacy, &vib, &snap.vibration);
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                self.vib_score_effect_section(ui, job_mode, &vib, &snap.vibration);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                self.vib_score_decay_section(ui, job_mode, &vib);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-                self.vib_advanced_section(ui, job_mode, legacy, &vib, &snap.vibration);
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(8.0);
-
-                
+                ui.add_space(theme::SP_S);
                 ui.label(
                     egui::RichText::new(if job_mode {
-                        "提示: 所有滑块实时生效; 全职业预设页修改会自动保存到 JobVibration.toml"
+                        "所有滑块实时生效；修改自动保存到 JobVibration.toml"
                     } else {
-                        "提示: 所有滑块拖动即生效, 松手约 1 秒后自动保存 (重启不丢)。连发功能在\"连发映射\"页。"
+                        "所有滑块拖动即生效，松手约 1 秒后自动保存（重启不丢）。连发功能在「连发映射」页。"
                     })
-                        .size(11.0)
-                        .weak(),
+                    .size(11.0)
+                    .color(th.hint),
                 );
-                    }); /* End of centered content vertical */
-                }); /* End of centering horizontal */
             });
-            /* 全职业预设页: 滑块修改后自动落盘 (快照检测) */
-            if job_mode {
-                if let Some((b, c)) = self.vib_job_active.clone() {
-                    /* 本帧渲染期间的滑杆写入也要兜住: 渲染完取一次新鲜快照 */
-                    let snap_end = self.backend.snapshot();
-                    let changed = self.vib_job_snapshot.len() != 60
-                        || (0..60).any(|i| snap_end.vibration.params[i] != self.vib_job_snapshot[i]);
-                    if changed {
-                        self.vib_job_snapshot = snap_end.vibration.params.clone();
-                        self.save_job_vibration_state(&b, &c);
-                    }
+        });
+
+        /* 全职业预设页: 滑块修改后自动落盘 (快照检测) */
+        if job_mode {
+            if let Some((b, c)) = self.vib_job_active.clone() {
+                let snap_end = self.backend.snapshot().vibration;
+                let changed = self.vib_job_snapshot.len() != 60
+                    || (0..60).any(|i| snap_end.params[i] != self.vib_job_snapshot[i]);
+                if changed {
+                    self.vib_job_snapshot = snap_end.params.clone();
+                    self.save_job_vibration_state(&b, &c);
                 }
             }
+        }
     }
 
-
-    /// vib_first_render_init — 首帧一次性初始化 (原 36-130): 全新装默认预设 + 职业预设恢复(路线判定 v24.15)
-    /// ★R2.14: 预设套用/职业恢复的 config 与原子部分走 backend
-    /// (apply_vibration_preset_by_name / restore_job_vibration_session)。
+    /// 首帧一次性初始化 (原 36-130): 全新装默认预设 + 职业预设恢复 (路线判定 v24.15)。
     fn vib_first_render_init(&mut self) {
         {
             use std::sync::atomic::{AtomicBool, Ordering};
@@ -178,15 +274,13 @@ impl SorahkGui {
                     .with_config(|c| c.vibration.master_gain == 0 && c.vibration.attack_gain == 0);
                 if pristine {
                     if let Some(pr) = crate::config::default_vibration_presets().first() {
-                        /* 套内置默认预设 (config → 镜像 → 落盘; pristine 态节流/算法本就是默认值) */
                         let _ = self.backend.apply_vibration_preset_by_name(&pr.name);
                     }
                 }
                 /* 全职业预设恢复 (v21): applied=true 时覆盖默认预设; 否则绝对频率强制关闭 */
                 if let Some(jcfg) = crate::job_presets::load_job_vibration() {
                     /* ★v24.15: 职业预设按**当前路线**判定 —— ACT 名册的职业在 S4 路线不存在,
-                     * 不能因为 JobVibration.toml 记着 applied=true 就继续生效 (否则 ACT 特调
-                     * 会盖在 S4 参数上, 并随保存写进 S4 的震动文件)。
+                     * 不能因为 JobVibration.toml 记着 applied=true 就继续生效。
                      * 只重算内存态, **不改写** JobVibration.toml: 切回原路线仍会恢复。 */
                     let legacy = self.backend.with_config(|c| c.vib_legacy_client);
                     let route_job = crate::job_presets::find_class_for_route(
@@ -202,13 +296,11 @@ impl SorahkGui {
                     if let Some((bi, ci, cls)) = route_job {
                         self.vib_job_base = bi;
                         self.vib_job_class = ci;
-                        /* 会话快照 = JobVibration 快照 (len==60) 或内置职业参数 (旧语义) */
                         self.vib_job_snapshot = if jcfg.params.len() == 60 {
                             jcfg.params.clone()
                         } else {
                             cls.params.to_vec()
                         };
-                        /* 参数/权重/评分/节流/绝对频率/职业算法 → 原子 + config 内存同步 */
                         self.backend.restore_job_vibration_session(&jcfg, &cls);
                         self.vib_job_active = Some((jcfg.base_job.clone(), jcfg.class_name.clone()));
                         self.vib_job_loaded = Some((bi, ci));
@@ -216,197 +308,141 @@ impl SorahkGui {
                 }
             }
         }
-
     }
 
-    /// vib_hero_or_presets — job_mode 分叉: 职业选择 hero / 预设行+导入导出 (原 185-756)
-    fn vib_hero_or_presets(
+    /// ① 状态头 (概览条): 连接 / 累计事件 / **当前预设或职业** / 最近评分 / 总开关。
+    /// 目的: 进页面先回答"我现在在用什么、生没生效", 而不是让玩家自己去下拉框里找。
+    fn vib_status_card(
         &mut self,
         ui: &mut egui::Ui,
         job_mode: bool,
-        legacy: bool,
-        vib: &crate::config::VibrationConfig,
-        snap: &crate::ui_api::VibSnap,
+        _vib: &VibrationConfig,
+        snap: &VibSnap,
     ) {
         let th = self.theme();
-        /* 全职业预设页: 应用开关 + 职业选择 (替换震动设置预设行) */
-        if job_mode {
-            let jobs = crate::job_presets::available_jobs(legacy);
-            let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
-            let classes = &jobs[base_sel].classes;
-            let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
-            let cur_cls = &classes[class_sel];
-            /* 应用开关 */
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("全职业预设:").size(13.0).strong());
-                let mut en = self.vib_job_enabled;
-                if ui
-                    .checkbox(
-                        &mut en,
-                        "应用全职业预设 (开: 职业参数覆盖震动设置; 关: 不应用, 恢复震动设置默认)",
-                    )
-                    .changed()
-                {
-                    self.vib_job_enabled = en;
-                    if en {
-                        self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
-                        self.vib_job_loaded = Some((base_sel, class_sel));
-                    } else {
-                        self.disable_job_vibration_preset();
-                    }
-                }
-            });
-            ui.add_space(4.0);
-            /* 职业选择行 */
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("基础职业:").size(13.0).strong());
-                let base_names: Vec<String> = jobs.iter().map(|j| j.base_job.to_string()).collect();
-                egui::ComboBox::from_id_salt("vib_job_base")
-                    .selected_text(base_names[base_sel].clone())
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        for (i, n) in base_names.iter().enumerate() {
-                            if ui.selectable_label(i == base_sel, n).clicked() {
-                                self.vib_job_base = i;
-                                self.vib_job_class = 0;
-                            }
-                        }
-                    });
-                ui.add_space(8.0);
-                ui.label(egui::RichText::new("转职:").size(13.0).strong());
-                let class_names: Vec<String> = classes.iter().map(|c| c.name.to_string()).collect();
-                egui::ComboBox::from_id_salt("vib_job_class")
-                    .selected_text(class_names[class_sel].clone())
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        for (i, n) in class_names.iter().enumerate() {
-                            if ui.selectable_label(i == class_sel, n).clicked() {
-                                self.vib_job_class = i;
-                            }
-                        }
-                    });
-                ui.add_space(8.0);
-                if ui
-                    .button(egui::RichText::new("应用该职业").size(13.0))
-                    .clicked()
-                {
-                    self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
-                    self.vib_job_loaded = Some((base_sel, class_sel));
-                }
-                ui.add_space(8.0);
-                if ui
-                    .button(egui::RichText::new("导出当前职业").size(13.0))
-                    .on_hover_text("导出当前选择职业的完整设置 (仅当前职业; ACT 路线职业名自带 -ACT)")
-                    .clicked()
-                {
-                    let content = Self::export_job_settings(jobs[base_sel].base_job, cur_cls);
-                    /* ★v24.14: 职业名自带 -ACT (ACT 名册), 导出名随之带标记 ——
-                     * 不用 job_presets::export_prefix, 否则会拼成 -ACT-ACT */
-                    let fname = Self::save_export_file(&content, &format!("job_export_{}", cur_cls.name));
-                    self.vib_export_msg = Some(fname);
-                }
-                ui.add_space(8.0);
-                /* 导入职业设置 (v33.1: 按规范 base_job/class_name 匹配内置职业;
-                 * v24.14: 只列当前路线的导出文件) */
-                if ui
-                    .button(egui::RichText::new("导入职业设置").size(13.0))
-                    .on_hover_text("从当前路线的 job_export_*.toml 导入 (按 base_job/class_name 匹配内置职业后应用)")
-                    .clicked()
-                {
-                    let files = crate::job_presets::list_export_files_for_route(
-                        "job_export",
-                        legacy,
-                    );
-                    let sel = self.job_import_sel.min(files.len().saturating_sub(1));
-                    if let Some(f) = files.get(sel) {
-                        match crate::job_presets::parse_job_export(f) {
-                            Some(ij) => {
-                                /* 规范: 按 base_job/class_name 匹配**当前路线**内置职业
-                                 * (v24.15: 跨路线匹配会让 S1 的 ACT 职业档导进 S4) */
-                                if let Some((bi, ci, _cls)) = crate::job_presets::find_class_for_route(
-                                    &ij.base_job,
-                                    &ij.class_name,
-                                    legacy,
-                                ) {
-                                    self.vib_job_base = bi;
-                                    self.vib_job_class = ci;
-                                    /* 导入参数覆盖 (★R2.14: 只写引擎叠加层原子, 不进 config;
-                                     * 快照检测自动落盘 JobVibration.toml —— 旧语义) */
-                                    self.backend.import_job_vibration(&ij);
-                                    self.vib_job_active = Some((ij.base_job.clone(), ij.class_name.clone()));
-                                    self.vib_job_loaded = Some((bi, ci));
-                                    self.vib_job_enabled = true;
-                                    self.vib_import_msg = Some(format!("已导入并应用: {} - {}", ij.base_job, ij.class_name));
-                                } else {
-                                    self.vib_import_msg = Some(format!("规范不符: 当前路线没有这个职业 {} - {}", ij.base_job, ij.class_name));
-                                }
-                            }
-                            None => {
-                                self.vib_import_msg = Some(format!("{} 解析失败 (规范不符)", f));
-                            }
-                        }
-                    }
-                }
-            });
-            /* 开关打开时, 切换职业自动应用 */
-            if self.vib_job_enabled && self.vib_job_loaded != Some((base_sel, class_sel)) {
-                self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
-                self.vib_job_loaded = Some((base_sel, class_sel));
+        /* 当前预设 / 职业 (标题栏一眼可见的状态, 不用滚回工具条确认) */
+        let (cur_name, cur_color) = if job_mode {
+            match &self.vib_job_active {
+                Some((b, c)) => (format!("{b} · {c}"), th.good),
+                None => ("未应用职业预设".to_string(), th.hint),
             }
-            if let Some(m) = &self.vib_import_msg {
-            ui.label(
-                egui::RichText::new(format!("{}", m))
-                    .size(11.0)
-                    .color(th.info),
-            );
-            ui.add_space(2.0);
-        }
-        if let Some(m) = &self.vib_export_msg {
-                ui.label(
-                    egui::RichText::new(format!("已导出: {} (程序目录)", m))
-                        .size(11.0)
-                        .color(th.good),
-                );
-                ui.add_space(2.0);
-            }
-            ui.add_space(4.0);
-            if let Some((b, c)) = &self.vib_job_active {
-                ui.label(
-                    egui::RichText::new(format!("当前职业: {} - {} (已应用职业预设, 通用型震动设定被覆盖)", b, c))
-                        .size(12.0)
-                        .color(th.good)
-                        .strong(),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new("开关已关闭: 全职业预设不应用, 使用通用型震动设定参数")
-                        .size(11.0)
-                        .weak(),
-                );
-            }
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new(format!("{} (攻速→力度设计: 极快轻盈防叠加震手, 慢速沉稳给强度)", cur_cls.desc))
-                    .size(11.0)
-                    .weak(),
-            );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("下方参数与高级震动调校与【通用型震动设定】一致, 修改实时生效并自动保存到 JobVibration.toml")
-                    .size(11.0)
-                    .weak(),
-            );
         } else {
-        /* 预设行 */
-        ui.horizontal(|ui| {
-            ui.label(
-                egui::RichText::new("预设:").size(13.0).strong(),
-            );
-            let entries = self.backend.with_config(|c| {
-                crate::config::visible_preset_entries(&c.vibration_presets, legacy)
+            let name = self.backend.with_config(|cfg| {
+                cfg.vibration_presets
+                    .get(self.vib_preset_idx)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| "默认".to_string())
             });
+            (name, th.accent_text)
+        };
+        th.card(ui, None, |ui| {
+            ui.horizontal(|ui| {
+                /* 连接状态 */
+                let (color, text) = if snap.connected {
+                    (th.good, "已连接游戏")
+                } else {
+                    (th.info, "等待游戏")
+                };
+                widgets::status_dot(ui, color, snap.connected, 4.5);
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(text)
+                        .size(14.0)
+                        .strong()
+                        .family(Theme::font_bold())
+                        .color(th.heading),
+                );
+                ui.add_space(theme::SP_M);
+                head_stat(
+                    ui,
+                    &th,
+                    "累计事件",
+                    &snap.events_received.to_string(),
+                    th.text,
+                );
+
+                ui.add_space(theme::SP_L);
+                vsep(ui, &th);
+                ui.add_space(theme::SP_L);
+                head_stat(
+                    ui,
+                    &th,
+                    if job_mode { "当前职业" } else { "当前预设" },
+                    &cur_name,
+                    cur_color,
+                );
+
+                ui.add_space(theme::SP_L);
+                vsep(ui, &th);
+                ui.add_space(theme::SP_L);
+
+                /* 评分 */
+                let rl = snap.rank_last;
+                let (rtext, rcolor) = if rl >= 8 {
+                    (format!("等级 {rl} · 特殊动作"), th.warn)
+                } else if rl >= 2 {
+                    (format!("等级 {rl}"), th.info)
+                } else {
+                    ("暂无".to_string(), th.hint)
+                };
+                head_stat(ui, &th, "最近评分", &rtext, rcolor);
+                ui.add_space(theme::SP_M);
+                head_stat(
+                    ui,
+                    &th,
+                    "评分累计",
+                    &snap.rank_events.to_string(),
+                    th.text,
+                );
+
+                /* 右侧: 总开关 (测试按钮归位到预设/职业工具条 —— 应用完顺手试听) */
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut on = snap.enabled;
+                    if widgets::switch(ui, &th, &mut on).changed() {
+                        /* ★R2.14: 总开关走 UiCommand (config → 镜像 → 立即落盘) */
+                        self.backend
+                            .dispatch(crate::ui_api::UiCommand::SetVibrationEnabled(on));
+                    }
+                    ui.add_space(2.0);
+                    ui.label(
+                        egui::RichText::new(if on { "震动已开" } else { "震动已关" })
+                            .size(12.0)
+                            .strong()
+                            .color(if on { th.good } else { th.bad }),
+                    );
+                });
+            });
+
+            ui.add_space(theme::SP_M);
+            widgets::hairline(ui, &th);
+            ui.add_space(theme::SP_M);
+            /* 实时遥测: 与状态同处一行区, 不再单独占一张卡 */
+            ui.horizontal(|ui| {
+                /* 预留宽度 = 两条标签(≈42) + 百分比(≈26) + 原始读数(≈30) + 3 段间距(24) ×2 + 中缝 24
+                 * ★v24.63: 旧值 230 算小了 —— 1080 窗口下这一行超出 40px, 把整页最小宽度顶大,
+                 * 右侧数值全被 ScrollArea 裁掉 (用户实测截图)。宁可留白, 也不许溢出。 */
+                let bar_w = ((ui.available_width() - 310.0) / 2.0).clamp(80.0, 420.0);
+                level_bar(ui, &th, "左马达", snap.out_l, th.motor_l, bar_w, true);
+                ui.add_space(theme::SP_2XL);
+                level_bar(ui, &th, "右马达", snap.out_r, th.motor_r, bar_w, true);
+            });
+        });
+    }
+
+    /// ② 通用页工具条: 预设选择/应用/保存/另存/删除 + 导出/导入/还原 + 调试模式。
+    fn vib_preset_card(
+        &mut self,
+        ui: &mut egui::Ui,
+        legacy: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        th.card(ui, Some("震动预设"), |ui| {
+            /* 预设选择行 */
+            let entries = self
+                .backend
+                .with_config(|c| crate::config::visible_preset_entries(&c.vibration_presets, legacy));
             let sel_pos = entries
                 .iter()
                 .position(|(real, _)| *real == self.vib_preset_idx)
@@ -415,131 +451,122 @@ impl SorahkGui {
             if let Some((real, _)) = entries.get(sel_pos) {
                 self.vib_preset_idx = *real;
             }
-            if !entries.is_empty() {
-                egui::ComboBox::from_id_salt("vib_preset_sel")
-                    .selected_text(entries[sel_pos].1.clone())
-                    .width(140.0)
-                    .show_ui(ui, |ui| {
-                        for (pos, (real, n)) in entries.iter().enumerate() {
-                            if ui.selectable_label(pos == sel_pos, n).clicked() {
-                                self.vib_preset_idx = *real;
-                            }
-                        }
-                    });
-            }
-            if ui
-                .button(egui::RichText::new("应用").size(13.0))
-                .clicked()
-            {
-                /* ★R2.14: 预设应用 = backend.apply_vibration_preset_by_name
-                 * (★v18 用户覆盖优先的 pick_preset_for_apply 语义在 backend 内;
-                 * ★保险B 自动停用全职业预设收敛到 apply_general_vibration_preset) */
-                if let Some((_, name)) = entries.get(sel_pos) {
-                    self.apply_general_vibration_preset(name);
-                }
-            }
-            ui.add_space(8.0);
-            if ui
-                .button(egui::RichText::new("保存当前").size(13.0))
-                .on_hover_text("把当前滑块参数写入 [vibration] 并保存 Config.toml")
-                .clicked()
-            {
-                /* ★R2.14: 引擎镜像 → config → 落盘, 单次 backend 调用 */
-                let _ = self.backend.save_vib_runtime_to_config();
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new("保存为:").size(13.0).weak());
-            ui.add(
-                egui::TextEdit::singleline(&mut self.vib_preset_name)
-                    .desired_width(90.0)
-                    .hint_text("名称"),
-            );
-            if ui
-                .button(egui::RichText::new("保存").size(13.0))
-                .clicked()
-            {
-                let name = self.vib_preset_name.trim().to_string();
-                if !name.is_empty() {
-                    /* ★R2.14: 参数取帧首快照, out_smooth 取 config (与引擎镜像同源) */
-                    let mut params = [0u32; 60];
-                    params.copy_from_slice(&snap.params);
-                    let mut item_lr = [0u32; 26];
-                    item_lr.copy_from_slice(&snap.item_lr);
-                    let mut rank_lr = [0u32; 30];
-                    rank_lr.copy_from_slice(&snap.rank_lr);
-                    let mut rank_type_gain = [0u32; 15];
-                    rank_type_gain.copy_from_slice(&snap.rank_type_gain);
-                    let preset = crate::config::VibrationPreset {
-                        name: name.clone(),
-                        params,
-                        item_lr,
-                        rank_lr,
-                        rank_type_gain,
-                        rank_level_gain: snap.rank_level_gain,
-                        rank_duration: snap.rank_duration,
-                        out_smooth: vib.out_smooth,
-                        user_modified: true,
-                    };
-                    // 同名替换而非追加: 追加重名预设后, 应用按名匹配会
-                    // 顶替用户自存版本, 且重名项永远删不掉
-                    let protected = name == "默认" || name == "测试版(全0)";
-                    let mut new_idx: Option<usize> = None;
-                    let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
-                        match c.vibration_presets.iter().position(|x| x.name == name) {
-                            Some(pos) => {
-                                if !protected {
-                                    c.vibration_presets[pos] = preset;
-                                    new_idx = Some(pos);
+
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("预设").size(12.0).color(th.text_weak));
+                if !entries.is_empty() {
+                    egui::ComboBox::from_id_salt("vib_preset_sel")
+                        .selected_text(entries[sel_pos].1.clone())
+                        .width(170.0)
+                        .show_ui(ui, |ui| {
+                            for (pos, (real, n)) in entries.iter().enumerate() {
+                                if ui.selectable_label(pos == sel_pos, n).clicked() {
+                                    self.vib_preset_idx = *real;
                                 }
                             }
-                            None => {
-                                c.vibration_presets.push(preset);
-                                new_idx = Some(c.vibration_presets.len() - 1);
-                            }
-                        }
-                    });
-                    if let Some(i) = new_idx {
-                        self.vib_preset_name.clear();
-                        self.vib_preset_idx = i;
-                    }
-                }
-            }
-            if ui
-                .button(egui::RichText::new("删除").size(13.0))
-                .on_hover_text("仅\"默认\"与\"测试版(全0)\"受保护, 其余可删除")
-                .clicked()
-            {
-                if let Some((_, name)) = entries.get(sel_pos) {
-                    let protected = name == "默认" || name == "测试版(全0)";
-                    if !protected {
-                        let del = name.clone();
-                        let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
-                            c.vibration_presets.retain(|x| x.name != del);
                         });
-                        self.vib_preset_idx = 0;
+                }
+                if ui.add(th.primary_button("应用")).clicked() {
+                    /* ★R2.14: 预设应用 = backend.apply_vibration_preset_by_name
+                     * (★v18 用户覆盖优先 / ★保险B 自动停用全职业预设 都在 backend 内) */
+                    if let Some((_, name)) = entries.get(sel_pos) {
+                        self.apply_general_vibration_preset(name);
                     }
                 }
-            }
-            ui.add_space(8.0);
-            if ui
-                .button(egui::RichText::new("导出当前设置").size(13.0))
-                .on_hover_text("导出当前页面生效的通用震动设定 (params/评分/高级算法) 为 TOML; ACT 路线导出文件名带 -ACT")
-                .clicked()
-            {
-                let content = Self::export_vibration_settings(&self.backend);
-                /* ★v24.14: ACT 路线导出带 -ACT (文件名 + 导入列表按路线过滤, 两路线不串档) */
-                let prefix = crate::job_presets::export_prefix("vibration_export", legacy);
-                let fname = Self::save_export_file(&content, &prefix);
-                self.vib_export_msg = Some(fname);
-            }
-            ui.add_space(8.0);
-            /* 导入设置 (v33.1: 扫描 vibration_export_*.toml; v24.14: 只列当前路线的) */
-            {
-                let files = crate::job_presets::list_export_files_for_route(
-                    "vibration_export",
-                    legacy,
+                /* 应用完立刻试听: 玩家的真实路径是"选 → 用 → 听", 三个动作放一条线上 */
+                if ui
+                    .add(th.secondary_button("试听 1 秒"))
+                    .on_hover_text("按当前参数震一下, 不用进游戏就能判断手感")
+                    .clicked()
+                {
+                    self.backend.dispatch(crate::ui_api::UiCommand::TestVibration);
+                }
+                ui.add_space(theme::SP_L);
+                if ui
+                    .add(th.secondary_button("保存当前"))
+                    .on_hover_text("把当前滑块参数写入 [vibration] 并保存 Config.toml")
+                    .clicked()
+                {
+                    let _ = self.backend.save_vib_runtime_to_config();
+                }
+                ui.add_space(theme::SP_M);
+                ui.label(egui::RichText::new("另存为").size(12.0).color(th.text_weak));
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.vib_preset_name)
+                        .desired_width(96.0)
+                        .hint_text("名称"),
                 );
-                let sel = self.vib_import_sel.min(files.len().saturating_sub(1));
+                if ui.add(th.secondary_button("保存")).clicked() {
+                    let name = self.vib_preset_name.trim().to_string();
+                    if !name.is_empty() {
+                        let mut params = [0u32; 60];
+                        params.copy_from_slice(&snap.params);
+                        let mut item_lr = [0u32; 26];
+                        item_lr.copy_from_slice(&snap.item_lr);
+                        let mut rank_lr = [0u32; 30];
+                        rank_lr.copy_from_slice(&snap.rank_lr);
+                        let mut rank_type_gain = [0u32; 15];
+                        rank_type_gain.copy_from_slice(&snap.rank_type_gain);
+                        let preset = crate::config::VibrationPreset {
+                            name: name.clone(),
+                            params,
+                            item_lr,
+                            rank_lr,
+                            rank_type_gain,
+                            rank_level_gain: snap.rank_level_gain,
+                            rank_duration: snap.rank_duration,
+                            out_smooth: vib.out_smooth,
+                            user_modified: true,
+                        };
+                        // 同名替换而非追加: 追加重名预设后, 应用按名匹配会
+                        // 顶替用户自存版本, 且重名项永远删不掉
+                        let protected = name == "默认" || name == "测试版(全0)";
+                        let mut new_idx: Option<usize> = None;
+                        let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
+                            match c.vibration_presets.iter().position(|x| x.name == name) {
+                                Some(pos) => {
+                                    if !protected {
+                                        c.vibration_presets[pos] = preset;
+                                        new_idx = Some(pos);
+                                    }
+                                }
+                                None => {
+                                    c.vibration_presets.push(preset);
+                                    new_idx = Some(c.vibration_presets.len() - 1);
+                                }
+                            }
+                        });
+                        if let Some(i) = new_idx {
+                            self.vib_preset_name.clear();
+                            self.vib_preset_idx = i;
+                        }
+                    }
+                }
+            });
+
+            ui.add_space(theme::SP_S);
+            widgets::hairline(ui, &th);
+            ui.add_space(theme::SP_S);
+
+            /* 导入 / 导出 / 还原 */
+            let files = crate::job_presets::list_export_files_for_route("vibration_export", legacy);
+            let sel = self.vib_import_sel.min(files.len().saturating_sub(1));
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .add(th.secondary_button("导出当前设置"))
+                    .on_hover_text(
+                        "导出当前页面生效的通用震动设定 (params/评分/高级算法) 为 TOML; ACT 路线导出文件名带 -ACT",
+                    )
+                    .clicked()
+                {
+                    let content = Self::export_vibration_settings(&self.backend);
+                    /* ★v24.14: ACT 路线导出带 -ACT (文件名 + 导入列表按路线过滤) */
+                    let prefix = crate::job_presets::export_prefix("vibration_export", legacy);
+                    let fname = Self::save_export_file(&content, &prefix);
+                    self.vib_export_msg = Some(fname);
+                }
+                ui.add_space(theme::SP_M);
+                ui.label(egui::RichText::new("导入文件").size(12.0).color(th.text_weak));
                 if !files.is_empty() {
                     egui::ComboBox::from_id_salt("vib_import_sel")
                         .selected_text(files[sel].clone())
@@ -551,1791 +578,2009 @@ impl SorahkGui {
                                 }
                             }
                         });
+                } else {
+                    ui.label(egui::RichText::new("当前路线暂无导出文件").size(11.0).color(th.hint));
                 }
                 if ui
-                    .button(egui::RichText::new("导入设置").size(13.0))
-                    .on_hover_text("从当前路线的 vibration_export*.toml 导入通用震动设定 (往返一致规范)")
+                    .add(th.secondary_button("导入设置"))
+                    .on_hover_text(
+                        "从当前路线的 vibration_export*.toml 导入通用震动设定 (往返一致规范)",
+                    )
                     .clicked()
                 {
-                    let route_files = crate::job_presets::list_export_files_for_route(
-                        "vibration_export",
-                        legacy,
-                    );
+                    let route_files =
+                        crate::job_presets::list_export_files_for_route("vibration_export", legacy);
                     if let Some(f) = route_files.get(self.vib_import_sel) {
                         if let Some(iv) = crate::job_presets::parse_vibration_export(f) {
-                            /* ★R2.14: 参数+权重+标量写进 config 并全量镜像 + 落盘
-                             * (旧实现 60 槽只写原子不进 config, 重启即丢; 新世界
-                             * config 为唯一权威, 与导出"往返一致规范"对齐) */
+                            /* ★R2.14: 参数+权重+标量写进 config 并全量镜像 + 落盘 */
                             self.backend.import_vib_export(&iv);
                             self.vib_import_msg = Some(f.clone());
                         } else {
-                            self.vib_import_msg = Some(format!("{} 解析失败 (规范不符)", f));
+                            self.vib_import_msg =
+                                Some(format!("{} 解析失败 (规范不符)", f));
                         }
                     }
                 }
-            }
-            ui.add_space(8.0);
-            if ui
-                .button(egui::RichText::new("还原默认").size(13.0))
-                .on_hover_text("把预设恢复为出厂内置 (误删后一键还原)")
-                .clicked()
-            {
-                let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
-                    c.vibration_presets = crate::config::default_vibration_presets();
-                });
-                self.vib_preset_idx = 0;
-                /* 若当前为空或损坏 (60 槽第一格为 0), 同时把参数复位为默认预设 */
-                if snap.params[0] == 0 {
-                    if let Some(pr) = crate::config::default_vibration_presets().first() {
-                        let _ = self.backend.apply_vibration_preset_by_name(&pr.name);
+                if ui
+                    .add(th.secondary_button("还原默认"))
+                    .on_hover_text("把预设恢复为出厂内置 (误删后一键还原)")
+                    .clicked()
+                {
+                    let _ = self.backend.update_config(crate::ui_api::Commit::SaveVib, |c| {
+                        c.vibration_presets = crate::config::default_vibration_presets();
+                    });
+                    self.vib_preset_idx = 0;
+                    /* 若当前为空或损坏 (60 槽第一格为 0), 同时把参数复位为默认预设 */
+                    if snap.params[0] == 0 {
+                        if let Some(pr) = crate::config::default_vibration_presets().first() {
+                            let _ = self.backend.apply_vibration_preset_by_name(&pr.name);
+                        }
                     }
                 }
+                /* 删除放在管理行最末: 与保存/导出拉开, 且最不容易误触 */
+                if ui
+                    .add(th.danger_ghost_button("删除"))
+                    .on_hover_text("仅\"默认\"与\"测试版(全0)\"受保护, 其余可删除")
+                    .clicked()
+                {
+                    if let Some((_, name)) = entries.get(sel_pos) {
+                        let protected = name == "默认" || name == "测试版(全0)";
+                        if !protected {
+                            let del = name.clone();
+                            let _ = self
+                                .backend
+                                .update_config(crate::ui_api::Commit::SaveVib, |c| {
+                                    c.vibration_presets.retain(|x| x.name != del);
+                                });
+                            self.vib_preset_idx = 0;
+                        }
+                    }
+                }
+            });
+
+            /* 提示消息 */
+            if let Some(m) = &self.vib_export_msg {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(format!("已导出: {} (程序目录)", m))
+                        .size(11.0)
+                        .color(th.good),
+                );
             }
-        });
-        ui.add_space(6.0);
-        if let Some(m) = &self.vib_export_msg {
+            if let Some(m) = &self.vib_import_msg {
+                ui.add_space(2.0);
+                ui.label(
+                    egui::RichText::new(m.clone())
+                        .size(11.0)
+                        .color(th.info),
+                );
+            }
+
+            ui.add_space(theme::SP_M);
+            widgets::hairline(ui, &th);
+            ui.add_space(theme::SP_M);
+
+            /* 观测开关: 调试模式 + 参数说明 */
+            self.vib_view_toggles(ui, vib);
+
+            ui.add_space(theme::SP_XS);
             ui.label(
-                egui::RichText::new(format!("已导出: {} (程序目录)", m))
-                    .size(11.0)
-                    .color(th.good),
-            );
-            ui.add_space(2.0);
-        }
-        ui.add(
-            egui::Label::new(
                 egui::RichText::new(if legacy {
-                    "内置: 默认/ACT1 特供/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)\nACT 专属: 各预设的「-ACT」变体 (事件强度/衰减按 ACT 档位特调) 紧随其后"
+                    "内置: 默认/ACT1 特供/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)；ACT 专属「-ACT」变体紧随其后"
                 } else {
-                    "内置: 默认/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)"
+                    "内置: 默认/低频攻击职业/高频攻击职业/高振幅/节奏律动/极简轻巧/实战竞技/测试版(全0)；仅「默认」与「测试版(全0)」不可删除"
                 })
                 .size(11.0)
-                .weak(),
-            )
-            .wrap(),
-        );
-        ui.add_space(4.0);
-        ui.add(
-            egui::Label::new(
-                egui::RichText::new(
-                    "提示: 仅\"默认\"与\"测试版(全0)\"不可删除; 误删可用\"还原默认\"恢复。",
-                )
-                .size(11.0)
-                .weak(),
-            )
-            .wrap(),
-        );
-        ui.add_space(8.0);
-        ui.separator();
-        ui.add_space(8.0);
-
-        } /* job_mode else 结束 */
-    }
-
-    /// vib_status_section — 状态卡 (原 757-777)
-    fn vib_status_section(&mut self, ui: &mut egui::Ui, snap: &crate::ui_api::VibSnap) {
-        let th = self.theme();
-        /* 状态 */
-        {
-            let connected = snap.connected;
-            let events = snap.events_received;
-            let (ctext, ccolor) = if connected {
-                (
-                    format!("● 已连接游戏 (累计 {} 事件)", events),
-                    th.good,
-                )
-            } else {
-                (
-                    "○ 未连接 (请先启动游戏)".to_string(),
-                    th.info,
-                )
-            };
-            ui.label(egui::RichText::new(ctext).size(13.0).color(ccolor).strong());
-        }
-    }
-
-    /// vib_summon_abs_freq_section — 召唤专属绝对震动频率 (v26.3, 原 783-847)
-    fn vib_summon_abs_freq_section(
-        &mut self,
-        ui: &mut egui::Ui,
-        job_mode: bool,
-        vib: &crate::config::VibrationConfig,
-    ) {
-        /* 召唤专属: 绝对震动频率 (v26.3, 置顶显示在马达区上方, 仅召唤职业) */
-        if job_mode && vib.abs_freq_enabled{
-            Self::vib_section(ui, self.dark_mode, "【召唤专属】绝对震动频率 (置顶)", |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "开启后一切震动算法失效 (密度/间隔/节流/连击倍率/评分通道等),\n\
-                         只在 [时间-震动次数] 内注入, 均匀分布固定节拍。\n\
-                         全局强度/强度上限仍可控制输出, 移动独立。",
-                    )
-                    .size(11.0)
-                    .weak(),
-                );
-                ui.add_space(4.0);
-                let mut ae = vib.abs_freq_enabled;
-                                            let resp = Self::with_hint(
-                        ui
-                        .checkbox(&mut ae, "绝对震动频率 (3 秒最多 6 次)"),
-                        "绝对震动频率 (3 秒最多 6 次)",
-                    );
-                    if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_enabled = ae);
-                }
-                let mut aw = vib.abs_freq_window_ms as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut aw, 1000.0..=10000.0).text("绝对频率窗口 ms")),
-                    "绝对频率窗口 ms",
-                );
-                if resp.changed() {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_window_ms = aw as u32);
-                }
-                let mut am = vib.abs_freq_max as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut am, 1.0..=20.0).text("窗口内最大震动次数")),
-                    "窗口内最大震动次数",
-                );
-                if resp.changed() {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_max = am as u32);
-                }
-            });
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(8.0);
-        }
-    }
-
-    /// vib_motor_section — 马达区实时输出 (原 849-901)
-    fn vib_motor_section(&mut self, ui: &mut egui::Ui, snap: &crate::ui_api::VibSnap) {
-        let th = self.theme();
-        /* 马达区: 实时输出检测 (增益已并入各基础功能的 L/R 调控) */
-        Self::vib_section(
-            ui,
-            self.dark_mode,
-            "马达区 (实时输出检测)",
-            |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "左右马达实时输出检测 (测试按钮或进图战斗时观察)。",
-                )
-                .size(11.0)
-                .weak(),
+                .color(th.hint),
             );
-            let out_l = snap.out_l;
-            let out_r = snap.out_r;
-            let pct_l = out_l as f32 / 65535.0;
-            let pct_r = out_r as f32 / 65535.0;
-            ui.add_space(2.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("左马达").strong().size(12.0).color(th.motor_l),
-                );
-                ui.add(
-                    egui::ProgressBar::new(pct_l)
-                        .desired_width(220.0)
-                        .fill(th.motor_l)
-                        .show_percentage(),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{:>5}", out_l))
-                        .monospace()
-                        .size(11.0)
-                        .weak(),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new("右马达").strong().size(12.0).color(th.motor_r),
-                );
-                ui.add(
-                    egui::ProgressBar::new(pct_r)
-                        .desired_width(220.0)
-                        .fill(th.motor_r)
-                        .show_percentage(),
-                );
-                ui.label(
-                    egui::RichText::new(format!("{:>5}", out_r))
-                        .monospace()
-                        .size(11.0)
-                        .weak(),
-                );
-            });
         });
     }
 
-    /// vib_global_gain_section — 全局总调整 (原 906-1043)
-    fn vib_global_gain_section(
+    /// ② 全职业页工具条: 应用开关 + 职业选择 + 应用/导出/导入 + 状态说明。
+    fn vib_job_card(
         &mut self,
         ui: &mut egui::Ui,
-        job_mode: bool,
-        vib: &crate::config::VibrationConfig,
-        snap: &crate::ui_api::VibSnap,
+        legacy: bool,
+        vib: &VibrationConfig,
+        _snap: &VibSnap,
     ) {
         let th = self.theme();
-        let params_arr: [u32; 60] = snap.params.as_slice().try_into().unwrap();
-        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
-        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
-        let rank_lr_arr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
-        let rank_out_arr: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
-        /* 全局总调整 */
-        Self::vib_section(
-            ui,
-            self.dark_mode,
-            "全局总闸 (任一为 0 则全部关闭)",
-            |ui| {
-            /* ★信息架构重组 (v16.3): 本卡只留力度三闸 (master/attack/max)。
-             * 迁出: 连击增强→「连击与自适应」卡, 节奏感→「输出质感」卡,
-             * 衰减时间(p5 预留死槽)→高级区, 移动体系→「移动与走路」卡 */
-            let rows = [
-                ("全局总调整 %", 9, 100.0, "", "总开关: 0 = 全部关闭; 调低 = 整体减弱所有震动。\nACT1 路线下最低实感约 20%×此值 (重映射抬底随总调缩放)
-调高：整体更响、更有打击感（也更费电、更容易震手）；调低：整体变轻，最轻近乎不震。", 0usize),
-                ("攻击频率 (总闸1)", 0, 100.0, "", "攻击/技能命中反馈总闸: 0 = 命中不震
-调高：每次命中更实、更响；调低：命中变轻；0 = 命中完全不震。", 1),
-                ("强度上限 (总闸2)", 4, 100.0, "%", "输出强度上限: 调低 = 所有震动更弱 (保护手柄)
-调高：最强的那一击更有冲击力（可能震手）；调低：给所有震动压一个天花板，更稳更省电。", 2),
-                ("连击增强 (渐进至上限)", 6, 100.0, "", "连击数越高震动越强, 渐进到强度上限 (上限/斜率在高级调校「连击与自适应」)
-调高：连得越久越强（后期更猛）；调低：连击加成越弱；0 = 完全不随连击变化，每下一样。", 4),
-            ];
-            /* 每项独立块: 名称+滑块+说明+L/R, 宽度自适应卡片, 长文本自然换行 */
-            /* 每项独立块: 名称+滑块+说明+L/R, 宽屏双列排布 */
-            let col_w = (ui.available_width() - theme::SP_L) / 2.0;
+        let jobs = crate::job_presets::available_jobs(legacy);
+        let base_sel = self.vib_job_base.min(jobs.len().saturating_sub(1));
+        let classes = &jobs[base_sel].classes;
+        let class_sel = self.vib_job_class.min(classes.len().saturating_sub(1));
+        let cur_cls = &classes[class_sel];
+
+        th.card(ui, Some("职业预设"), |ui| {
+            /* 应用开关 + 当前状态徽章 */
             ui.horizontal(|ui| {
-                let half = rows.len().div_ceil(2);
-                for chunk in [&rows[..half], &rows[half..]] {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(col_w);
-                        ui.set_max_width(col_w);
-                        for (name, pidx, max, suffix, hint, item) in chunk.iter().copied() {
-                            ui.label(
-                                egui::RichText::new(name)
-                                    .size(13.0)
-                                    .color(th.text),
+                let mut en = self.vib_job_enabled;
+                if ui
+                    .checkbox(&mut en, egui::RichText::new("应用全职业预设").size(12.5))
+                    .on_hover_text(
+                        "开: 职业参数覆盖震动设置; 关: 不应用, 恢复震动设置默认。\n\
+                         切换职业时若开关为开, 会自动应用该职业。",
+                    )
+                    .changed()
+                {
+                    self.vib_job_enabled = en;
+                    if en {
+                        self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
+                        self.vib_job_loaded = Some((base_sel, class_sel));
+                    } else {
+                        self.disable_job_vibration_preset();
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (text, fg, bg) = if self.vib_job_enabled {
+                        ("职业预设已生效", th.good, th.good_soft)
+                    } else {
+                        ("未应用 · 用通用参数", th.hint, th.faint)
+                    };
+                    th.badge(ui, text, fg, bg);
+                });
+            });
+
+            ui.add_space(theme::SP_S);
+            widgets::hairline(ui, &th);
+            ui.add_space(theme::SP_M);
+
+            /* 选择 + 操作 (左右两半) */
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                if col == 0 {
+                    widgets::group_head(ui, &th, "选择职业");
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("基础职业").size(12.0).color(th.text_weak));
+                        let base_names: Vec<String> =
+                            jobs.iter().map(|j| j.base_job.to_string()).collect();
+                        egui::ComboBox::from_id_salt("vib_job_base")
+                            .selected_text(base_names[base_sel].clone())
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                for (i, n) in base_names.iter().enumerate() {
+                                    if ui.selectable_label(i == base_sel, n).clicked() {
+                                        self.vib_job_base = i;
+                                        self.vib_job_class = 0;
+                                    }
+                                }
+                            });
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("转职").size(12.0).color(th.text_weak));
+                        let class_names: Vec<String> =
+                            classes.iter().map(|c| c.name.to_string()).collect();
+                        egui::ComboBox::from_id_salt("vib_job_class")
+                            .selected_text(class_names[class_sel].clone())
+                            .width(130.0)
+                            .show_ui(ui, |ui| {
+                                for (i, n) in class_names.iter().enumerate() {
+                                    if ui.selectable_label(i == class_sel, n).clicked() {
+                                        self.vib_job_class = i;
+                                    }
+                                }
+                            });
+                    });
+                } else {
+                    widgets::group_head(ui, &th, "操作");
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.add(th.primary_button("应用该职业")).clicked() {
+                            self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
+                            self.vib_job_loaded = Some((base_sel, class_sel));
+                        }
+                        if ui
+                            .add(th.secondary_button("试听 1 秒"))
+                            .on_hover_text("按当前职业参数震一下")
+                            .clicked()
+                        {
+                            self.backend.dispatch(crate::ui_api::UiCommand::TestVibration);
+                        }
+                        ui.add_space(theme::SP_S);
+                        if ui
+                            .add(th.secondary_button("导出当前职业"))
+                            .on_hover_text(
+                                "导出当前选择职业的完整设置 (仅当前职业; ACT 路线职业名自带 -ACT)",
+                            )
+                            .clicked()
+                        {
+                            let content =
+                                Self::export_job_settings(jobs[base_sel].base_job, cur_cls);
+                            /* ★v24.14: 职业名自带 -ACT (ACT 名册), 导出名随之带标记 */
+                            let fname = Self::save_export_file(
+                                &content,
+                                &format!("job_export_{}", cur_cls.name),
                             );
-                            let mut v = params_arr[pidx] as f32;
-                            if ui
-                                .add(egui::Slider::new(&mut v, 0.0..=max).suffix(suffix))
-                                .changed()
-                            {
-                                Self::vib_slot_update(&self.backend, job_mode, pidx, v as u32);
+                            self.vib_export_msg = Some(fname);
+                        }
+                        if ui
+                            .add(th.secondary_button("导入职业设置"))
+                            .on_hover_text(
+                                "从当前路线的 job_export_*.toml 导入 (按 base_job/class_name 匹配内置职业后应用)",
+                            )
+                            .clicked()
+                        {
+                            let files = crate::job_presets::list_export_files_for_route(
+                                "job_export",
+                                legacy,
+                            );
+                            let sel = self.job_import_sel.min(files.len().saturating_sub(1));
+                            if let Some(f) = files.get(sel) {
+                                match crate::job_presets::parse_job_export(f) {
+                                    Some(ij) => {
+                                        /* 规范: 按 base_job/class_name 匹配**当前路线**内置职业 */
+                                        if let Some((bi, ci, _cls)) =
+                                            crate::job_presets::find_class_for_route(
+                                                &ij.base_job,
+                                                &ij.class_name,
+                                                legacy,
+                                            )
+                                        {
+                                            self.vib_job_base = bi;
+                                            self.vib_job_class = ci;
+                                            self.vib_job_enabled = true;
+                                            self.vib_import_msg = Some(format!(
+                                                "已导入 {} - {}",
+                                                ij.base_job, ij.class_name
+                                            ));
+                                        } else {
+                                            self.vib_import_msg = Some(format!(
+                                                "规范不符: 当前路线没有这个职业 {} - {}",
+                                                ij.base_job, ij.class_name
+                                            ));
+                                        }
+                                    }
+                                    None => {
+                                        self.vib_import_msg =
+                                            Some(format!("{} 解析失败 (规范不符)", f));
+                                    }
+                                }
                             }
-                            ui.label(egui::RichText::new(hint).size(11.0).weak());
-                            /* ★v16.3: 仅「全局总调整」行保留 L/R (item0 = 左右马达
-                             * 总闸, 引擎实消费); 攻击频率/强度上限的 L/R 为无消费
-                             * 死端口 (审计结论), 不再渲染 —— 消除"调了没感知" */
-                            if item == 0 {
-                                Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, item);
-                            }
-                            ui.add_space(6.0);
                         }
                     });
                 }
             });
-            /* 震动随机性 (独立参数, 不占 60 槽) */
-            let mut rg = vib.random_gain as f32;
-                                            let resp = Self::with_hint(
-                            ui
-                    .add(
-                        egui::Slider::new(&mut rg, 0.0..=100.0)
-                            .text("震动随机性 %"),
-                    ),
-                            "震动随机性 %",
-                        );
-                        if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.random_gain = rg as u32);
+
+            /* 开关打开时, 切换职业自动应用 */
+            if self.vib_job_enabled && self.vib_job_loaded != Some((base_sel, class_sel)) {
+                self.apply_job_vibration_preset(jobs[base_sel].base_job, cur_cls);
+                self.vib_job_loaded = Some((base_sel, class_sel));
             }
-            ui.label(
-                egui::RichText::new(
-                    "0 = 关闭; N = 强度在原本上限附近随机增减 ±N%\n\
-                     (例: 5 = 每次震动有 0~5% 随机浮动, 手感更自然)",
-                )
-                .size(11.0)
-                .weak(),
-            );
-            /* ★移动 (持续震动) (v16.5 用户定稿回归总阀): 强度/独立开关/左右权重;
-             * 走路质感与走位能量在高级调校折叠区 */
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(8.0);
-            ui.vertical(|ui| {
-            /* 移动独立开关 (v24.5): 默认开, 移动一直在走, 不吃全局强度 */
-            let mut mi = vib.move_independent;
-                                    let resp = Self::with_hint(
-                    ui
-                    .checkbox(&mut mi, "移动持续震动独立于全局强度 (默认开)")
-                    .on_hover_text(
-                        "开: 移动震动不受全局总调整/强度上限影响 (移动一直在走, 吃全局强度容易直接没有震动)。\n\
-                         关: 移动震动也受全局总调整与强度上限约束。",
-                    ),
-                    "移动持续震动独立于全局强度 (默认开)",
+
+            ui.add_space(theme::SP_S);
+            /* 状态行 */
+            if let Some((b, c)) = &self.vib_job_active {
+                ui.label(
+                    egui::RichText::new(format!("当前职业: {b} - {c}"))
+                        .size(12.0)
+                        .color(th.good)
+                        .strong(),
                 );
-                if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.move_independent = mi);
+                ui.label(
+                    egui::RichText::new("职业参数已覆盖「通用型震动设定」；下方参数改动实时生效并自动保存")
+                        .size(11.0)
+                        .color(th.hint),
+                );
+            } else {
+                ui.label(
+                    egui::RichText::new("开关已关闭: 不应用职业预设, 使用通用型震动设定参数")
+                        .size(11.5)
+                        .color(th.hint),
+                );
             }
-            ui.set_width(ui.available_width());
-            let cnt = snap.rank_type_events[11];
-            ui.label(
-                egui::RichText::new(format!("移动 (持续震动) ({})", cnt))
-                    .size(13.0)
-                    .color(th.text),
-            );
-            let mut g = snap.rank_type_gain[11] as f32;
-            let resp = Self::with_hint(
-            ui.add(egui::Slider::new(&mut g, 0.0..=100.0).suffix("").text("移动持续震动强度")),
-                "移动持续震动强度",
-            );
-            if resp.changed() {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_type_gain[11] = g as u32);
+            if let Some(m) = &self.vib_import_msg {
+                ui.label(egui::RichText::new(m.clone()).size(11.0).color(th.info));
             }
+            if let Some(m) = &self.vib_export_msg {
+                ui.label(
+                    egui::RichText::new(format!("已导出: {} (程序目录)", m))
+                        .size(11.0)
+                        .color(th.good),
+                );
+            }
+            ui.add_space(theme::SP_XS);
             ui.label(
-                egui::RichText::new("角色移动持续震动 (0 停)。与高级调校「走路质感与走位能量」配合。")
-                    .size(11.0)
-                    .weak(),
+                egui::RichText::new(format!(
+                    "{} (攻速→力度设计: 极快轻盈防叠加震手, 慢速沉稳给强度)",
+                    cur_cls.desc
+                ))
+                .size(11.0)
+                .color(th.hint),
             );
-            Self::render_rank_lr(&self.backend, ui, self.dark_mode, &rank_lr_arr, &rank_out_arr, 11);
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            });
+
+            ui.add_space(theme::SP_M);
+            widgets::hairline(ui, &th);
+            ui.add_space(theme::SP_M);
+            self.vib_view_toggles(ui, vib);
         });
     }
 
-    /// vib_damage_font_section — 伤害飘字 (原 1048-1215)
+    /// 观测开关行 (两页共用): 调试模式 (单通道验证)。
+    fn vib_view_toggles(&mut self, ui: &mut egui::Ui, vib: &VibrationConfig) {
+        let th = self.theme();
+        let mut ind = vib.independent_test;
+        ui.horizontal(|ui| {
+            let (text, fg, bg) = if ind {
+                ("调试中", th.warn, th.warn_soft)
+            } else {
+                ("正常模式", th.good, th.good_soft)
+            };
+            if ui
+                .checkbox(
+                    &mut ind,
+                    egui::RichText::new("调试模式 (评分/移动不吃全局总调整)").size(12.0),
+                )
+                .on_hover_text(
+                    "开启后: 全局总调整不会影响评分震动与移动持续震动 (单通道调试方便)。\n\
+                     关闭后: 全局总调整统一应用到所有通道 (正常使用)。\n\
+                     不影响各卡片自己的测试按钮与滑块。",
+                )
+                .changed()
+            {
+                self.backend.update_vibration_config(|v| {
+                    v.independent_test = ind;
+                });
+            }
+            th.badge(ui, text, fg, bg);
+        });
+        ui.add_space(theme::SP_XS);
+        ui.label(
+            egui::RichText::new(if ind {
+                "调试模式已开启: 评分/移动通道不吃全局总调整, 便于逐项单独验证。"
+            } else {
+                "正常模式: 全局总调整统一作用于所有通道。需要单通道调试时再打开。"
+            })
+            .size(11.0)
+            .color(th.hint),
+        );
+    }
+
+    /// ③ 参数区: 标题行 (只有"参数说明"开关) + 全宽卡片纵列。
+    ///
+    /// ★v24.62 版式: 取消顶部双列 —— 卡片宽度随内容职责定:
+    /// 力度总闸/评分特效/伤害飘字/评分动态衰减 都是全宽卡, 卡内自己分两列;
+    /// 好处是每张卡的宽度不再被"旁边那张卡有多高"绑架, 也就不再出现列尾空洞。
+    /// L/R(左右马达权重)是这套工具的核心调校,**常显不折叠**。
+    fn vib_params_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        legacy: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("参数调节")
+                    .size(12.0)
+                    .strong()
+                    .family(Theme::font_bold())
+                    .color(th.text_weak),
+            );
+            /* 视图选项放在参数区标题行: 它管的就是下面这一坨参数的呈现方式 */
+            let mut hints = self.vib_show_hints;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                /* 6px 内缩: 右对齐的控件别贴着内容右边界 (窄窗口下会显得像被裁掉) */
+                ui.add_space(6.0);
+                ui.checkbox(
+                    &mut hints,
+                    egui::RichText::new("参数说明").size(11.5).color(th.text_weak),
+                )
+                .on_hover_text("关掉即紧凑模式: 每行只留 名称 + 数值 + 滑轨; 说明仍可悬停查看。");
+            });
+            if hints != self.vib_show_hints {
+                self.vib_show_hints = hints;
+                widgets::set_form_hints(ui, hints);
+            }
+            let rest = ui.available_width();
+            if rest > 8.0 {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(rest, 1.0), egui::Sense::hover());
+                ui.painter().hline(
+                    rect.x_range(),
+                    rect.center().y,
+                    egui::Stroke::new(1.0, th.stroke),
+                );
+            }
+        });
+        ui.add_space(theme::SP_S);
+
+        /* 力度总闸 (含召唤专属) → 评分特效 → 伤害飘字 → 评分动态衰减 → 高级 */
+        if job_mode {
+            self.vib_summon_abs_freq_section(ui, job_mode, vib);
+        }
+        self.vib_global_gain_section(ui, job_mode, vib, snap);
+        self.vib_score_effect_section(ui, job_mode, snap);
+        self.vib_damage_font_section(ui, job_mode, legacy, vib, snap);
+        self.vib_score_decay_section(ui, job_mode, vib);
+    }
+
+    /// 召唤专属: 绝对震动频率 (仅职业页且已启用)。
+    fn vib_summon_abs_freq_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        vib: &VibrationConfig,
+    ) {
+        if !vib.abs_freq_enabled {
+            return;
+        }
+        let th = self.theme();
+        th.card(ui, Some("召唤专属 · 绝对震动频率"), |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "开启后一切震动算法失效 (密度/间隔/节流/连击倍率/评分通道等)，只在 [时间-震动次数] 内均匀注入固定节拍；全局强度/强度上限仍可控制输出，移动独立。",
+                )
+                .size(11.0)
+                .color(th.hint),
+            );
+            ui.add_space(theme::SP_S);
+            let mut ae = vib.abs_freq_enabled;
+            if widgets::check_row(
+                ui,
+                &th,
+                &mut ae,
+                "绝对震动频率 (3 秒最多 6 次)",
+                "",
+                "开：3 秒内最多震 6 次（防连成一片）；关：完全不限次数。",
+            ) {
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.abs_freq_enabled = ae);
+            }
+            cfg_row(
+                ui,
+                &th,
+                &self.backend,
+                job_mode,
+                vib_row(ic::TIMER, "绝对频率窗口 ms").hint("统计窗口，越长判定越宽容"),
+                vib.abs_freq_window_ms,
+                1000.0,
+                10000.0,
+                |v, n| v.abs_freq_window_ms = n,
+            );
+            cfg_row(
+                ui,
+                &th,
+                &self.backend,
+                job_mode,
+                vib_row(ic::HASH, "窗口内最大震动次数").hint("允许更密 / 更克制"),
+                vib.abs_freq_max,
+                1.0,
+                20.0,
+                |v, n| v.abs_freq_max = n,
+            );
+        });
+    }
+
+    /// 力度总闸 (master / attack / max / 连击增强 / 随机性 / 移动)。
+    fn vib_global_gain_section(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        let item_lr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
+        let rank_lr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
+        let rank_out: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
+
+        th.card_with_actions(
+            ui,
+            Some("力度总闸"),
+            |ui| {
+                card_note(
+                    ui,
+                    &th,
+                    &format!("总强度 {}% · 攻击 {}", snap.params[9], snap.params[0]),
+                );
+            },
+            |ui| {
+            ui.label(
+                egui::RichText::new("任一为 0 则全部关闭。想整体变轻先调这里，不要去动细节参数。")
+                    .size(11.0)
+                    .color(th.hint),
+            );
+            ui.add_space(theme::SP_S);
+
+            /* 三闸 + 连击/随机性: 卡内左右两列 (全宽单列的话滑轨会拉到 1200px, 空转手感差) */
+            let backend = &self.backend;
+            let dark = self.dark_mode;
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                if col == 0 {
+                    slot_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::FADERS, "全局总调整").suffix("%")
+                            .hint("0 = 全部关闭；越低整体越轻"),
+                        9,
+                        snap.params[9],
+                        0.0,
+                        100.0,
+                    );
+                    slot_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::SWORD, "攻击频率 (总闸1)")
+                            .hint("命中反馈总闸：0 = 命中不震"),
+                        0,
+                        snap.params[0],
+                        0.0,
+                        100.0,
+                    );
+                } else {
+                    slot_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::ARROW_UP, "强度上限 (总闸2)")
+                            .suffix("%")
+                            .hint("给所有震动压一个天花板"),
+                        4,
+                        snap.params[4],
+                        0.0,
+                        100.0,
+                    );
+                    slot_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::FIRE, "连击增强 (渐进至上限)")
+                            .hint("连得越久越强，上限/斜率在高级调校"),
+                        6,
+                        snap.params[6],
+                        0.0,
+                        100.0,
+                    );
+                }
+            });
+
+            /* 随机性整宽一张卡: 塞在右列会让左右两列底部差出一整张卡的高度 */
+            cfg_row(
+                ui,
+                &th,
+                backend,
+                job_mode,
+                vib_row(ic::CIRCLE_NOTCH, "震动随机性")
+                    .suffix("%")
+                    .hint("每次强弱随机浮动，手感更自然"),
+                vib.random_gain,
+                0.0,
+                100.0,
+                |v, n| v.random_gain = n,
+            );
+
+            /* 左右马达总权重 (item0): 它是"总闸的左右分配", 与上面四个滑块同级,
+             * 单列一行比塞进某一格更清楚, 也不会把格子挤得一高一低 */
+            widgets::row_card(ui, &th, |ui| {
+                ui.label(
+                    egui::RichText::new("左右马达总权重（L / R，0 = 不动原参数）")
+                        .size(11.5)
+                        .color(th.text_weak),
+                );
+                ui.add_space(4.0);
+                Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr, &item_out, 0);
+            });
+
+            widgets::group_head(ui, &th, "移动 (持续震动)");
+            let mut mi = vib.move_independent;
+            if widgets::check_row(
+                ui,
+                &th,
+                &mut mi,
+                "移动震动独立于全局强度",
+                "开：走路不吃全局总调整；关：跟着一起变小",
+                "开: 移动震动不受全局总调整/强度上限影响 (移动一直在走, 吃全局强度容易直接没有震动)。\n关: 移动震动也受全局总调整与强度上限约束。",
+            ) {
+                Self::vib_slider_update(&self.backend, job_mode, |v| v.move_independent = mi);
+            }
+            let cnt = snap.rank_type_events[11];
+            let backend = &self.backend;
+            let dark = self.dark_mode;
+            cfg_row_lr(
+                ui,
+                &th,
+                backend,
+                job_mode,
+                vib_row(ic::FOOTPRINTS, "移动持续震动强度")
+                    .tag(&format!("触发{cnt}"))
+                    .hint("0 = 走路不震；配合高级调校的走路质感"),
+                snap.rank_type_gain[11],
+                0.0,
+                100.0,
+                |v, n| v.rank_type_gain[11] = n,
+                |ui| Self::render_rank_lr(backend, ui, dark, &rank_lr, &rank_out, 11),
+            );
+        });
+    }
+
+    /// 伤害飘字震动 (事件类型细分)。
     fn vib_damage_font_section(
         &mut self,
         ui: &mut egui::Ui,
         job_mode: bool,
         legacy: bool,
-        vib: &crate::config::VibrationConfig,
-        snap: &crate::ui_api::VibSnap,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
     ) {
         let th = self.theme();
-        let params_arr: [u32; 60] = snap.params.as_slice().try_into().unwrap();
-        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
-        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
-        /* 伤害飘字 */
-        Self::vib_section(
+        let item_lr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
+
+        th.card_with_actions(
             ui,
-            self.dark_mode,
-            "伤害飘字震动 (事件类型细分)",
+            Some("伤害飘字震动"),
+            |ui| {
+                card_note(ui, &th, if snap.font_hits { "已启用 · 6 类" } else { "已关闭" });
+            },
             |ui| {
             ui.label(
-                egui::RichText::new(
-                    "DLL 采集游戏战斗飘字 (命中/受击/技能/DOT 等), 每类强度独立可调。",
-                )
-                .size(11.0)
-                .weak(),
+                egui::RichText::new("DLL 采集游戏战斗飘字（命中/受击/技能/DOT 等），每类强度独立可调。")
+                    .size(11.0)
+                    .color(th.hint),
             );
+            ui.add_space(theme::SP_S);
             let mut font_on = snap.font_hits;
-                                    let resp = Self::with_hint(
-                    ui
-                    .checkbox(&mut font_on, "启用伤害飘字震动 (默认开启)"),
-                    "启用伤害飘字震动 (默认开启)",
-                );
-                if resp.changed()
-            {
+            if widgets::check_row(
+                ui,
+                &th,
+                &mut font_on,
+                "启用伤害飘字震动",
+                "关掉后命中/受击/技能都不震；评分与移动不受影响",
+                "关闭后命中/受击/技能等伤害飘字不再震动; 评分特效与移动走路不受此开关影响",
+            ) {
                 self.backend.set_vib_font_hits(font_on);
             }
-            ui.label(
-                egui::RichText::new("关闭后命中/受击/技能等伤害飘字不再震动; 评分特效与移动走路不受此开关影响")
-                    .size(11.0)
-                    .weak(),
-            );
-            let mut fs = snap.params[10] as f32;
-                                    let resp = Self::with_hint(
-                    ui
-                    .add(egui::Slider::new(&mut fs, 0.0..=100.0).text("通用飘字强度")),
-                    "通用飘字强度",
-                );
-                if resp.changed()
-            {
-                Self::vib_slot_update(&self.backend, job_mode, 10, fs as u32);
-            }
-            ui.label(
-                egui::RichText::new(
-                    "飘字类型强度的兜底强度，设置为0的时候，全部震动类型为独立可调控。",
-                )
-                .size(11.0)
-                .weak(),
-            );
-            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, 6);
-            let mut fi = snap.params[11] as f32;
-                                    let resp = Self::with_hint(
-                    ui
-                    .add(egui::Slider::new(&mut fi, 10.0..=500.0).text("飘字最小间隔 ms")),
-                    "飘字最小间隔 ms",
-                );
-                if resp.changed()
-            {
-                Self::vib_slot_update(&self.backend, job_mode, 11, fi as u32);
-            }
-            ui.label(
-                egui::RichText::new("同类型事件最短触发间隔, 防止高频连打过度震动")
-                    .size(11.0)
-                    .weak(),
-            );
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("飘字类型强度 (a6 标志分类, 默认 0 = 不震, 逐个开启测试)")
-                    .size(12.0)
-                    .color(th.accent_text),
-            );
-            /* 每项独立块: 名称+滑块+说明+L/R, 宽屏双列排布。
-             * ★S1 限定: "装备特效反馈"之下插入"怪物异常反馈"独立行 (v15 拆分,
-             * 0x04 在 ACT 里 100% 是怪物异常跳字); 装备特效行保留不删 —— S4 语义不变 */
-            let mut rows: Vec<(String, usize, usize, String)> = vec![
-                ("持续伤害 DOT 反馈 (0x20)".to_string(), 12, 7usize, "中毒/灼烧/出血等持续掉血反馈, 每次掉血持续震动
-调高：掉血跳字更明显（持续感更黏）；调低：几乎察觉不到；0 = 关闭这一路。".to_string()),
-                (
-                    "装备特效反馈 (0x04)".to_string(),
-                    15,
-                    8,
-                    if legacy {
-                        "装备触发效果 (ACT 版本: 此通道事件已由下方怪物异常反馈承载, 此滑块暂不影响震动)".to_string()
-                    } else {
-                        "装备触发效果(特效等), 例如天域之类的".to_string()
-                    },
-                ),
-                ("玩家状态变化反馈 (0x08)".to_string(), 14, 9, "自身状态变化(增益/减益/回复)
-调高：加/掉状态提示更明显；调低：更轻；0 = 不震。".to_string()),
-                ("特殊攻击反馈 (0x10) 暴击/破招/背击".to_string(), 13, 10, "暴击/破招/背击瞬间的重击强调
-调高：特殊攻击更重更突出（过高时与命中叠加会震手）；调低：与普攻的差别变小；0 = 不震。".to_string()),
-                ("玩家命中反馈 (0x01)".to_string(), 16, 11, "普通攻击与技能每次命中的基础反馈 (核心)
-调高：每一击都更实（最影响主手感）；调低：整体变轻；0 = 命中完全不震。".to_string()),
-                ("玩家受击反馈 (0x02)".to_string(), 17, 12, "被敌人击中的反馈, 数值越大被打越有感觉
-调高：挨打更有感觉；调低：更容易忽略挨打；0 = 挨打不震。".to_string()),
+
+            let backend = &self.backend;
+            let dark = self.dark_mode;
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                if col == 0 {
+                    slot_row_lr(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::TEXT_T, "通用飘字强度")
+                            .hint("所有飘字类型的兜底强度；0 = 各类型独立"),
+                        10,
+                        snap.params[10],
+                        0.0,
+                        100.0,
+                        |ui| Self::render_item_lr(backend, ui, dark, &item_lr, &item_out, 6),
+                    );
+                } else {
+                    slot_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::TIMER, "飘字最小间隔 ms")
+                            .hint("同类型事件最短触发间隔，防高频连打糊成一片"),
+                        11,
+                        snap.params[11],
+                        10.0,
+                        500.0,
+                    );
+                }
+            });
+
+            widgets::group_head(ui, &th, "飘字类型强度 (0 = 关闭)");
+            let rows: [(&str, usize, usize, &str); 6] = [
+                ("持续伤害 DOT 反馈 (0x20)", 12, 7, "中毒/灼烧/出血等掉血反馈"),
+                ("装备特效反馈 (0x04)", 15, 8, if legacy {
+                    "ACT 版本此通道已由怪物异常反馈承载"
+                } else {
+                    "装备触发效果（例如天域）"
+                }),
+                ("玩家状态变化反馈 (0x08)", 14, 9, "自身增益/减益/回复"),
+                ("特殊攻击反馈 (0x10) 暴击/破招/背击", 13, 10, "暴击/破招/背击的重击强调"),
+                ("玩家命中反馈 (0x01)", 16, 11, "普攻与技能每次命中的基础反馈"),
+                ("玩家受击反馈 (0x02)", 17, 12, "被敌人击中的反馈"),
             ];
+            let half = rows.len().div_ceil(2);
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                let slice = if col == 0 {
+                    &rows[..half]
+                } else {
+                    &rows[half..]
+                };
+                for (name, slot, item, hint) in slice.iter().copied() {
+                    slot_row_lr(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::DOT_OUTLINE, name).hint(hint),
+                        slot,
+                        snap.params[slot],
+                        0.0,
+                        100.0,
+                        |ui| Self::render_item_lr(backend, ui, dark, &item_lr, &item_out, item),
+                    );
+                }
+            });
             if legacy {
-                rows.insert(
-                    2,
-                    (
-                        "怪物异常反馈 (0x04) 出血/中毒/感电跳字".to_string(),
-                        usize::MAX,
-                        8,
-                        "怪物身上的异常状态 (出血/中毒等) 每次跳字的反馈, 独立通道 (仅 ACT 版本)。\n默认 1 = 最低档; ACT 重映射 20% 抬底, 1 实感约 20% 满幅; 0 = 完全关闭
-调高：出血/中毒/感电跳字更明显；调低：更轻；0 = 完全不震。".to_string(),
-                    ),
+                cfg_row_lr(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    vib_row(ic::SKULL, "怪物异常反馈 (0x04) 出血/中毒/感电跳字")
+                        .hint("仅 ACT 版本：怪物异常状态跳字"),
+                    vib.monster_abnormal_gain,
+                    0.0,
+                    100.0,
+                    |v, n| v.monster_abnormal_gain = n,
+                    |ui| Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr, &item_out, 8),
                 );
             }
-            let col_w = (ui.available_width() - theme::SP_L) / 2.0;
-            ui.horizontal(|ui| {
-                let half = rows.len().div_ceil(2);
-                for chunk in [&rows[..half], &rows[half..]] {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(col_w);
-                        ui.set_max_width(col_w);
-                        for (name, pidx, item, hint) in chunk.iter() {
-                            if *pidx == usize::MAX {
-                                /* ★怪物异常反馈: 独立 config 字段 (不占 60 槽) */
-                                ui.label(
-                                    egui::RichText::new(name.as_str())
-                                        .size(13.0)
-                                        .color(th.text),
-                                );
-                                let mut ma = vib.monster_abnormal_gain as f32;
-                                if ui
-                                    .add(egui::Slider::new(&mut ma, 0.0..=100.0))
-                                    .changed()
-                                {
-                                    Self::vib_slider_update(&self.backend, job_mode, |v| v.monster_abnormal_gain = ma as u32);
-                                }
-                                ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
-                                Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, *item);
-                                ui.add_space(6.0);
-                                continue;
-                            }
-                            ui.label(
-                                egui::RichText::new(name.as_str())
-                                    .size(13.0)
-                                    .color(th.text),
-                            );
-                            let mut v = params_arr[*pidx] as f32;
-                            if ui
-                                .add(egui::Slider::new(&mut v, 0.0..=100.0))
-                                .changed()
-                            {
-                                Self::vib_slot_update(&self.backend, job_mode, *pidx, v as u32);
-                            }
-                            ui.label(egui::RichText::new(hint.as_str()).size(11.0).weak());
-                            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, *item);
-                            ui.add_space(6.0);
-                        }
-                    });
-                }
-            });
         });
     }
 
-    /// vib_score_effect_section — 评分特效震动 (原 1220-1349)
-    fn vib_score_effect_section(
-        &mut self,
-        ui: &mut egui::Ui,
-        job_mode: bool,
-        _vib: &crate::config::VibrationConfig,
-        snap: &crate::ui_api::VibSnap,
-    ) {
+    /// 评分特效震动 (等级 + 细分事件)。
+    fn vib_score_effect_section(&mut self, ui: &mut egui::Ui, job_mode: bool, snap: &VibSnap) {
         let th = self.theme();
-        let rank_lr_arr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
-        let rank_out_arr: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
-        /* 评分特效震动 (DLL 已采集: 评分等级/击杀点/闪避/暴击/破招/背击等) */
-        Self::vib_section(ui, self.dark_mode, "评分特效震动 (等级 + 细分事件)", |ui| {
-            ui.label(
-                egui::RichText::new(
-                    "评分事件由 DLL 采集, 每项强度独立可调 (0 = 关闭)。\n\
-                     括号内为累计触发次数, 用于区分哪个事件真正触发了。",
-                )
-                .size(11.0)
-                .weak(),
-            );
-            ui.add_space(4.0);
-            /* 状态: 最近等级 + 事件计数 */
-            let rl = snap.rank_last;
-            let re = snap.rank_events;
-            let (rtext, rcolor) = if rl >= 8 {
-                (
-                    format!("★ 最近评分: 等级 {} (特殊动作!)  累计 {} 次", rl, re),
-                    th.warn,
-                )
-            } else if rl >= 2 {
-                (
-                    format!("● 最近评分: 等级 {}  累计 {} 次", rl, re),
-                    th.info,
-                )
-            } else {
-                (
-                    "○ 暂无评分事件 (进副本打怪触发)".to_string(),
-                    th.hint,
-                )
-            };
-            ui.label(egui::RichText::new(rtext).size(12.0).color(rcolor).strong());
-            ui.add_space(4.0);
-            /* 评分等级强度 + 满幅时长 */
-            let mut lvl_gain = snap.rank_level_gain as f32;
-                                    let resp = Self::with_hint(
-                    ui
-                    .add(egui::Slider::new(&mut lvl_gain, 0.0..=100.0).text("评分等级强度 % (等级 F~SSS)")),
-                    "评分等级强度 % (等级 F~SSS)",
+        let rank_lr: [u32; 30] = snap.rank_lr.as_slice().try_into().unwrap();
+        let rank_out: [u32; 30] = snap.rank_out.as_slice().try_into().unwrap();
+
+        th.card_with_actions(
+            ui,
+            Some("评分特效震动"),
+            |ui| {
+                card_note(
+                    ui,
+                    &th,
+                    &format!("等级 {} · 累计 {} 次", snap.rank_last, snap.rank_events),
                 );
-                if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_level_gain = lvl_gain as u32);
-            }
-            let mut rank_dur = snap.rank_duration as f32;
-            let resp = Self::with_hint(
-            ui.add(egui::Slider::new(&mut rank_dur, 20.0..=1000.0).text("满幅脉冲时长 ms (所有评分事件)")),
-                "满幅脉冲时长 ms (所有评分事件)",
-            );
-            if resp.changed() {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_duration = rank_dur as u32);
-            }
-            ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("细分事件独立强度 (触发次数, 0 = 关闭):")
-                    .size(12.0)
-                    .color(th.accent_text),
-            );
-            /* 细分事件独立强度 + 触发计数 */
-            let rank_names = [
-                ("评分点", 0usize, "每次命中累积的评分点
-调高：每一击累积的评分反馈更明显；调低：更轻；0 = 不震。"),
-                ("极限闪避", 1, "闪避/反击成功瞬间
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("暴击", 2, "暴击命中瞬间 (未定位)
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                /* 破招/背击 已搁置 (2026-08-15): 客户端判定未定位, 推断服务器判定
-                 * 见 docs/背击破招定位最终结论_v19.md
-                 * ("破招", 3, "破招控制命中 (未定位)"),
-                 * ("背击", 4, "背后攻击命中 (未定位)"), */
-                ("最终击杀", 5, "BOSS 击杀/结算 (未定位)
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("凌空追击", 6, "空中追击命中 (槽评分)
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("命中第一击", 7, "命中怪物第一击 (原\"破甲\"槽, 实测语义)
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("增益叠加", 8, "增益层数叠加 (未定位)
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("释放技能", 9, "释放技能瞬间 (n2500[5747] 计数)
-调高：放技能那一下更有存在感；调低：更轻；0 = 不震。"),
-                /* 镜头震动/技能震动 已搁置 (2026-08-15): 见 docs/震屏事件搁置记录_v16.md
-                 * ("镜头震动", 10, "真 [shake screen] 词条屏幕震动"),
-                 * ("技能震动", 12, "技能释放/命中时的屏幕震动"), */
-                /* 移动 (持续震动) 已移至"全局总闸"卡片节奏感下方 (v22) */
-                ("暴击特写", 13, "暴击/击杀时的镜头特写震屏
-调高：该事件震得更明显；调低：更轻；0 = 不震。"),
-                ("怪物死亡", 14, "怪物死亡 (OnTargetDie 纯目标死亡信号)
-调高：怪死时更明显；调低：更轻；0 = 不震。"),
-            ];
-            let col_w = (ui.available_width() - theme::SP_L) / 2.0;
-            ui.horizontal(|ui| {
-                let half = rank_names.len().div_ceil(2);
-                for chunk in [&rank_names[..half], &rank_names[half..]] {
-                    ui.vertical(|ui| {
-                        ui.set_min_width(col_w);
-                        ui.set_max_width(col_w);
-                        for (name, idx, hint) in chunk.iter().copied() {
-                        /* 名称(计数) 独立标签在数值上方 (与飘字类型强度一致) */
-                        let cnt = snap.rank_type_events[idx];
-                        ui.label(
-                            egui::RichText::new(format!("{} ({})", name, cnt))
-                                .size(13.0)
-                                .color(th.text),
-                        );
-                        let mut g = snap.rank_type_gain[idx] as f32;
-                        if ui
-                            .add(egui::Slider::new(&mut g, 0.0..=100.0))
-                            .changed()
-                        {
-                            Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_type_gain[idx] = g as u32);
-                        }
-                        ui.label(egui::RichText::new(hint).size(11.0).weak());
-                        /* 每个评分事件的独立 L/R 马达权重 */
-                        Self::render_rank_lr(&self.backend, ui, self.dark_mode, &rank_lr_arr, &rank_out_arr, idx);
-                        ui.add_space(6.0);
-                        }
-                    });
+            },
+            |ui| {
+            /* 最近评分状态 */
+            let rl = snap.rank_last;
+            let (rtext, rcolor) = if rl >= 8 {
+                (format!("★ 最近评分: 等级 {rl}（特殊动作!）  累计 {} 次", snap.rank_events), th.warn)
+            } else if rl >= 2 {
+                (format!("● 最近评分: 等级 {rl}  累计 {} 次", snap.rank_events), th.info)
+            } else {
+                ("○ 暂无评分事件（进副本打怪触发）".to_string(), th.hint)
+            };
+            ui.label(egui::RichText::new(rtext).size(11.5).color(rcolor));
+            ui.add_space(theme::SP_S);
+
+            /* 两个总旋钮并排: 全宽单行滑轨太长, 左右各一个更好扫读 */
+            let backend = &self.backend;
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                if col == 0 {
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::STAR, "评分等级强度").suffix("%")
+                            .hint("等级 F~SSS 的整体力度"),
+                        snap.rank_level_gain,
+                        0.0,
+                        100.0,
+                        |v, n| v.rank_level_gain = n,
+                    );
+                } else {
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::PULSE, "满幅脉冲时长 ms")
+                            .hint("评分脉冲多厚；0 = 只闪一下"),
+                        snap.rank_duration,
+                        20.0,
+                        1000.0,
+                        |v, n| v.rank_duration = n,
+                    );
                 }
             });
-            ui.add_space(4.0);
-            if ui.add(th.secondary_button("测试评分震动 (模拟等级 8)")).clicked()
-            {
-                self.backend
-                    .dispatch(crate::ui_api::UiCommand::TestRank);
+
+            widgets::group_head(ui, &th, "细分事件强度 (0 = 关闭)");
+            let rank_names = [
+                ("评分点", 0usize, "每次命中累积的评分点"),
+                ("极限闪避", 1, "闪避/反击成功瞬间"),
+                ("暴击", 2, "暴击命中瞬间（未定位）"),
+                ("最终击杀", 5, "BOSS 击杀/结算（未定位）"),
+                ("凌空追击", 6, "空中追击命中（槽评分）"),
+                ("命中第一击", 7, "命中怪物第一击（原破甲槽）"),
+                ("增益叠加", 8, "增益层数叠加（未定位）"),
+                ("释放技能", 9, "释放技能瞬间"),
+                ("暴击特写", 13, "暴击/击杀时的镜头特写震屏"),
+                ("怪物死亡", 14, "怪物死亡（OnTargetDie）"),
+            ];
+            let half = rank_names.len().div_ceil(2);
+            let backend = &self.backend;
+            let dark = self.dark_mode;
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                let slice = if col == 0 {
+                    &rank_names[..half]
+                } else {
+                    &rank_names[half..]
+                };
+                for (name, idx, hint) in slice.iter().copied() {
+                    let cnt = snap.rank_type_events[idx];
+                    cfg_row_lr(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        vib_row(ic::TARGET, name).tag(&format!("触发{cnt}")).hint(hint),
+                        snap.rank_type_gain[idx],
+                        0.0,
+                        100.0,
+                        |v, n| v.rank_type_gain[idx] = n,
+                        |ui| Self::render_rank_lr(backend, ui, dark, &rank_lr, &rank_out, idx),
+                    );
+                }
+            });
+            ui.add_space(theme::SP_XS);
+            if ui.add(th.secondary_button("测试评分震动 (模拟等级 8)")).clicked() {
+                self.backend.dispatch(crate::ui_api::UiCommand::TestRank);
             }
         });
     }
 
-    /// vib_score_decay_section — 评分动态衰减 类鬼泣 v29 (原 1354-1474)
+    /// 评分动态衰减 (类鬼泣)。
     fn vib_score_decay_section(
         &mut self,
         ui: &mut egui::Ui,
         job_mode: bool,
-        vib: &crate::config::VibrationConfig,
+        vib: &VibrationConfig,
     ) {
-        /* 评分动态衰减 (类鬼泣, v29): 独立卡片, 位于评分特效震动下方 */
-        Self::vib_section(ui, self.dark_mode, "评分动态衰减 (类鬼泣): 越打越猛, 停手跌分", |ui| {
-            let rd = vib.rank_decay_enabled;
+        let th = self.theme();
+        let rd = vib.rank_decay_enabled;
+        th.card_with_actions(
+            ui,
+            Some("评分动态衰减 · 类鬼泣"),
+            |ui| {
+                card_note(ui, &th, if rd { "已启用" } else { "未启用" });
+            },
+            |ui| {
             ui.label(
                 egui::RichText::new(
-                    "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n\
-                     最高评级反馈 = 当前预设参数 ×120%; 最低档保底 60% (不失去基础反馈)。",
+                    "攻击/命中提升评级（0-8），停手超过延迟后逐级衰减。最高评级反馈 = 当前预设 ×120%；最低档保底 60%。",
                 )
                 .size(11.0)
-                .weak(),
+                .color(th.hint),
             );
-            ui.add_space(4.0);
+            ui.add_space(theme::SP_S);
             let mut rd_on = rd;
-                                    let resp = Self::with_hint(
-                    ui
-                    .checkbox(&mut rd_on, "启用评分动态衰减 (类鬼泣)")
-                    .on_hover_text(
-                        "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n\
-                         最高评级反馈 = 当前预设参数 ×1.2; 最低档保底 0.6 (不失去基础反馈)。",
-                    ),
-                    "启用评分动态衰减 (类鬼泣)",
-                );
-                if resp.changed()
-            {
+            if widgets::check_row(
+                ui,
+                &th,
+                &mut rd_on,
+                "启用评分动态衰减",
+                "开：越打越猛、停手跌分；关：固定强度",
+                "攻击/命中提升评级 (0-8), 停手超过延迟后逐级衰减。\n最高评级反馈 = 当前预设参数 ×1.2; 最低档保底 0.6 (不失去基础反馈)。",
+            ) {
                 Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_enabled = rd_on);
             }
-            let mut rdd = vib.rank_decay_delay_ms as f32;
-                                let resp = Self::with_hint(
-                ui
-                    .add_enabled(
-                        rd_on,
-                        egui::Slider::new(&mut rdd, 500.0..=5000.0)
-                            .text("停手衰减延迟 ms"),
-                    )
-,
-                "停手衰减延迟 ms",
-            );
-            if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_delay_ms = rdd as u32);
-            }
-            let mut rds = vib.rank_decay_speed as f32;
-            /* ★审计修复: 载体是 u32, 浮点滑块的小数档位 (如 4.5) 会被截成 4
-             * —— 改为整数步进, 滑块档位与实际生效值一致 */
-                                let resp = Self::with_hint(
-                ui
-                    .add_enabled(
-                        rd_on,
-                        egui::Slider::new(&mut rds, 1.0..=5.0).integer()
-                            .text("衰减速度 级/秒 (整数)"),
-                    )
-,
-                "衰减速度 级/秒 (整数)",
-            );
-            if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_speed = rds as u32);
-            }
-            let mut rdmin = vib.rank_decay_min_mul as f32;
-                                let resp = Self::with_hint(
-                ui
-                    .add_enabled(
-                        rd_on,
-                        egui::Slider::new(&mut rdmin, 40.0..=100.0)
-                            .text("最低反馈倍率 % (评级 0, 保底)"),
-                    )
-,
-                "最低反馈倍率 % (评级 0, 保底)",
-            );
-            if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_min_mul = rdmin as u32);
-            }
-            let mut rdmax = vib.rank_decay_max_mul as f32;
-                                let resp = Self::with_hint(
-                ui
-                    .add_enabled(
-                        rd_on,
-                        egui::Slider::new(&mut rdmax, 100.0..=200.0)
-                            .text("最高反馈倍率 % (满评分, 预设×此值)"),
-                    )
-,
-                "最高反馈倍率 % (满评分, 预设×此值)",
-            );
-            if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.rank_decay_max_mul = rdmax as u32);
-            }
+            let gate = |r: Row<'static>| if rd_on { r } else { r.off() };
+            /* 全宽卡内两列: 左 = 节奏 (多久开始跌 / 跌多快), 右 = 幅度 (保底 / 上限) */
+            let backend = &self.backend;
+            widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                if col == 0 {
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        gate(vib_row(ic::HOURGLASS, "停手衰减延迟 ms")),
+                        vib.rank_decay_delay_ms,
+                        500.0,
+                        5000.0,
+                        |v, n| v.rank_decay_delay_ms = n,
+                    );
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        gate(vib_row(ic::TREND_DOWN, "衰减速度 级/秒 (整数)")),
+                        vib.rank_decay_speed,
+                        1.0,
+                        5.0,
+                        |v, n| v.rank_decay_speed = n,
+                    );
+                } else {
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        gate(vib_row(ic::ARROW_DOWN, "最低反馈倍率 % (评级 0, 保底)")),
+                        vib.rank_decay_min_mul,
+                        40.0,
+                        100.0,
+                        |v, n| v.rank_decay_min_mul = n,
+                    );
+                    cfg_row(
+                        ui,
+                        &th,
+                        backend,
+                        job_mode,
+                        gate(vib_row(ic::ARROW_UP, "最高反馈倍率 % (满评分, 预设×此值)")),
+                        vib.rank_decay_max_mul,
+                        100.0,
+                        200.0,
+                        |v, n| v.rank_decay_max_mul = n,
+                    );
+                }
+            });
         });
     }
 
-    /// vib_advanced_section — 高级震动调校 CollapsingHeader (群怪不打手/连击自适应/走路质感/输出质感/预留槽位, 原 1478-2748)
+    /// ④ 高级震动调校 (折叠; 展开后 6 个主题面板双列)。
     fn vib_advanced_section(
         &mut self,
         ui: &mut egui::Ui,
         job_mode: bool,
         legacy: bool,
-        vib: &crate::config::VibrationConfig,
-        snap: &crate::ui_api::VibSnap,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
     ) {
         let th = self.theme();
-        let item_lr_arr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
-        let item_out_arr: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
 
-/* 高级震动调校 (六类 L/R 比例已并入基础区每项权重, 此处不再重复) */
-        Self::vib_section(
-            ui,
-            self.dark_mode,
-            "高级震动调校 (精细微调, 玩家可选)",
-            |ui| {
-        egui::CollapsingHeader::new(
-            egui::RichText::new("展开高级参数分区 (群怪/连击/移动/输出/算法窗口)")
-                .size(12.0)
-                .strong(),
-        )
-        .default_open(false)
-        .show(ui, |ui| {
-            let mut adv_on = if job_mode {
-                self.vib_job_adv_on
-            } else {
-                vib.advanced_enabled};
-            ui.horizontal(|ui| {
-                if ui
-                    .checkbox(&mut adv_on, "允许高级调校")
-                    .on_hover_text(
-                        "默认关闭: 只用基础分区即可, 高级参数保持当前配置值。\n\
-                         开启后可在下方精细调整 L/R 马达比例/衰减/窗口/连击/脉冲。",
-                    )
-                    .changed()
-                {
-                    if job_mode {
-                        self.vib_job_adv_on = adv_on;
-                    } else {
-                        Self::vib_slider_update(&self.backend, job_mode, |v| v.advanced_enabled = adv_on);
-                    }
-                }
-                ui.label(
-                    egui::RichText::new(
-                        if adv_on {
-                            "已开启: 可精细调整下方参数"
-                        } else {
-                            "已关闭: 高级参数保持当前配置 (默认)"
-                        },
-                    )
-                    .size(11.0)
-                    .color(if adv_on { th.good } else { th.hint }),
-                );
-            });
-            ui.add_space(4.0);
-
-            if !adv_on {
-                ui.label(
-                    egui::RichText::new(
-                        "玩家通常只用基础分区即可获得良好手感。\n\
-                         高级调校基于当前配置做精细化微调, 关闭时数值保持不变。",
-                    )
-                    .size(11.0)
-                    .weak(),
-                );
-                ui.add_space(4.0);
-            }
-            /* ★v20 专家参数开关: 默认关 —— 只露各算法最关键的高层旋钮,
-             * 低频微调 (窗口/封顶/补发/恢复快慢等) 收进专家模式, 减少噪音。
-             * 会话内瞬态, 不影响任何参数值 (隐藏的滑块保持当前配置)。 */
-            let mut show_expert = self.vib_show_expert;
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut show_expert, "显示专家参数 (低频微调)")
-                    .on_hover_text(
-                        "默认关闭: 每个算法只显示最关键的旋钮, 减少干扰。\n\
-                         开启后显示全部微调滑块 (窗口时长/封顶/补发/恢复快慢等),\n\
-                         关闭隐藏不影响参数值。",
-                    );
-                ui.label(
-                    egui::RichText::new(if show_expert {
-                        "已开启: 全部参数可见"
-                    } else {
-                        "已关闭: 低频微调已隐藏 (默认)"
-                    })
-                    .size(11.0)
-                    .color(if show_expert { th.good } else { th.hint }),
-                );
-            });
-            self.vib_show_expert = show_expert;
-            ui.add_space(4.0);
-
-            /* ★S1 输出引擎模式 (v20, 用户定稿): 经典 / S4 纯 / S4+不丢震动。
-             * 置于高级区顶部 (而非输出质感深处), 便于玩家找到这个"引擎级"选择。 */
-            let s1_route = legacy;
-            let s1_mode = vib.legacy_output_mode.min(2);
-            if s1_route {
-                ui.separator();
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new("S1 输出引擎模式 (S4 特调)")
-                        .size(12.0)
-                        .strong(),
-                );
-                ui.label(
-                    egui::RichText::new(
-                        "经典 = 现行 ACT1 管线 (默认, 手感与升级前一致); \
-                         S4 纯 = 换成 S4 输出整形 (低于死区的轻反馈会被吞掉); \
-                         S4+不丢震动 = 同 S4 整形, 但轻反馈攒厚再出, 不丢震动。",
-                    )
-                    .size(11.0)
-                    .weak(),
-                );
-                let mut sel = s1_mode;
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut sel, 0, "经典");
-                    ui.selectable_value(&mut sel, 1, "S4 纯");
-                    ui.selectable_value(&mut sel, 2, "S4+不丢震动");
-                });
-                if sel != s1_mode {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| {
-                        v.legacy_output_mode = sel;
-                    });
-                }
-                ui.add_space(2.0);
-            }
-
-        /* ★S1 群怪不打手 (v14.1-v16 治理算法): 高级调校区内小节 (v16.5 用户定稿) */
-        /* ── 群怪不打手 (S1 命中治理) ── */
-        if legacy {
-            ui.label(egui::RichText::new("群怪不打手 (命中治理, 仅 ACT1 路线)").size(12.0).strong());
-            ui.add_enabled_ui(adv_on, |ui| {
-                ui.label(
-                    egui::RichText::new("打群怪时, 同一瞬间来的多次命中会合成一下更厚的震动; 打久了还会自动再变轻。\n单挑 / 打一只怪时完全不受下面的设置影响。合并力度调 0 = 关闭本功能。")
-                        .size(11.0)
-                        .weak(),
-                );
-                ui.add_space(4.0);
-                /* ── 一刀多怪合并 ── */
-                ui.label(
-                    egui::RichText::new("一刀多怪合并 (群怪一刀只震一下)")
-                        .size(12.0)
-                        .strong(),
-                );
-                let mut _t = vib.merge_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用一刀多怪合并 (关=回到旧行为, 下方滑块不生效)")
-                    .on_hover_text("关掉后: 命中聚合窗/合并记账/补发全部回到旧行为 (不做合并, 不补发)。默认开。
-开：群怪一刀只震一下（推荐，默认开）；关：回到旧行为：一刀多怪各震各的、更吵。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_enabled = _t);
-                }
-                /* ★命中聚合窗 (v15.2): 群怪一刀多条命中事件合并, 一刀一震 */
-                let mut hmz = vib.hitmerge_ms as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut hmz, 10.0..=200.0)
-                                .text("命中聚合窗 ms (群怪一刀只震一下)"),
-                        )
-                        .on_hover_text("群怪时一刀会同时产生多条命中事件 (每怪一条)。此窗口内的事件全部合并成一下更厚的震动 (能量不丢)。\n默认 60: 一刀砍中几个怪都只震一下; 单挑慢速攻击不受影响。觉得合并得不够就调大。
-调高：窗口更大，一刀砍多怪更容易并成一下；调低：窗口更小，可能一刀震两下。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitmerge_ms = hmz as u32);
-                }
-                /* ★v20 专家参数: 合并保留/封顶/补发窗口 (低频微调) */
-                if show_expert {
-                let mut mk = vib.merge_keep as f32;
-                                        let resp = Self::with_hint(
-                    ui
-                        .add(
-                            egui::Slider::new(&mut mk, 0.0..=100.0)
-                                .text("合成一下时保留多少力度 % (0=关闭)"),
-                        )
-,
-                    "合成一下时保留多少力度 % (0=关闭)",
-                );
-                if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_keep = mk as u32);
-                }
-                let mut mc = vib.merge_cap as f32;
-                if ui
-                    .add(
-                        egui::Slider::new(&mut mc, 20.0..=150.0)
-                            .text("合成一下的最大力度 % (100=满力)"),
-                    )
-                    .on_hover_text("群怪时合成出来的那一响最大有多重。调低 = 群怪更轻; 调高 = 群怪更重。
-调高：群怪合成的那一下更重；调低：群怪合成的那一下更轻。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_cap = mc as u32);
-                }
-                let mut mh = vib.merge_hold as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut mh, 0.0..=300.0)
-                                .text("漏掉的震动多久后补一下 (ms, 0=不补)"),
-                        )
-                        .on_hover_text("被合并的震动如果一直没等到下一发, 到时间就补一记小的收尾, 保证不白打。0 = 不补。
-调高：等待窗口更长（更容易补上）；调低：窗口更短；0 = 不补。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_hold = mh as u32);
-                }
-                } /* show_expert */
-                ui.add_space(4.0);
-                /* ── 命中限频 ── */
-                ui.label(
-                    egui::RichText::new("命中限频 (每秒最多震几下)")
-                        .size(12.0)
-                        .strong(),
-                );
-                let mut _t = vib.hitcap_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用命中限频 (关=回到旧行为, 下方滑块不生效)")
-                    .on_hover_text("关掉后: 命中不再受每秒次数上限约束 (超额不再记账合并)。默认开。
-开：群怪每秒最多震几下（更安静、更耐听，默认开）；关：不限制：群怪可能连成一片。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_enabled = _t);
-                }
-                /* ★命中限频 (v14.2): 仅普通命中通道的秒级限频, 超额命中
-                 * 全额记账进聚合能量 —— 频率上限转化为厚度, 每击必震 */
-                let mut hm = vib.hitcap_max as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut hm, 0.0..=30.0)
-                                .text("每秒最多震几下 (0=不限制)"),
-                        )
-                        .on_hover_text("打群怪时, 普通攻击的震动每秒最多这么多次; 超出的不会消失, 会合并成一下更厚的。\n默认 6: 单挑永远打不满, 群怪最多每秒 6 下。
-调高：允许每秒更多下（更密）；调低：每秒更少下（更省更耐听）。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_max = hm as u32);
-                }
-                if show_expert {
-                let mut hw = vib.hitcap_win_ms as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut hw, 200.0..=5000.0)
-                                .text("限频的计时窗口 ms"),
-                        )
-                        .on_hover_text("统计多长时间内的震动次数。窗口 × 次数 = 这段时间里最多震几下
-调高：窗口更长，限频更平缓；调低：窗口更短，只压瞬时爆发。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_win_ms = hw as u32);
-                }
-                } /* show_expert */
-                ui.add_space(4.0);
-                /* ── 命中风暴抽样 (v16) ── */
-                ui.label(
-                    egui::RichText::new("命中风暴抽样 (命中暴增时只震一部分, 停手即恢复刀刀震)")
-                        .size(12.0)
-                        .strong(),
-                );
-                let mut _t = vib.storm_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用命中风暴抽样 (关=只检测不抽样, 下方静音开关仍有效)")
-                    .on_hover_text("关掉后: 命中不再被抽样丢弃 (每一击都震), 但「风暴期」检测继续运行, 两个静音开关照常可用。默认开。
-开：命中暴增时自动抽稀（防连成一串，默认开）；关：每一击都震（更吵，但风暴静音仍可用）。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_enabled = _t);
-                }
-                let mut st_thr = vib.storm_thr as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut st_thr, 2.0..=30.0).integer()
-                                .text("一秒内命中超过几下算风暴"),
-                        )
-                        .on_hover_text("短时间内命中事件暴增 (狂战士双倍打击、群怪混战) 时进入\"风暴\": 只保留一部分震动, 防止连成一串停不下来。\n只统计你打出去的命中, 被怪打、出血跳字等完全不算。默认 10。本阈值同时用于判定「风暴期」(供下方两个静音开关使用); 要关闭抽样请用上面的总开关。
-调高：更难触发风暴（更少抽样）；调低：更容易触发风暴（更多抽样）。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_thr = st_thr as u32);
-                }
-                let mut st_keep = vib.storm_keep_pct as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut st_keep, 10.0..=100.0).integer()
-                                .text("风暴期保留多少 % 命中震动"),
-                        )
-                        .on_hover_text("风暴期间每几下命中震一下。50 = 两条命中震一条 (被跳过的不再补发、不变厚)。\n100 = 风暴只记账不丢震 (等于关闭); 觉得还是太密就调小。
-调高：保留更多（100 = 不抽样）；调低：抽得更狠（更稀疏）。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_keep_pct = st_keep as u32);
-                }
-                let mut st_pause = vib.storm_pause_ms as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut st_pause, 100.0..=2000.0).integer()
-                                .text("停手多久恢复刀刀震 ms"),
-                        )
-                        .on_hover_text("两次命中之间隔开这么久, 就退出风暴、下一击开始恢复每一刀都震。\n默认 400: 停半秒再打, 刀刀震。
-调高：更容易退出风暴（更早恢复刀刀震）；调低：风暴状态更黏（更久才恢复）。
-调高：风暴更黏（更久才恢复刀刀震）；调低：很快退出风暴（更快恢复）。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_pause_ms = st_pause as u32);
-                }
-                if show_expert {
-                let mut st_win = vib.storm_win_ms as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut st_win, 200.0..=5000.0).integer()
-                                .text("风暴的统计窗口 ms"),
-                        )
-                        .on_hover_text("在这个时间窗里数命中次数, 超过上面的\"算风暴\"条数就进入风暴。\n默认 1000 (1 秒); 窗口越小, 风暴触发越挑剔。一般不用动。
-调高：窗口更长，风暴判定更平缓；调低：窗口越小越挑剔。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_win_ms = st_win as u32);
-                }
-                } /* show_expert */
-                /* ★统合衰减期 (v17): 风暴期每一击重新起振, 旧包络瞬间消亡 */
-                let mut sue = vib.storm_unified_enabled;
-                if ui
-                    .checkbox(&mut sue, "启用统合衰减期 (风暴期每一击重新起振, 旧的瞬间消失)")
-                    .on_hover_text("风暴期普通命中改用一条统合包络: 每命中一次就把旧包络瞬间清零、重新起振, 衰减时间统一固定, 到点硬归零。\n连续命中 = 一击接一击的干净持续震动 (旧尾巴不再叠糊)。\n开启时风暴抽样与命中限频对该通道让路 (每一击都重新起振)。默认不勾选。
-开：风暴期一击是一击、更干净（默认关）；关：风暴期保留原来的叠加尾巴。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_unified_enabled = sue);
-                }
-                if show_expert {
-                let mut sum_ms = vib.storm_unified_ms as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut sum_ms, 40.0..=400.0).integer()
-                                .text("统合衰减期 ms (越大越连贯, 40-400)"),
-                        )
-                        .on_hover_text("每击重新起振后多久硬归零。比两次命中的间隔略长一点最连贯 (默认 120)。
-调高：延续更久更连贯；调低：更短更干脆。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_unified_ms = sum_ms as u32);
-                }
-                } /* show_expert */
-                /* ★风暴静音怪物异常 (v16.6, 可选): 风暴期间暂时关掉
-                 * 0x04 出血/中毒跳字反馈, 风暴结束自动恢复 */
-                let mut sma = vib.storm_mute_abnormal;
-                if ui
-                    .checkbox(&mut sma, "风暴期间暂时关闭怪物异常反馈 (出血/中毒跳字)")
-                    .on_hover_text("勾选后: 命中风暴期间, 怪物出血/中毒等跳字的震动暂时关掉 (完全不震、也不抢节奏);\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n适合狂战士这类每次攻击都挂出血、出血跳字一直抢震动的场景。默认不勾选。
-开：风暴期出血跳字静音（更干净，默认关）；关：出血跳字照常参与。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_abnormal = sma);
-                }
-                /* ★风暴静音评分点系统 (v16.7, 可选): 风暴期间评分族事件
-                 * (评分点/闪避/暴击/击杀/第一击/怪物死亡等) 暂时关掉 */
-                let mut smr = vib.storm_mute_rank;
-                if ui
-                    .checkbox(&mut smr, "风暴期间暂时关闭评分点系统 (评分/击杀/怪物死亡等)")
-                    .on_hover_text("勾选后: 命中风暴期间, 评分点系统整族事件 (评分等级脉冲/评分点/闪避/暴击/破招/背击/最终击杀/凌空追击/命中第一击/增益叠加/释放技能/镜头震动/技能震动/暴击特写/怪物死亡) 暂时不震;\n风暴结束 (停手超过上面的\"恢复刀刀震\"时间) 自动恢复。\n移动持续震动不属于评分点系统, 不受影响。默认不勾选。
-开：风暴期评分族整族静音（更干净，默认关）；关：评分族照常参与。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_rank = smr);
-                }
-                ui.add_space(4.0);
-                /* ── 持续降温 ── */
-                ui.label(
-                    egui::RichText::new("持续降温 (打久了自动变轻, 停手恢复)")
-                        .size(12.0)
-                        .strong(),
-                );
-                let mut _t = vib.sustain_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用持续降温 (关=回到旧行为, 下方两个滑块不生效)")
-                    .on_hover_text("关掉后: 打久了不再自动变轻 (持续压制关闭)。默认开。
-开：一直打群怪会自动变轻（默认开）；关：一直打也不会变轻（下方两个滑块不生效）。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_enabled = _t);
-                }
-                /* ★持续压制 (v15.3): 一直打群怪 (限频持续顶满) 超过几秒后,
-                 * 命中震动自动再降一档; 停手或怪少了自动恢复 */
-                let mut sus_s = vib.sustain_secs as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut sus_s, 0.0..=10.0).integer()
-                                .text("打群怪几秒后自动降温 (秒, 0=关闭)"),
-                        )
-                        .on_hover_text("一直打群怪、震动一直顶满上限超过这个秒数后, 命中震动自动再变轻一档, 防止越打越吵。\n停手或怪变少后自动恢复。适合狂战士血之狂暴这类越打越密的职业。0 = 关闭。
-调高：要打更久才降温；调低：很快就降温（更早变轻）；0 = 关闭。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_secs = sus_s as u32);
-                }
-                let mut sus_r = vib.sustain_reduce as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut sus_r, 10.0..=80.0)
-                                .text("自动降温幅度 % (变轻多少)"),
-                        )
-                        .on_hover_text("触发自动降温后, 命中震动在原来的基础上再变轻这个比例。30 = 打久了比刚开打轻 30%。
-调高：压得更狠（更轻）；调低：几乎不压。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_reduce = sus_r as u32);
-                }
-                let mut _t = vib.tail_land_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用脉冲落地 (关=回到自然衰减尾巴, 下方滑块不生效)")
-                    .on_hover_text("关掉后: 每下的余震不再被提前切断 (保持自然余音)。默认开。
-开：余震提前切断（一击更干脆，默认开）；关：保留自然余音（余震更长）。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.tail_land_enabled = _t);
-                }
-                /* ★脉冲落地 (v15): 高负载期衰减尾巴提前归零, 脉冲间真静音 */
-                if show_expert {
-                let mut tl_pct = vib.tail_land_pct as f32;
-                                        if ui
-                        .add(
-                            egui::Slider::new(&mut tl_pct, 0.0..=60.0)
-                                .text("震尾多快切断 % (0=自然衰减)"),
-                        )
-                        .on_hover_text("一直打群怪时, 每下的余震降到这一下的 25% 就直接静音, 一下是一下更干脆。\n默认 25; 0 = 不切, 保持自然余音。
-调高：更早切断余震（更干脆）；调低：更接近自然余音；0 = 不切。")
-                        
-                                            .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.tail_land_pct = tl_pct as u32);
-                }
-                } /* show_expert */
-            });
-        }
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        /* ── 连击与自适应 (连击增强已回全局总阀; 上限/斜率/自适应在此) ── */
-        ui.label(egui::RichText::new("连击与自适应 (连击越打越强, 太快自动收敛)").size(12.0).strong());
-        ui.add_enabled_ui(adv_on, |ui| {
-            ui.label(
-                egui::RichText::new("连击强度 = 全局总阀的「连击增强」× 每 100 连加强, 渐进到「连击加成的上限」。\n打太快时自动减轻、打太慢自动恢复, 防止叠加饱和震手。")
-                    .size(11.0)
-                    .weak(),
-            );
-            ui.add_space(4.0);
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* 连击密度自适应 (v22): 短时间连击暴增窗口期自动降强度
-             * 高连击职业专属算法 (召唤/精灵骑士/剑魂/蓝拳等), 全职业页仅该职业显示 */
-            let d_thr = snap.params[29];
-            if job_mode && d_thr >= 100 {
-                ui.label(
-                    egui::RichText::new("连击密度自适应: 该职业无此专属算法 (仅高连击职业启用)")
-                        .size(11.0)
-                        .weak(),
-                );
-            } else {
-                ui.label(
-                    egui::RichText::new("连击密度自适应 (短时间连击暴增窗口期自动降强度, 防震手)")
-                        .size(12.0)
-                        .strong(),
-                );
-                let mut _t = vib.density_enabled;
-                if ui
-                    .checkbox(&mut _t, "启用连击密度自适应 (关=回到旧行为, 下方滑块不生效)")
-                    .on_hover_text("关掉后: 连击暴增时不再自动降强度 (等效阈值 100)。默认开。
-开：连击暴增时自动降强度（防越打越吵，默认开）；关：不降强度（下方四个滑块不生效）。")
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.density_enabled = _t);
-                }
-                if job_mode {
-                    ui.label(
-                        egui::RichText::new("【当前职业专属】高连击职业窗口期自适应降强度")
-                            .size(11.0)
-                            .color(th.accent_text)
-                            .strong(),
-                    );
-                }
-                let d_rows = [
-                    ("多快算太密: 连击次数 (100=关闭)", 29, 5.0, 100.0),
-                    ("统计时长 ms", 30, 200.0, 1500.0),
-                    ("太密时减轻多少 %", 31, 0.0, 80.0),
-                    ("停手多久恢复力度 ms", 32, 300.0, 3000.0),
-                    ("最轻不低于原来的 %", 33, 30.0, 100.0),
-                    ("恢复快慢 ms (0=立刻)", 34, 0.0, 800.0),
-                ];
-                for (name, idx, lo, hi) in d_rows {
-                    /* ★v20 专家参数: 统计时长/恢复窗口/恢复快慢 (低频) */
-                    if !show_expert && matches!(idx, 30 | 32 | 34) {
-                        continue;
-                    }
-                    let mut v = snap.params[idx] as f32;
-                    let resp = Self::with_hint(
-                    ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                        name,
-                    );
-                    if resp.changed() {
-                        Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                    }
-                }
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* 命中自适应 (防叠加饱和) */
-            ui.label(
-                egui::RichText::new("命中自适应 (打太快自动减轻)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let mut _t = vib.adapt_enabled;
-                                    let resp = Self::with_hint(
-                    ui
-                    .checkbox(&mut _t, "启用命中自适应 (关=回到旧行为, 下方滑块不生效)")
-                    .on_hover_text("关掉后: 打太快时不再自动减轻 (等效降幅 0)。默认开。"),
-                    "启用命中自适应 (关=回到旧行为, 下方滑块不生效)",
-                );
-                if resp.changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.adapt_enabled = _t);
-            }
-            let adapt_rows = [
-                ("连击加成的上限 (倍数×100)", 47, 100.0, 500.0),
-                ("连击越长震越强: 每 100 连加强多少 %", 48, 1.0, 300.0),
-                ("连击很久没连上时补一记的门槛", 49, 10.0, 100.0),
-                ("打多快算太快: 间隔低于此开始减弱 ms", 50, 30.0, 300.0),
-                ("打太快时减轻多少 %", 51, 0.0, 50.0),
-                ("打多慢算正常: 间隔超过此恢复满强度 ms", 52, 100.0, 1000.0),
-                ("减弱后最轻不低于原来的 %", 53, 0.0, 100.0),
-            ];
-            for (name, idx, lo, hi) in adapt_rows {
-                /* ★v20 专家参数: 斜率/补脉冲门槛/恢复间隔/保底 (低频) */
-                if !show_expert && matches!(idx, 48 | 49 | 52 | 53) {
-                    continue;
-                }
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
-                );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        /* ── 走路质感与走位能量 (移动强度/独立开关已回全局总阀) ── */
-        ui.label(egui::RichText::new("走路质感与走位能量 (移动强度在全局总阀)").size(12.0).strong());
-        ui.add_enabled_ui(adv_on, |ui| {
-            /* 走路质感 (v20.2: 轻量步伐参数化) */
-            ui.label(
-                egui::RichText::new("走路质感 (轻量步伐, 不抢主震动)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let m_rows = [
-                ("移动步频 ms (自然步频 ~380)", 23, 200.0, 800.0),
-                ("移动着地脉冲 % (柔和, 不宜高)", 24, 10.0, 100.0),
-                ("移动抬脚保持 % (极轻)", 25, 5.0, 50.0),
-                ("移动整体增益 % (轻音量)", 26, 10.0, 100.0),
-                ("移动平滑系数 % (越大过渡越柔, 消除嗡嗡声)", 27, 5.0, 100.0),
-                ("移动最低输出阈值 % (低于归0, 消除沙沙声)", 28, 0.0, 20.0),
-            ];
-            for (name, idx, lo, hi) in m_rows {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
-                );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* 走位能量积累 (v22): 长时间移动积累走位能量, 停手后窗口内攻击增强
-             * 走位型职业 (漫游/剑魂/刺客/影舞/决战者) 强化; 站桩职业弱化 */
-            ui.label(
-                egui::RichText::new("走位能量积累 (停手窗口内下次攻击增强)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let mut _t = vib.move_charge_enabled;
-            if ui
-                .checkbox(&mut _t, "启用走位能量积累 (关=回到旧行为, 下方滑块不生效)")
-                .on_hover_text("关掉后: 长时间走位不再积累攻击增强 (等效速率 0)。默认开。
-开：走位越久攻击越强（默认开）；关：走位不积累强度。")
-                .changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.move_charge_enabled = _t);
-            }
-            if job_mode {
-                let m_rate = snap.params[21];
-                if m_rate >= 12 {
-                    ui.label(
-                        egui::RichText::new("【走位职业】移动积累快, 停手窗口内攻击增强明显")
-                            .size(11.0)
-                            .color(th.accent_text)
-                            .strong(),
-                    );
-                } else if m_rate <= 3 {
-                    ui.label(
-                        egui::RichText::new("【站桩职业】移动积累慢, 增强弱")
-                            .size(11.0)
-                            .weak(),
-                    );
-                }
-            }
-            let c_rows2 = [
-                ("移动积累速率 %/秒 (0=禁用)", 21, 0.0, 20.0),
-                ("攻击增强上限 % (最多 ×(1+上限))", 22, 0.0, 100.0),
-                ("增强窗口 ms (停手后有效)", 39, 0.0, 3000.0),
-            ];
-            for (name, idx, lo, hi) in c_rows2 {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
-                );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-        /* ── 输出质感 (波形/平滑/马达分工/衰减/S4 管线) ── */
-        ui.label(egui::RichText::new("输出质感 (波形/平滑/马达分工/衰减)").size(12.0).strong());
-        ui.add_enabled_ui(adv_on, |ui| {
-            /* 输出波形曲线 */
-            ui.label(
-                egui::RichText::new("输出波形曲线 (数值越大越饱和, 100 = 线性)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let a_rows = [
-                ("左马达曲线 %", 19, 30.0, 300.0),
-                ("右马达曲线 %", 20, 30.0, 300.0),
-            ];
-            for (name, idx, lo, hi) in a_rows {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
-                );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-            /* 输出平滑 (v22.3: 独立参数, 一阶低通抑制低频嗡嗡声) */
-            {
-                let mut v = vib.out_smooth as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add(
-                            egui::Slider::new(&mut v, 0.0..=100.0)
-                                .text("输出平滑 % (抑制嗡嗡声, 高=柔)"),
-                        ),
-                                "输出平滑 % (抑制嗡嗡声, 高=柔)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |vc| vc.out_smooth = v as u32);
-                }
-            }
-            /* 节奏感 (从总闸卡迁入; 原 L/R item5 为死端口已移除) */
-            {
-                ui.label(
-                    egui::RichText::new("节奏感 (右马达比例)")
-                        .size(13.0)
-                        .color(th.text),
-                );
-                let mut v = snap.params[18] as f32;
-                if ui
-                    .add(egui::Slider::new(&mut v, 0.0..=100.0))
-                    .changed()
-                {
-                    Self::vib_slot_update(&self.backend, job_mode, 18, v as u32);
-                }
-                ui.label(
-                    egui::RichText::new("右马达强度占比: 50 = 均衡, 高 = 右重左轻")
-                        .size(11.0)
-                        .weak(),
-                );
-            }
-            /* 马达分工 (v30, Xbox360 风格: 轻反馈单马达, 重反馈双马达)
-             * ★v24.41: 经典 ACT1 管线不参与分工 (引擎已按路线关闭) ——
-             * 该路线的左右手感靠各项 L/R 权重调, 分工会把"左右差异"抹平成单马达。 */
-            {
-                let split_active = !legacy
-                    || vib.legacy_output_mode.min(2)
-                        != 0;
-                let mut sp = vib.split_enabled;
-                if ui
-                    .add_enabled(
-                        split_active,
-                        egui::Checkbox::new(&mut sp, "马达分工 (Xbox360 风格)"),
-                    )
-                    .on_hover_text(
-                        "轻反馈 (峰值低于分界) 仅驱动主导马达 (转子声/功耗更低);\n\
-                         重反馈双马达满幅 (大马达低频重击 + 小马达高频细节)。\n\
-                         (经典 ACT1 管线不参与分工: 会抹平左右马达差异;\n\
-                         切到 S4 模式后此开关生效)",
-                    )
-                    .changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.split_enabled = sp);
-                }
-                let mut spt = vib.split_thr as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            sp && split_active,
-                            egui::Slider::new(&mut spt, 20.0..=90.0)
-                                .text("分工分界 % (低于为轻反馈)"),
-                        ),
-                                "分工分界 % (低于为轻反馈)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.split_thr = spt as u32);
-                }
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* 各类事件衰减时长 (原 B 区) */
-            ui.label(
-                egui::RichText::new("各类事件衰减时长 (越大震感越持久)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let mut _t = vib.decay_enabled;
-            if ui
-                .checkbox(&mut _t, "启用自定义衰减时长 (关=使用内置默认衰减: 命中25/特殊55/受击25/状态60)")
-                .on_hover_text("关掉后: 四个衰减滑块不生效, 改用内置「默认」预设的衰减时长。默认开。
-开：用下面四个衰减时长（默认开）；关：改用内置「默认」预设的衰减时长。")
-                .changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.decay_enabled = _t);
-            }
-            let dec_rows = [
-                ("普通命中衰减 ms", 35, 0.0, 150.0),
-                ("特殊攻击衰减 ms", 36, 0.0, 150.0),
-                ("受击衰减 ms", 37, 0.0, 150.0),
-                ("状态变化衰减 ms", 38, 0.0, 150.0),
-            ];
-            for (name, idx, lo, hi) in dec_rows {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add(egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
-                );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-            /* 衰减时长 L/R 权重 (item3, 从总闸卡"衰减时间"行迁入 —— 滑块本身是
-             * 预留死槽, 但这对 L/R 是活的: 引擎按它缩放各通道衰减时长) */
-            ui.label(
-                egui::RichText::new("衰减时长 L/R 权重 (正=更持久, 负=更短)")
-                    .size(11.0)
-                    .weak(),
-            );
-            Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr_arr, &item_out_arr, 3);
+        th.card(ui, Some("高级震动调校"), |ui| {
             ui.label(
                 egui::RichText::new(
-                    "衰减 0-5ms = 单帧脉冲 (命中帧全幅直出、下一帧硬归零, 最脆的\"一顿一顿\"); \
-                     6ms 起为指数衰减尾巴",
+                    "基础分区已能获得良好手感；这里做精细微调（群怪治理/连击/移动/输出整形/算法窗口/脉冲）。",
                 )
                 .size(11.0)
-                .weak(),
+                .color(th.hint),
             );
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* S4 输出整形组 (S1 模式 1/2 时对 S1 解锁, 消除"调了没用") */
-            let s4_shape_on = !s1_route || s1_mode != 0;
-            ui.label(
-                egui::RichText::new(if !s4_shape_on {
-                    "以下为 S4+ 新方案专属 (ACT1 经典模式使用内置管线, 不受此组影响)"
-                } else if s1_route {
-                    "S4 输出整形 (S1 已启用 S4 模式, 此组生效)"
-                } else {
-                    "S4+ 新方案专属管线"
-                })
+            ui.add_space(theme::SP_S);
+
+            egui::CollapsingHeader::new(
+                egui::RichText::new("展开高级参数分区")
                     .size(12.0)
                     .strong(),
-            );
-            /* 输出低强度死区 (v29.4: ERM 转子马达启动区高死区, 低于归 0 消除转子嗡声) */
-            {
-                let mut v = vib.out_threshold as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            s4_shape_on,
-                            egui::Slider::new(&mut v, 0.0..=60.0)
-                                .text("输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)"),
-                        ),
-                                "输出低强度抑制 % (S4 / S1-S4模式, 转子马达建议 25-35)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |vc| vc.out_threshold = v as u32);
+            )
+            .default_open(false)
+            .show(ui, |ui| {
+                let mut adv_on = if job_mode {
+                    self.vib_job_adv_on
+                } else {
+                    vib.advanced_enabled
+                };
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut adv_on, egui::RichText::new("允许高级调校").size(12.5))
+                        .on_hover_text(
+                            "默认关闭: 只用基础分区即可, 高级参数保持当前配置值。\n\
+                             开启后可在下方精细调整 L/R 马达比例/衰减/窗口/连击/脉冲。",
+                        )
+                        .changed()
+                    {
+                        if job_mode {
+                            self.vib_job_adv_on = adv_on;
+                        } else {
+                            Self::vib_slider_update(&self.backend, job_mode, |v| {
+                                v.advanced_enabled = adv_on
+                            });
+                        }
+                    }
+                    ui.label(
+                        egui::RichText::new(if adv_on {
+                            "已开启：可精细调整下方参数"
+                        } else {
+                            "已关闭：高级参数保持当前配置"
+                        })
+                        .size(11.0)
+                        .color(if adv_on { th.good } else { th.hint }),
+                    );
+                    ui.add_space(theme::SP_L);
+                    ui.checkbox(
+                        &mut self.vib_show_expert,
+                        egui::RichText::new("显示专家参数").size(12.5),
+                    )
+                    .on_hover_text(
+                        "默认关闭: 每个算法只显示最关键的旋钮, 减少干扰。\n\
+                         开启后显示全部微调滑块 (窗口时长/封顶/补发/恢复快慢等), 关闭隐藏不影响参数值。",
+                    );
+                });
+
+                /* S1 输出引擎模式 (引擎级选择, 置于顶部) */
+                let s1_route = legacy;
+                let s1_mode = vib.legacy_output_mode.min(2);
+                if s1_route {
+                    ui.add_space(theme::SP_S);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new("S1 输出引擎模式")
+                                .size(12.0)
+                                .strong()
+                                .color(th.text_weak),
+                        );
+                        let mut sel = s1_mode;
+                        ui.selectable_value(&mut sel, 0, "经典");
+                        ui.selectable_value(&mut sel, 1, "S4 纯");
+                        ui.selectable_value(&mut sel, 2, "S4+不丢震动");
+                        if sel != s1_mode {
+                            Self::vib_slider_update(&self.backend, job_mode, |v| {
+                                v.legacy_output_mode = sel;
+                            });
+                        }
+                        ui.label(
+                            egui::RichText::new("经典 = 现行 ACT1 管线；S4 = 输出整形；S4+ = 轻反馈攒厚再出")
+                                .size(11.0)
+                                .color(th.hint),
+                        );
+                    });
                 }
+
+                ui.add_space(theme::SP_S);
+                let show_expert = self.vib_show_expert;
+
+                /* ★v24.64: 面板改全宽纵排 —— 半宽面板展开后是一条 2000px 的长条,
+                 * 旁边那列还空着; 全宽 + 面板内部两列, 长度直接砍半且不再有空洞 */
+                /* 高级小节内容统一随「允许高级调校」置灰 (含检查框):
+                 * 旧实现只有滑杆挂 gate, 检查框仍可点, 一屏里一半亮一半灰 */
+                ui.data_mut(|d| d.insert_temp(egui::Id::new("vib_adv_on"), adv_on));
+                let order: &[u8] = if legacy {
+                    &[0, 1, 2, 3, 4, 5, 6] // 群怪 / 连击 / 走路 / 输出 / 窗口 / 脉冲 / 预留
+                } else {
+                    &[1, 2, 3, 4, 5, 6]
+                };
+                for k in order {
+                    match *k {
+                        0 => self.vib_adv_crowd_panel(ui, job_mode, adv_on, vib, show_expert),
+                        1 => self.vib_adv_combo_panel(ui, job_mode, adv_on, vib, snap, show_expert),
+                        2 => self.vib_adv_walk_panel(ui, job_mode, adv_on, vib, snap),
+                        3 => self.vib_adv_output_panel(ui, job_mode, adv_on, legacy, vib, snap),
+                        4 => self.vib_adv_window_panel(ui, job_mode, adv_on, vib, snap),
+                        5 => self.vib_adv_pulse_panel(ui, job_mode, adv_on, vib, snap),
+                        _ => self.vib_adv_reserved_panel(ui, job_mode, adv_on, snap),
+                    }
+                }
+
+                ui.add_space(theme::SP_XS);
+                ui.label(
+                    egui::RichText::new(
+                        "衰减 0-5ms = 单帧脉冲（命中帧全幅直出、下一帧硬归零，最脆的\"一顿一顿\"）；6ms 起为指数衰减尾巴。里程碑档位固定 50/100/200/400 连击。",
+                    )
+                    .size(11.0)
+                    .color(th.hint),
+                );
+            });
+        });
+    }
+
+    /// 高级小节: 平铺折叠 (收起 = 一行标题 + 一条分隔线, 不再套一层卡片)。
+    ///
+    /// ★v24.64: 之前每个小节是一张 card_alt 小卡, 卡片套卡片再套参数卡, 三层嵌套既重
+    /// 又高; 改平铺后收起状态只有 30px, 7 个小节一整列也不过一屏, 展开哪一个都不会把
+    /// 另一列顶出空洞。
+    fn adv_panel(
+        ui: &mut egui::Ui,
+        th: &Theme,
+        title: &str,
+        desc: &str,
+        add: impl FnOnce(&mut egui::Ui),
+    ) {
+        widgets::hairline(ui, th);
+        ui.add_space(theme::SP_XS);
+        egui::CollapsingHeader::new(
+            egui::RichText::new(title)
+                .size(12.5)
+                .strong()
+                .family(Theme::font_bold())
+                .color(th.heading),
+        )
+        .id_salt(title)
+        .default_open(false)
+        .show(ui, |ui| {
+            if !desc.is_empty() {
+                ui.label(egui::RichText::new(desc).size(11.0).color(th.hint));
+                ui.add_space(theme::SP_S);
             }
-            /* 输出动态范围重映射 (v30, ERM/Xbox360: 非零必转, 轻反馈不被死区吞掉) */
-            {
+            let adv_on = ui
+                .data(|d| d.get_temp::<bool>(egui::Id::new("vib_adv_on")))
+                .unwrap_or(true);
+            ui.add_enabled_ui(adv_on, |ui| add(ui));
+        });
+        ui.add_space(theme::SP_XS);
+    }
+
+    /// 群怪不打手 (S1 命中治理)。
+    fn vib_adv_crowd_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        vib: &VibrationConfig,
+        show_expert: bool,
+    ) {
+        let th = self.theme();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        Self::adv_panel(
+            ui,
+            &th,
+            "群怪不打手 (命中治理)",
+            "打群怪时同一瞬间的多次命中合成一下更厚的震动；打久了自动再变轻。单挑完全不受影响。",
+            |ui| {
+                let backend = &self.backend;
+                widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                    if col == 0 {
+                let mut merge = vib.merge_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut merge,
+                    "一刀多怪合并",
+                    "开：群怪一刀只震一下；关：回到旧行为",
+                    "关掉后: 命中聚合窗/合并记账/补发全部回到旧行为 (不做合并, 不补发)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.merge_enabled = merge);
+                }
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::ARROWS_MERGE, "命中聚合窗 ms")),
+                    vib.hitmerge_ms,
+                    10.0,
+                    200.0,
+                    |v, n| v.hitmerge_ms = n,
+                );
+                if show_expert {
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::PERCENT, "合成一下时保留多少力度 % (0=关闭)")),
+                        vib.merge_keep,
+                        0.0,
+                        100.0,
+                        |v, n| v.merge_keep = n,
+                    );
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::ARROW_UP, "合成一下的最大力度 % (100=满力)")),
+                        vib.merge_cap,
+                        20.0,
+                        150.0,
+                        |v, n| v.merge_cap = n,
+                    );
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::CLOCK, "漏掉的震动多久后补一下 (ms, 0=不补)")),
+                        vib.merge_hold,
+                        0.0,
+                        300.0,
+                        |v, n| v.merge_hold = n,
+                    );
+                }
+
+                widgets::group_head(ui, &th, "命中限频 (每秒最多震几下)");
+                let mut cap = vib.hitcap_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut cap,
+                    "启用命中限频",
+                    "超额命中不消失，会并成更厚的一下",
+                    "关掉后: 命中不再受每秒次数上限约束 (超额不再记账合并)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.hitcap_enabled = cap);
+                }
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::CIRCLE_NOTCH, "每秒最多震几下 (0=不限制)")),
+                    vib.hitcap_max,
+                    0.0,
+                    30.0,
+                    |v, n| v.hitcap_max = n,
+                );
+                if show_expert {
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::TIMER, "限频的计时窗口 ms")),
+                        vib.hitcap_win_ms,
+                        200.0,
+                        5000.0,
+                        |v, n| v.hitcap_win_ms = n,
+                    );
+                }
+
+                                    } else {widgets::group_head(ui, &th, "命中风暴抽样");
+                let mut storm = vib.storm_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut storm,
+                    "启用命中风暴抽样",
+                    "命中暴增时只震一部分，停手即恢复刀刀震",
+                    "关掉后: 命中不再被抽样丢弃 (每一击都震), 但「风暴期」检测继续运行。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_enabled = storm);
+                }
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::LIGHTNING, "一秒内命中超过几下算风暴")),
+                    vib.storm_thr,
+                    2.0,
+                    30.0,
+                    |v, n| v.storm_thr = n,
+                );
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::PERCENT, "风暴期保留多少 % 命中震动")),
+                    vib.storm_keep_pct,
+                    10.0,
+                    100.0,
+                    |v, n| v.storm_keep_pct = n,
+                );
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::HOURGLASS, "停手多久恢复刀刀震 ms")),
+                    vib.storm_pause_ms,
+                    100.0,
+                    2000.0,
+                    |v, n| v.storm_pause_ms = n,
+                );
+                if show_expert {
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::TIMER, "风暴的统计窗口 ms")),
+                        vib.storm_win_ms,
+                        200.0,
+                        5000.0,
+                        |v, n| v.storm_win_ms = n,
+                    );
+                }
+                let mut uni = vib.storm_unified_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut uni,
+                    "统合衰减期 (风暴期每击重新起振)",
+                    "一击接一击的干净持续震动，旧尾巴不再叠糊",
+                    "风暴期普通命中改用一条统合包络: 每命中一次就把旧包络瞬间清零、重新起振。默认不勾选。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| {
+                        v.storm_unified_enabled = uni
+                    });
+                }
+                if show_expert {
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::WAVE_SINE, "统合衰减期 ms (越大越连贯, 40-400)")),
+                        vib.storm_unified_ms,
+                        40.0,
+                        400.0,
+                        |v, n| v.storm_unified_ms = n,
+                    );
+                }
+                let mut sma = vib.storm_mute_abnormal;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut sma,
+                    "风暴期关闭怪物异常反馈",
+                    "出血/中毒跳字在风暴期静音，风暴结束自动恢复",
+                    "勾选后: 命中风暴期间, 怪物出血/中毒等跳字的震动暂时关掉。默认不勾选。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_abnormal = sma);
+                }
+                let mut smr = vib.storm_mute_rank;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut smr,
+                    "风暴期关闭评分点系统",
+                    "评分/击杀/怪物死亡等整族静音",
+                    "勾选后: 命中风暴期间, 评分点系统整族事件暂时不震; 风暴结束自动恢复。默认不勾选。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.storm_mute_rank = smr);
+                }
+
+                widgets::group_head(ui, &th, "持续降温 / 脉冲落地");
+                let mut sus = vib.sustain_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut sus,
+                    "启用持续降温",
+                    "一直打群怪自动变轻，停手恢复",
+                    "关掉后: 打久了不再自动变轻 (持续压制关闭)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.sustain_enabled = sus);
+                }
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::FIRE, "打群怪几秒后自动降温 (秒, 0=关闭)")),
+                    vib.sustain_secs,
+                    0.0,
+                    10.0,
+                    |v, n| v.sustain_secs = n,
+                );
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::ARROW_DOWN, "自动降温幅度 %")),
+                    vib.sustain_reduce,
+                    10.0,
+                    80.0,
+                    |v, n| v.sustain_reduce = n,
+                );
+                let mut tail = vib.tail_land_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut tail,
+                    "启用脉冲落地",
+                    "余震提前切断，一击更干脆",
+                    "关掉后: 每下的余震不再被提前切断 (保持自然余音)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| {
+                        v.tail_land_enabled = tail
+                    });
+                }
+                if show_expert {
+                    cfg_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::SCISSORS, "震尾多快切断 % (0=自然衰减)")),
+                        vib.tail_land_pct,
+                        0.0,
+                        60.0,
+                        |v, n| v.tail_land_pct = n,
+                    );
+                }
+                    }
+                });
+
+            },
+        );
+    }
+
+    /// 连击与自适应。
+    fn vib_adv_combo_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+        show_expert: bool,
+    ) {
+        let th = self.theme();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        Self::adv_panel(
+            ui,
+            &th,
+            "连击与自适应",
+            "连击强度 = 总闸的「连击增强」× 每 100 连加强，渐进到上限；打太快自动减轻、打太慢自动恢复。",
+            |ui| {
+                let backend = &self.backend;
+                widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                    if col == 0 {
+                /* 连击密度自适应 (高连击职业专属) */
+                let d_thr = snap.params[29];
+                if job_mode && d_thr >= 100 {
+                    ui.label(
+                        egui::RichText::new("连击密度自适应: 该职业无此专属算法（仅高连击职业启用）")
+                            .size(11.0)
+                            .color(th.hint),
+                    );
+                } else {
+                    let mut den = vib.density_enabled;
+                    if widgets::check_row(
+                        ui,
+                        &th,
+                        &mut den,
+                        "启用连击密度自适应",
+                        "短时间连击暴增时自动降强度，防震手",
+                        "关掉后: 连击暴增时不再自动降强度 (等效阈值 100)。默认开。",
+                    ) {
+                        Self::vib_slider_update(&self.backend, job_mode, |v| {
+                            v.density_enabled = den
+                        });
+                    }
+                    if job_mode {
+                        ui.label(
+                            egui::RichText::new("【当前职业专属】高连击职业窗口期自适应降强度")
+                                .size(11.0)
+                                .color(th.accent_text),
+                        );
+                    }
+                    let d_rows = [
+                        ("多快算太密: 连击次数 (100=关闭)", 29usize, 5.0, 100.0, false),
+                        ("统计时长 ms", 30, 200.0, 1500.0, true),
+                        ("太密时减轻多少 %", 31, 0.0, 80.0, false),
+                        ("停手多久恢复力度 ms", 32, 300.0, 3000.0, true),
+                        ("最轻不低于原来的 %", 33, 30.0, 100.0, false),
+                        ("恢复快慢 ms (0=立刻)", 34, 0.0, 800.0, true),
+                    ];
+                    for (name, idx, lo, hi, expert_only) in d_rows {
+                        if expert_only && !show_expert {
+                            continue;
+                        }
+                        slot_row(
+                            ui,
+                            &th,
+                            &self.backend,
+                            job_mode,
+                            gate(vib_row(ic::ARROWS_IN_LINE_VERTICAL, name)),
+                            idx,
+                            snap.params[idx],
+                            lo,
+                            hi,
+                        );
+                    }
+                }
+
+                                    } else {widgets::group_head(ui, &th, "命中自适应 (打太快自动减轻)");
+                let mut adapt = vib.adapt_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut adapt,
+                    "启用命中自适应",
+                    "打太快自动减轻、打太慢自动恢复",
+                    "关掉后: 打太快时不再自动减轻 (等效降幅 0)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.adapt_enabled = adapt);
+                }
+                let adapt_rows = [
+                    ("连击加成的上限 (倍数×100)", 47usize, 100.0, 500.0, false),
+                    ("连击越长震越强: 每 100 连加强多少 %", 48, 1.0, 300.0, true),
+                    ("连击很久没连上时补一记的门槛", 49, 10.0, 100.0, true),
+                    ("打多快算太快: 间隔低于此开始减弱 ms", 50, 30.0, 300.0, false),
+                    ("打太快时减轻多少 %", 51, 0.0, 50.0, false),
+                    ("打多慢算正常: 间隔超过此恢复满强度 ms", 52, 100.0, 1000.0, true),
+                    ("减弱后最轻不低于原来的 %", 53, 0.0, 100.0, true),
+                ];
+                for (name, idx, lo, hi, expert_only) in adapt_rows {
+                    if expert_only && !show_expert {
+                        continue;
+                    }
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::ARROWS_CLOCKWISE, name)),
+                        idx,
+                        snap.params[idx],
+                        lo,
+                        hi,
+                    );
+                }
+                    }
+                });
+
+            },
+        );
+    }
+
+    /// 走路质感与走位能量。
+    fn vib_adv_walk_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        Self::adv_panel(
+            ui,
+            &th,
+            "走路质感与走位能量",
+            "轻量步伐，不抢主震动；走位越久，停手窗口内的下一次攻击越强。",
+            |ui| {
+                let backend = &self.backend;
+                widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                    if col == 0 {
+                let m_rows = [
+                    ("移动步频 ms (自然步频 ~380)", 23usize, 200.0, 800.0),
+                    ("移动着地脉冲 % (柔和, 不宜高)", 24, 10.0, 100.0),
+                    ("移动抬脚保持 % (极轻)", 25, 5.0, 50.0),
+                    ("移动整体增益 % (轻音量)", 26, 10.0, 100.0),
+                    ("移动平滑系数 % (越大过渡越柔, 消除嗡嗡声)", 27, 5.0, 100.0),
+                    ("移动最低输出阈值 % (低于归0, 消除沙沙声)", 28, 0.0, 20.0),
+                ];
+                for (name, idx, lo, hi) in m_rows {
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::SNEAKER, name)),
+                        idx,
+                        snap.params[idx],
+                        lo,
+                        hi,
+                    );
+                }
+
+                                    } else {widgets::group_head(ui, &th, "走位能量积累");
+                let mut mc = vib.move_charge_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut mc,
+                    "启用走位能量积累",
+                    "走位越久，下次攻击越强",
+                    "关掉后: 长时间走位不再积累攻击增强 (等效速率 0)。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.move_charge_enabled = mc);
+                }
+                if job_mode {
+                    let m_rate = snap.params[21];
+                    if m_rate >= 12 {
+                        ui.label(
+                            egui::RichText::new("【走位职业】移动积累快，停手窗口内攻击增强明显")
+                                .size(11.0)
+                                .color(th.accent_text),
+                        );
+                    } else if m_rate <= 3 {
+                        ui.label(
+                            egui::RichText::new("【站桩职业】移动积累慢，增强弱")
+                                .size(11.0)
+                                .color(th.hint),
+                        );
+                    }
+                }
+                let c_rows = [
+                    ("移动积累速率 %/秒 (0=禁用)", 21usize, 0.0, 20.0),
+                    ("攻击增强上限 % (最多 ×(1+上限))", 22, 0.0, 100.0),
+                    ("增强窗口 ms (停手后有效)", 39, 0.0, 3000.0),
+                ];
+                for (name, idx, lo, hi) in c_rows {
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::PERSON_SIMPLE, name)),
+                        idx,
+                        snap.params[idx],
+                        lo,
+                        hi,
+                    );
+                }
+                    }
+                });
+
+            },
+        );
+    }
+
+    /// 输出质感 (波形/平滑/节奏/马达分工/衰减/S4 整形)。
+    fn vib_adv_output_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        legacy: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        let item_lr: [u32; 26] = snap.item_lr.as_slice().try_into().unwrap();
+        let item_out: [u32; 26] = snap.item_out.as_slice().try_into().unwrap();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        let s1_route = legacy;
+        let s1_mode = vib.legacy_output_mode.min(2);
+        Self::adv_panel(
+            ui,
+            &th,
+            "输出质感 (波形/平滑/分工/衰减)",
+            "决定「震起来像什么」：波形饱和度、平滑度、左右分工、各类事件余震长度。",
+            |ui| {
+                let backend = &self.backend;
+                widgets::split_cols(ui, 2, theme::SP_2XL, |ui, col| {
+                    if col == 0 {
+                slot_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::WAVE_SINE, "左马达曲线 %").hint("越大越饱和，100 = 线性")),
+                    19,
+                    snap.params[19],
+                    30.0,
+                    300.0,
+                );
+                slot_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::WAVE_SINE, "右马达曲线 %").hint("越大越饱和，100 = 线性")),
+                    20,
+                    snap.params[20],
+                    30.0,
+                    300.0,
+                );
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::WAVEFORM, "输出平滑 %")
+                        .hint("高 = 柔（消除嗡嗡声）；低 = 锐利")),
+                    vib.out_smooth,
+                    0.0,
+                    100.0,
+                    |v, n| v.out_smooth = n,
+                );
+                slot_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate(vib_row(ic::ARROWS_LEFT_RIGHT, "节奏感 (右马达比例)")
+                        .hint("50 = 均衡；高 = 右重左轻")),
+                    18,
+                    snap.params[18],
+                    0.0,
+                    100.0,
+                );
+
+                let split_active = !legacy || s1_mode != 0;
+                let mut sp = vib.split_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut sp,
+                    "马达分工 (Xbox360 风格)",
+                    if split_active {
+                        "轻反馈只驱动主导马达，重反馈双马达满幅"
+                    } else {
+                        "经典 ACT1 管线不参与分工（会抹平左右差异）"
+                    },
+                    "轻反馈 (峰值低于分界) 仅驱动主导马达 (转子声/功耗更低); 重反馈双马达满幅。\n(经典 ACT1 管线不参与分工; 切到 S4 模式后此开关生效)",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.split_enabled = sp);
+                }
+                let row = vib_row(ic::ARROWS_SPLIT, "分工分界 % (低于为轻反馈)");
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    if sp && split_active { row } else { row.off() },
+                    vib.split_thr,
+                    20.0,
+                    90.0,
+                    |v, n| v.split_thr = n,
+                );
+
+                widgets::group_head(ui, &th, "各类事件衰减时长");
+                let mut dec = vib.decay_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut dec,
+                    "启用自定义衰减时长",
+                    "关 = 使用内置默认（命中25/特殊55/受击25/状态60）",
+                    "关掉后: 四个衰减滑块不生效, 改用内置「默认」预设的衰减时长。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.decay_enabled = dec);
+                }
+                let dec_rows = [
+                    ("普通命中衰减 ms", 35usize),
+                    ("特殊攻击衰减 ms", 36),
+                    ("受击衰减 ms", 37),
+                    ("状态变化衰减 ms", 38),
+                ];
+                for (name, idx) in dec_rows {
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::TIMER, name)),
+                        idx,
+                        snap.params[idx],
+                        0.0,
+                        150.0,
+                    );
+                }
+                widgets::row_card(ui, &th, |ui| {
+                    ui.label(
+                        egui::RichText::new("衰减时长 L/R 权重 (正 = 更持久, 负 = 更短)")
+                            .size(11.0)
+                            .color(th.hint),
+                    );
+                    ui.add_space(4.0);
+                    Self::render_item_lr(&self.backend, ui, self.dark_mode, &item_lr, &item_out, 3);
+                });
+
+                    } else {
+                /* S4 输出整形组 */
+                let s4_shape_on = !s1_route || s1_mode != 0;
+                widgets::group_head(
+                    ui,
+                    &th,
+                    if !s4_shape_on {
+                        "S4+ 新方案专属 (经典 ACT1 不受影响)"
+                    } else {
+                        "S4 输出整形"
+                    },
+                );
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    if s4_shape_on {
+                        vib_row(ic::ARROW_DOWN, "输出低强度抑制 % (转子马达建议 25-35)")
+                    } else {
+                        vib_row(ic::ARROW_DOWN, "输出低强度抑制 %").off()
+                    },
+                    vib.out_threshold,
+                    0.0,
+                    60.0,
+                    |v, n| v.out_threshold = n,
+                );
                 let mut rm = vib.remap_enabled;
                 if ui
                     .add_enabled(
                         s4_shape_on,
-                        egui::Checkbox::new(&mut rm, "输出动态范围重映射 (Xbox360/ERM, S4 / S1-S4模式)"),
+                        egui::Checkbox::new(&mut rm, egui::RichText::new("输出动态范围重映射").size(12.5)),
                     )
                     .on_hover_text(
-                        "把非零输出映射到 [最小输出, 100%] 区间:\n\
-                         任何非零反馈至少以最小输出驱动马达 (转子一定转起来),\n\
-                         相对强弱保留, 轻反馈不再被死区吞掉。\n\
-                         (ACT1 经典模式使用内置重映射管线, 下限跟随全局总调整;\n\
-                         S1 切到 S4 模式后此组生效)",
+                        "把非零输出映射到 [最小输出, 100%] 区间: 任何非零反馈至少以最小输出驱动马达, 相对强弱保留。",
                     )
                     .changed()
                 {
                     Self::vib_slider_update(&self.backend, job_mode, |v| v.remap_enabled = rm);
                 }
-                let mut rmn = vib.remap_min as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            rm && s4_shape_on,
-                            egui::Slider::new(&mut rmn, 10.0..=60.0)
-                                .text("重映射最小输出 % (与死区一致, S4 / S1-S4模式)"),
-                        ),
-                                "重映射最小输出 % (与死区一致, S4 / S1-S4模式)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.remap_min = rmn as u32);
-                }
-            }
-            /* 震动节流 (v24: 限定时间窗口内最大注入次数, 防狂震) */
-            {
+                let row = vib_row(ic::ARROW_UP, "重映射最小输出 % (与死区一致)");
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    if rm && s4_shape_on { row } else { row.off() },
+                    vib.remap_min,
+                    10.0,
+                    60.0,
+                    |v, n| v.remap_min = n,
+                );
+
+                widgets::group_head(ui, &th, "震动节流 (仅 S4)");
                 if s1_route {
                     ui.label(
-                        egui::RichText::new(
-                            "节流仅 S4 新方案生效 (ACT 版本由「群怪不打手」接管)",
-                        )
-                        .size(11.0)
-                        .weak(),
-                    );
-                } else if job_mode
-                    && vib.throttle_window_ms> 0
-                {
-                    ui.label(
-                        egui::RichText::new("【当前职业专属】狂震节流: 窗口内只震几次, 杜绝狂震")
+                        egui::RichText::new("节流仅 S4 新方案生效（ACT 版本由「群怪不打手」接管）")
                             .size(11.0)
-                            .color(th.accent_text)
-                            .strong(),
+                            .color(th.hint),
+                    );
+                } else if job_mode && vib.throttle_window_ms > 0 {
+                    ui.label(
+                        egui::RichText::new("【当前职业专属】狂震节流: 窗口内只震几次，杜绝狂震")
+                            .size(11.0)
+                            .color(th.accent_text),
                     );
                 }
-                let mut tw = vib.throttle_window_ms as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            !s1_route,
-                            egui::Slider::new(&mut tw, 0.0..=10000.0)
-                                .text("震动节流窗口 ms (0=禁用, 仅 S4)"),
-                        ),
-                                "震动节流窗口 ms (0=禁用, 仅 S4)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_window_ms = tw as u32);
-                }
-                let mut tm = vib.throttle_max_hits as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            !s1_route,
-                            egui::Slider::new(&mut tm, 1.0..=30.0)
-                                .text("窗口内最大震动次数 (仅 S4)"),
-                        ),
-                                "窗口内最大震动次数 (仅 S4)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_max_hits = tm as u32);
-                }
-                let mut tr = vib.throttle_dense_ratio as f32;
-                                                    let resp = Self::with_hint(
-                                ui
-                        .add_enabled(
-                            !s1_route,
-                            egui::Slider::new(&mut tr, 1.0..=100.0)
-                                .text("狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)"),
-                        ),
-                                "狂震期次数比例 % (自适应收紧, 100=不收紧, 仅 S4)",
-                            );
-                            if resp.changed()
-                {
-                    Self::vib_slider_update(&self.backend, job_mode, |v| v.throttle_dense_ratio = tr as u32);
-                }
-            }
-        });
-        ui.add_space(4.0);
-        ui.separator();
-        ui.add_space(4.0);
-
-            /* 预留槽位 (p5): 引擎无消费点, 保留显示防误解 (原总闸卡迁入) */
-            ui.label(
-                egui::RichText::new("预留槽位 (当前版本未接入引擎, 改动无效)")
-                    .size(12.0)
-                    .strong(),
-            );
-            {
-                let mut v = snap.params[5] as f32;
-                                            let resp = Self::with_hint(
-                        ui
-                        .add_enabled(adv_on, egui::Slider::new(&mut v, 0.0..=500.0).suffix("ms").text("衰减时间 (预留)")),
-                        "衰减时间 (预留)",
-                    );
-                    if resp.changed()
-                {
-                    Self::vib_slot_update(&self.backend, job_mode, 5, v as u32);
-                }
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-            /* D 时长窗口 */
-            ui.label(
-                egui::RichText::new("算法窗口时长 (持续/节奏/爆发/连击统计)")
-                    .size(12.0)
-                    .strong(),
-            );
-            let mut _t = vib.algo_windows_enabled;
-            if ui
-                .checkbox(&mut _t, "启用自定义算法窗口 (关=使用内置默认窗口)")
-                .on_hover_text("关掉后: 本组七个窗口滑块不生效, 改用内置「默认」预设的窗口值。默认开。
-开：用下面七个窗口时长（默认开）；关：改用内置「默认」预设的窗口值。")
-                .changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.algo_windows_enabled = _t);
-            }
-            let d_rows = [
-                ("DOT 持续反馈时长 ms", 40, 50.0, 1000.0),
-                ("装备特效节奏周期 ms", 41, 60.0, 600.0),
-                ("爆发窗口 ms (窗口内 6 连触发爆发)", 42, 100.0, 1000.0),
-                ("爆发模式最低强度 %", 43, 0.0, 100.0),
-                ("反击窗口 ms (受击后攻击强化)", 44, 300.0, 2000.0),
-                ("连击统计窗口 ms", 45, 500.0, 5000.0),
-                ("空闲判定 ms (回战斗前状态)", 46, 1000.0, 10000.0),
-            ];
-            for (name, idx, lo, hi) in d_rows {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
+                let gate_s4 = |r: Row<'static>| if !s1_route { r } else { r.off() };
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate_s4(vib_row(ic::CIRCLE_NOTCH, "震动节流窗口 ms (0=禁用)")),
+                    vib.throttle_window_ms,
+                    0.0,
+                    10000.0,
+                    |v, n| v.throttle_window_ms = n,
                 );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-            ui.add_space(4.0);
-            ui.separator();
-            ui.add_space(4.0);
-
-            /* F/G/H 脉冲与静默 */
-            ui.label(
-                egui::RichText::new("静默 / 反击 / 脉冲 / 测试强度")
-                    .size(12.0)
-                    .strong(),
-            );
-            let mut _t = vib.pulse_enabled;
-            if ui
-                .checkbox(&mut _t, "启用静默/反击/脉冲 (关=不再静默/不再反击加成/不再发脉冲)")
-                .on_hover_text("关掉后: 特殊攻击后不再静默、受击后不再反击加成、唤醒/里程碑/连击收尾脉冲全部关闭 (测试震动强度不受影响)。默认开。
-开：静默/反击/脉冲全开（默认开）；关：全关：更平、更连续（测试强度不受影响）。")
-                .changed()
-            {
-                Self::vib_slider_update(&self.backend, job_mode, |v| v.pulse_enabled = _t);
-            }
-            let f_rows = [
-                ("特殊攻击后静默 ms (突显暴击破招)", 54, 0.0, 500.0),
-                ("反击强化倍数 %", 55, 100.0, 300.0),
-                ("唤醒脉冲强度 %", 56, 0.0, 100.0),
-                ("里程碑脉冲强度 %", 57, 0.0, 100.0),
-                ("连击中断收尾脉冲 %", 58, 0.0, 100.0),
-                ("测试震动强度 %", 59, 1.0, 100.0),
-            ];
-            for (name, idx, lo, hi) in f_rows {
-                let mut v = snap.params[idx] as f32;
-                let resp = Self::with_hint(
-                ui.add_enabled(adv_on, egui::Slider::new(&mut v, lo..=hi).text(name)),
-                    name,
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate_s4(vib_row(ic::CIRCLE_NOTCH, "窗口内最大震动次数")),
+                    vib.throttle_max_hits,
+                    1.0,
+                    30.0,
+                    |v, n| v.throttle_max_hits = n,
                 );
-                if resp.changed() {
-                    Self::vib_slot_update(&self.backend, job_mode, idx, v as u32);
-                }
-            }
-            ui.label(
-                egui::RichText::new(
-                    "里程碑档位固定 50/100/200/400 连击。\n\
-                     自适应: 低于阈值间隔的连续命中按降幅减弱, 防止叠加饱和。",
-                )
-                .size(11.0)
-                .weak(),
-            );
-        });
-        });
+                cfg_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    gate_s4(vib_row(ic::PERCENT, "狂震期次数比例 % (100=不收紧)")),
+                    vib.throttle_dense_ratio,
+                    1.0,
+                    100.0,
+                    |v, n| v.throttle_dense_ratio = n,
+                );
+                    }
+                });
+
+            },
+        );
     }
 
+    /// 算法窗口时长。
+    fn vib_adv_window_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        Self::adv_panel(
+            ui,
+            &th,
+            "算法窗口时长",
+            "持续/节奏/爆发/连击统计的时间窗口 —— 一般不用动，动了会改变所有算法的节奏感。",
+            |ui| {
+                let mut aw = vib.algo_windows_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut aw,
+                    "启用自定义算法窗口",
+                    "关 = 使用内置默认窗口",
+                    "关掉后: 本组七个窗口滑块不生效, 改用内置「默认」预设的窗口值。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| {
+                        v.algo_windows_enabled = aw
+                    });
+                }
+                let d_rows = [
+                    ("DOT 持续反馈时长 ms", 40usize, 50.0, 1000.0),
+                    ("装备特效节奏周期 ms", 41, 60.0, 600.0),
+                    ("爆发窗口 ms (窗口内 6 连触发爆发)", 42, 100.0, 1000.0),
+                    ("爆发模式最低强度 %", 43, 0.0, 100.0),
+                    ("反击窗口 ms (受击后攻击强化)", 44, 300.0, 2000.0),
+                    ("连击统计窗口 ms", 45, 500.0, 5000.0),
+                    ("空闲判定 ms (回战斗前状态)", 46, 1000.0, 10000.0),
+                ];
+                for (name, idx, lo, hi) in d_rows {
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::CLOCK, name)),
+                        idx,
+                        snap.params[idx],
+                        lo,
+                        hi,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 静默 / 反击 / 脉冲 / 测试强度。
+    fn vib_adv_pulse_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        vib: &VibrationConfig,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        let gate = |r: Row<'static>| if adv_on { r } else { r.off() };
+        Self::adv_panel(
+            ui,
+            &th,
+            "静默 / 反击 / 脉冲",
+            "特殊攻击后的静默、受击后的反击加成、唤醒/里程碑/断连脉冲与测试按钮强度。",
+            |ui| {
+                let mut pe = vib.pulse_enabled;
+                if widgets::check_row(
+                    ui,
+                    &th,
+                    &mut pe,
+                    "启用静默/反击/脉冲",
+                    "关 = 全关：更平、更连续（测试强度不受影响）",
+                    "关掉后: 特殊攻击后不再静默、受击后不再反击加成、唤醒/里程碑/连击收尾脉冲全部关闭。默认开。",
+                ) {
+                    Self::vib_slider_update(&self.backend, job_mode, |v| v.pulse_enabled = pe);
+                }
+                let f_rows = [
+                    ("特殊攻击后静默 ms (突显暴击破招)", 54usize, 0.0, 500.0),
+                    ("反击强化倍数 %", 55, 100.0, 300.0),
+                    ("唤醒脉冲强度 %", 56, 0.0, 100.0),
+                    ("里程碑脉冲强度 %", 57, 0.0, 100.0),
+                    ("连击中断收尾脉冲 %", 58, 0.0, 100.0),
+                    ("测试震动强度 %", 59, 1.0, 100.0),
+                ];
+                for (name, idx, lo, hi) in f_rows {
+                    slot_row(
+                        ui,
+                        &th,
+                        &self.backend,
+                        job_mode,
+                        gate(vib_row(ic::PULSE, name)),
+                        idx,
+                        snap.params[idx],
+                        lo,
+                        hi,
+                    );
+                }
+            },
+        );
+    }
+
+    /// 预留槽位 (引擎无消费点, 保留显示防误解)。
+    fn vib_adv_reserved_panel(
+        &mut self,
+        ui: &mut egui::Ui,
+        job_mode: bool,
+        adv_on: bool,
+        snap: &VibSnap,
+    ) {
+        let th = self.theme();
+        Self::adv_panel(
+            ui,
+            &th,
+            "预留槽位",
+            "当前版本引擎不读取，改动无效 —— 保留显示以免误以为是新参数。",
+            |ui| {
+                let row = vib_row(ic::HOURGLASS, "衰减时间 (预留)").suffix("ms");
+                slot_row(
+                    ui,
+                    &th,
+                    &self.backend,
+                    job_mode,
+                    if adv_on { row } else { row.off() },
+                    5,
+                    snap.params[5],
+                    0.0,
+                    500.0,
+                );
+            },
+        );
+    }
 }

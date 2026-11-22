@@ -136,14 +136,14 @@ impl SorahkGui {
         }
     }
 
-
-    /// 渲染某基础项的 L/R 马达权重滑块 + 实时输出条
+    /// 渲染某基础项的 L/R 马达权重 (一行两项: 左半 L / 右半 R) + 实时输出小电平条
     /// 权重范围 -100..+100: 0 = 保持原样(不动原参数), 负 = 减弱, 正 = 增强
     /// item: 0=总闸 1=攻击 2=上限 3=衰减 4=连击 5=节奏 6=通用 7=DOT 8=特效 9=状态 10=特殊 11=命中 12=受击
     ///
+    /// ★v24.61 排版: 旧实现 L/R 各占一整行 (两个满宽滑轨, 每项多 26px 高);
+    /// 现在合并成一行两半 —— 左右对比一眼可见, 40+ 项累计省下近千像素。
     /// ★R2.14: 读值来自帧首快照 (item_lr 原子镜像), 写入走 backend 定点双写
     /// (原子 + config 内存同步, 不镜像不落盘 —— 与旧实现逐字一致)。
-    /// 显式传 `&Backend` 而非 `&self`, 避免闭包内整份 self 捕获与字段可变捕获冲突。
     pub(in crate::gui) fn render_item_lr(
         backend: &crate::backend::Backend,
         ui: &mut egui::Ui,
@@ -152,68 +152,22 @@ impl SorahkGui {
         item_out: &[u32; 26],
         item: usize,
     ) {
-        let il = item_lr[item * 2] as i32 as f32;
-        let ir = item_lr[item * 2 + 1] as i32 as f32;
-        let ol = item_out[item * 2];
-        let or_ = item_out[item * 2 + 1];
+        let th = Theme::new(dark);
+        let il = item_lr[item * 2] as i32;
+        let ir = item_lr[item * 2 + 1] as i32;
         let mut l = il;
         let mut r = ir;
-
-        ui.vertical(|ui| {
-            /* L = 橙色, R = 红色 (清晰区分), 每行一个马达, 宽度自适应 */
-            let th = Theme::new(dark);
-            let l_orange = th.motor_l;
-            let r_red = th.motor_r;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("L").size(13.0).strong().color(l_orange));
-                ui.add(
-                    egui::Slider::new(&mut l, -100.0..=100.0)
-                        .show_value(false)
-                        .trailing_fill(true)
-                        .text_color(l_orange),
-                );
-                ui.add(
-                    egui::ProgressBar::new(ol as f32 / 65535.0)
-                        .desired_width(40.0)
-                        .fill(l_orange),
-                );
-                ui.label(
-                    egui::RichText::new(format!("L{:+}", l as i32))
-                        .size(11.0)
-                        .weak(),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("R").size(13.0).strong().color(r_red));
-                ui.add(
-                    egui::Slider::new(&mut r, -100.0..=100.0)
-                        .show_value(false)
-                        .trailing_fill(true)
-                        .text_color(r_red),
-                );
-                ui.add(
-                    egui::ProgressBar::new(or_ as f32 / 65535.0)
-                        .desired_width(40.0)
-                        .fill(r_red),
-                );
-                ui.label(
-                    egui::RichText::new(format!("R{:+}", r as i32))
-                        .size(11.0)
-                        .weak(),
-                );
-            });
-        });
-        if (l as i32) != (il as i32) {
-            backend.set_vib_item_lr_quiet(item * 2, (l as i32) as u32);
+        lr_pair(ui, &th, &mut l, item_out[item * 2], &mut r, item_out[item * 2 + 1]);
+        if l != il {
+            backend.set_vib_item_lr_quiet(item * 2, l as u32);
         }
-        if (r as i32) != (ir as i32) {
-            backend.set_vib_item_lr_quiet(item * 2 + 1, (r as i32) as u32);
+        if r != ir {
+            backend.set_vib_item_lr_quiet(item * 2 + 1, r as u32);
         }
     }
 
-
-    /// 渲染评分事件的 L/R 马达权重滑块 (rank_lr, 30 项 = 15 事件 x L/R)
-    /// (★R2.14 读快照/写 backend, 语义同 [`Self::render_item_lr`])
+    /// 渲染评分事件的 L/R 马达权重 (rank_lr, 30 项 = 15 事件 x L/R)
+    /// (★R2.14 读快照/写 backend; ★v24.61 合并为一行两半)
     pub(in crate::gui) fn render_rank_lr(
         backend: &crate::backend::Backend,
         ui: &mut egui::Ui,
@@ -222,61 +176,99 @@ impl SorahkGui {
         rank_out: &[u32; 30],
         item: usize,
     ) {
-        let il = rank_lr[item * 2] as i32 as f32;
-        let ir = rank_lr[item * 2 + 1] as i32 as f32;
-        let ol = rank_out[item * 2];
-        let or_ = rank_out[item * 2 + 1];
+        let th = Theme::new(dark);
+        let il = rank_lr[item * 2] as i32;
+        let ir = rank_lr[item * 2 + 1] as i32;
         let mut l = il;
         let mut r = ir;
-
-        ui.vertical(|ui| {
-            let th = Theme::new(dark);
-            let l_orange = th.motor_l;
-            let r_red = th.motor_r;
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("L").size(13.0).strong().color(l_orange));
-                ui.add(
-                    egui::Slider::new(&mut l, -100.0..=100.0)
-                        .show_value(false)
-                        .trailing_fill(true)
-                        .text_color(l_orange),
-                );
-                ui.add(
-                    egui::ProgressBar::new(ol as f32 / 65535.0)
-                        .desired_width(40.0)
-                        .fill(l_orange),
-                );
-                ui.label(
-                    egui::RichText::new(format!("L{:+}", l as i32))
-                        .size(11.0)
-                        .weak(),
-                );
-            });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("R").size(13.0).strong().color(r_red));
-                ui.add(
-                    egui::Slider::new(&mut r, -100.0..=100.0)
-                        .show_value(false)
-                        .trailing_fill(true)
-                        .text_color(r_red),
-                );
-                ui.add(
-                    egui::ProgressBar::new(or_ as f32 / 65535.0)
-                        .desired_width(40.0)
-                        .fill(r_red),
-                );
-                ui.label(
-                    egui::RichText::new(format!("R{:+}", r as i32))
-                        .size(11.0)
-                        .weak(),
-                );
-            });
-        });
-        if (l as i32) != (il as i32) {
-            backend.set_vib_rank_lr_quiet(item * 2, (l as i32) as u32);
+        lr_pair(ui, &th, &mut l, rank_out[item * 2], &mut r, rank_out[item * 2 + 1]);
+        if l != il {
+            backend.set_vib_rank_lr_quiet(item * 2, l as u32);
         }
-        if (r as i32) != (ir as i32) {
-            backend.set_vib_rank_lr_quiet(item * 2 + 1, (r as i32) as u32);
+        if r != ir {
+            backend.set_vib_rank_lr_quiet(item * 2 + 1, r as u32);
         }
     }
+}
+
+/// L/R 双马达一行: 左半 L / 右半 R, 每半 = 标签 + 细滑轨 + 数值 + 实时电平条。
+fn lr_pair(ui: &mut egui::Ui, th: &Theme, l: &mut i32, out_l: u32, r: &mut i32, out_r: u32) {
+    ui.add_space(1.0);
+    let avail = ui.available_width();
+    let half = (avail - 25.0) / 2.0;
+    /* ★v24.63 自适应: 并排时每侧还要扣掉 62px 给读数+电平条, 半列不足 230 就只剩
+     * ~110px 滑轨 (糙得像拨开关)。窄于此改成上下两行, 各占整宽 —— 宁可多 20px 高度。 */
+    if avail < 460.0 {
+        lr_half(ui, th, "L", l, out_l, th.motor_l);
+        ui.add_space(2.0);
+        lr_half(ui, th, "R", r, out_r, th.motor_r);
+        return;
+    }
+    let w = half.max(110.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            lr_half(ui, th, "L", l, out_l, th.motor_l);
+        });
+        /* 中缝竖线: 左半的读数与右半的标签挨得近, 没有这条线会读成 "0 -10 R" */
+        ui.add_space(12.0);
+        let (bar, _) = ui.allocate_exact_size(egui::vec2(1.0, 16.0), egui::Sense::hover());
+        ui.painter().vline(
+            bar.center().x,
+            bar.y_range(),
+            egui::Stroke::new(1.0, th.stroke),
+        );
+        ui.add_space(12.0);
+        ui.vertical(|ui| {
+            ui.set_width(w);
+            lr_half(ui, th, "R", r, out_r, th.motor_r);
+        });
+    });
+}
+
+/// 单侧马达: L/R 标签 + 滑轨 + 带符号数值 + 18px 实时电平条。
+/// (滑轨用 `widgets::rail`: 与主参数行同一套"轨道/已选段/手柄"三层色, 不再是一条灰线)
+fn lr_half(ui: &mut egui::Ui, th: &Theme, tag: &str, val: &mut i32, out: u32, color: egui::Color32) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(tag).size(12.0).strong().color(color));
+        let mut v = *val as f32;
+        let reserve = 62.0;
+        let w = (ui.available_width() - reserve).max(50.0);
+        let resp = ui
+            .scope(|ui| {
+                ui.set_max_width(w);
+                crate::gui::widgets::rail(ui, th, &mut v, -100.0..=100.0, 1.0, color, 20.0)
+            })
+            .inner;
+        if resp.changed() {
+            *val = v.round() as i32;
+        }
+        /* 数值 + 实时电平条钉在本半列的右端 (右对齐), 左右两半的读数才会排成一条竖线 */
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            /* 实时电平条 (18px): 一眼看出这一路现在有没有在出力 */
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 4.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, th.faint);
+            let pct = (out as f32 / 65535.0).clamp(0.0, 1.0);
+            if pct > 0.0 {
+                let mut fill = rect;
+                fill.set_width((rect.width() * pct).max(1.5));
+                ui.painter().rect_filled(fill, 2.0, color);
+            }
+            /* 定宽读数 (28px, 右对齐): 保证 +100 / 0 / -5 三种宽度下,
+             * 上下两行的数字都落在同一条竖线上 */
+            let (r, _) = ui.allocate_exact_size(egui::vec2(28.0, 12.0), egui::Sense::hover());
+            ui.painter().text(
+                egui::pos2(r.right(), r.center().y),
+                egui::Align2::RIGHT_CENTER,
+                if *val > 0 {
+                    format!("+{val}")
+                } else {
+                    format!("{val}")
+                },
+                egui::FontId::monospace(11.0),
+                th.text_weak,
+            );
+        });
+    });
 }

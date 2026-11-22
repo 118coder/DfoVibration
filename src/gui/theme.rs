@@ -504,6 +504,14 @@ impl Theme {
             .corner_radius(egui::CornerRadius::same(RADIUS_CTRL))
     }
 
+    /// 危险文字按钮 (透明底 + 危险色文字): 用于"删除"这类不该与保存同权重的动作。
+    pub fn danger_ghost_button(&self, text: &str) -> egui::Button<'_> {
+        egui::Button::new(egui::RichText::new(text).size(13.0).color(self.bad))
+            .fill(egui::Color32::TRANSPARENT)
+            .stroke(egui::Stroke::new(1.0, self.bad.gamma_multiply(0.35)))
+            .corner_radius(egui::CornerRadius::same(RADIUS_CTRL))
+    }
+
     /// 强调文字按钮 (软底强调色)。
     #[allow(dead_code)]
     pub fn ghost_button(&self, text: &str) -> egui::Button<'_> {

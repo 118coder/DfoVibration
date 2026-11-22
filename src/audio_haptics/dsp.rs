@@ -24,11 +24,13 @@ use std::collections::VecDeque;
 
 use rustfft::{num_complex::Complex, FftPlanner};
 
+use super::c_mode::{self, CFrameInput, N_GROUPS as C_GROUPS};
 use super::mapping::{
     self, classify_content, map_value_gamma, smooth_signal, EngineParams, MODE_MUSIC, MODE_QUIET,
     MODE_VOCAL,
 };
 use super::smart::{SmartEnhancer, SmartInput, SmartParams};
+use crate::state::audio_state::AUDIO_ALGO_C;
 
 /// int16 尺度换算: 归一化 RMS × 32768 = xbox6 标定域的 RMS。
 pub const XSCALE: f32 = 32768.0;
@@ -134,6 +136,21 @@ pub struct FrameOut {
     pub smart_pitch: f32,
     /// 估算震动持续时间 ms (近短远长)
     pub smart_duration_ms: f32,
+    // ── ★C 模式 (B 下一代事件层) 遥测 ──
+    /// C 层本 tick 是否实际参与输出 (mode=C 且未旁路; false = 输出=B)
+    pub c_active: bool,
+    /// BGM 背景置信度原始分 0..1
+    pub c_music: f32,
+    /// 综合置信度 0..1
+    pub c_conf: f32,
+    /// 音乐门控状态 (audio_state::MUSIC_*)
+    pub c_music_state: u8,
+    /// 节拍锁是否建立
+    pub c_beat_lock: bool,
+    /// 事件状态机 (audio_state::EVT_*)
+    pub c_event_state: u8,
+    /// C 层故障旁路中 (自动降级 B)
+    pub c_degraded: bool,
 }
 
 /// 频谱分析器 (单线程使用; 引擎线程独占)。
@@ -163,6 +180,13 @@ pub struct Analyzer {
     last_process: u64,
     /* ── ★AI 智能增强 (B 模式; A 模式完全旁路) ── */
     smart: SmartEnhancer,
+    /* ── ★C 模式 (B 下一代事件层; mode!=C 时零计算) ── */
+    c_mode: c_mode::CMode,
+    /// 最近一帧左右平衡系数 (finish_tick 传入; C 事件路由用; 默认 1.0)
+    pan_l: f32,
+    pan_r: f32,
+    /// bin → C 对数谱组 (0..24, 255=组外; 构造期预计算, 采样率相关)
+    bin_group: Vec<u8>,
 }
 
 impl Analyzer {
@@ -190,7 +214,37 @@ impl Analyzer {
             calib_active: false,
             last_process: 0,
             smart: SmartEnhancer::default(),
+            c_mode: c_mode::CMode::new(rate),
+            pan_l: 1.0,
+            pan_r: 1.0,
+            bin_group: {
+                // C 模式 24 个对数谱组 (20Hz-16kHz): bin→组 预计算 (构造期一次)
+                let mut bg = vec![255u8; FFT_SIZE / 2];
+                let edges: Vec<f32> = (0..=C_GROUPS)
+                    .map(|g| c_mode::GROUP_LO_HZ
+                        * (c_mode::GROUP_HI_HZ / c_mode::GROUP_LO_HZ).powf(g as f32 / C_GROUPS as f32))
+                    .collect();
+                for bin in 1..FFT_SIZE / 2 {
+                    let freq = bin as f32 * rate / FFT_SIZE as f32;
+                    if freq < edges[0] || freq >= edges[C_GROUPS] {
+                        continue;
+                    }
+                    // 最大 g 使 edges[g] <= freq
+                    let mut g = 0usize;
+                    while g + 1 < C_GROUPS && edges[g + 1] <= freq {
+                        g += 1;
+                    }
+                    bg[bin] = g as u8;
+                }
+                bg
+            },
         }
+    }
+
+    /// ★C 模式: 传入本 tick 的左右平衡系数 (C 事件级声道路由用; mod.rs finish_tick 调)。
+    pub fn set_pan(&mut self, pan_l: f32, pan_r: f32) {
+        self.pan_l = pan_l;
+        self.pan_r = pan_r;
     }
 
     /// 推入单声道样本 (设备原始采样率)。
@@ -211,6 +265,8 @@ impl Analyzer {
         let bass_hi = p.bass_high_hz.clamp(20, 4000) as f32;
         let voc_lo = p.vocal_low_hz.clamp(20, 8000) as f32;
         let voc_hi = (p.vocal_high_hz as f32).clamp(voc_lo + 100.0, 16000.0);
+        /* ★C 模式开关 (tick 级; 切模式即停/启 C 特征收集, 状态冷启动重暖机) */
+        let c_on = p.algorithm_mode == AUDIO_ALGO_C;
         while self.buf.len() >= FFT_SIZE {
             let frame: Vec<f32> = self.buf.iter().take(FFT_SIZE).cloned().collect();
             // 总 RMS: 时域直接算 (不加重叠窗畸变, 与 xbox6 口径一致)
@@ -229,9 +285,14 @@ impl Analyzer {
             let half = FFT_SIZE / 2;
             let (mut bass_sq, mut high_sq, mut voc_sq) = (0f32, 0f32, 0f32);
             let mut disp_sq = [0f32; NUM_BANDS];
+            /* C 模式单遍暂存 (栈数组, 每帧复用; 仅 c_on 时填充) */
+            let mut power = [0f32; FFT_SIZE / 2];
             for bin in 1..half {
                 let freq = bin as f32 * self.rate / FFT_SIZE as f32;
                 let m2 = cplx[bin].norm_sqr();
+                if c_on {
+                    power[bin] = m2;
+                }
                 if freq < bass_hi {
                     bass_sq += m2;
                 } else if freq < 16000.0 {
@@ -248,6 +309,30 @@ impl Analyzer {
             self.high_rms = high_sq.sqrt() / RMS_NORM * XSCALE;
             self.voc_rms = voc_sq.sqrt() / RMS_NORM * XSCALE;
             got_frame = true;
+
+            /* ── ★C 模式: 本帧谱特征收集 (mode=C 才计算, A/B 零开销) ──
+             * 复用同一遍 FFT bin 循环的结果: 5 频带 RMS (int16 尺度) + 24 个
+             * 对数谱组功率 + 功率谱 (谱平坦度/谐波性)。不重算 FFT。 */
+            if c_on {
+                let mut c_band = [0f32; 5];
+                for (i, &sq) in disp_sq.iter().enumerate() {
+                    c_band[i] = sq.sqrt() / RMS_NORM * XSCALE;
+                }
+                let mut grp = [0f32; C_GROUPS];
+                for (bin, &g) in self.bin_group.iter().enumerate() {
+                    if g != 255 {
+                        grp[g as usize] += power[bin];
+                    }
+                }
+                self.c_mode.push_frame(&CFrameInput {
+                    band_rms: c_band,
+                    group_power: &grp,
+                    power: &power,
+                    total_rms: self.total_rms,
+                    vocal_rms: self.voc_rms,
+                    mode_b: self.mode,
+                });
+            }
 
             // 显示频带平滑 (旧口径 /256, 与 v24.59 频谱观感一致)
             for i in 0..NUM_BANDS {
@@ -417,6 +502,9 @@ impl Analyzer {
          * tl/tr/attack/release 保持经典值, 输出与改动前逐字节一致。 */
         let s_high = self.high_rms;
         let s_transient = self.transient_avg;
+        /* ★C 模式: 内部视为启用 B 核心 (文档 §4.11 —— C 先跑 B 再叠加事件层);
+         * smart_strength=0 的无损回退语义保持不变。 */
+        let smart_enabled_eff = p.smart_enabled || p.algorithm_mode == AUDIO_ALGO_C;
         let smart_out = self.smart.process(
             &SmartInput {
                 total,
@@ -428,7 +516,7 @@ impl Analyzer {
                 threshold: thr,
             },
             &SmartParams {
-                enabled: p.smart_enabled,
+                enabled: smart_enabled_eff,
                 strength_pct: p.smart_strength,
                 duration_pct: p.smart_duration,
             },
@@ -442,6 +530,28 @@ impl Analyzer {
                 .clamp(0.0, 1.0);
             attack = (attack * smart_out.attack_scale).clamp(0.001, 1.0);
             release = (release * smart_out.release_scale).clamp(0.001, 1.0);
+        }
+
+        /* ── ★C 模式事件层 (B 下一代): 读 B 目标, 做 BGM 门控 + 事件增强 ──
+         * 回退链 (文档 §5): C 层关闭/未暖机/故障/升级 0% 时 out.active=false,
+         * tl/tr/attack/release 保持 B 原值 —— 无损回 B, B 核心始终热态。 */
+        let mut c_out = c_mode::COut::default();
+        if c_on {
+            let cp = c_mode::CParams {
+                upgrade_pct: p.c_upgrade,
+                sustain_suppress_pct: p.c_sustain_suppress,
+                bgm_filter: p.c_bgm_filter,
+            };
+            let out = self
+                .c_mode
+                .fuse(tl, tr, &smart_out, self.pan_l, self.pan_r, eff_dual, &cp);
+            if out.active {
+                tl = out.target_l;
+                tr = out.target_r;
+                attack = (attack + out.attack_add).clamp(0.001, 1.0);
+                release = (release + out.release_add).clamp(0.001, 1.0);
+            }
+            c_out = out;
         }
 
         // 攻/放平滑 + 死区 (xbox6); prev_* 供引擎做"起振"跳变检测
@@ -473,6 +583,13 @@ impl Analyzer {
             smart_proximity: smart_out.proximity,
             smart_pitch: smart_out.pitch,
             smart_duration_ms: smart_out.duration_ms,
+            c_active: c_out.active,
+            c_music: c_out.music_raw,
+            c_conf: c_out.conf,
+            c_music_state: c_out.music_state,
+            c_beat_lock: c_out.beat_lock,
+            c_event_state: c_out.event_state,
+            c_degraded: c_out.degraded,
         }
     }
 }
@@ -515,6 +632,10 @@ mod tests {
             smart_enabled: false,
             smart_strength: 70,
             smart_duration: 70,
+            algorithm_mode: 0, // A 经典 (既有测试语义零变化)
+            c_upgrade: 70,
+            c_sustain_suppress: 90,
+            c_bgm_filter: true,
         }
     }
 
@@ -826,5 +947,139 @@ mod tests {
         let outs = run(&mut an, &p, &sine(100.0, 0.05, 1.5, 48000.0), &mut now);
         let (l, _) = last_max(&outs, 60);
         assert!(l > 0.05, "中等响度也应有明显震动: l={l}");
+    }
+
+    /* ══════════════ ★C 模式 (B 下一代事件层) 验收 ══════════════ */
+
+    /// C 模式参数: B 核心照常 (smart 70/70) + algorithm_mode=C。
+    fn c_params(upgrade: u32) -> EngineParams {
+        let mut p = default_params();
+        p.smart_enabled = true;
+        p.smart_strength = 70;
+        p.smart_duration = 70;
+        p.algorithm_mode = 2; // AUDIO_ALGO_C
+        p.c_upgrade = upgrade;
+        p
+    }
+
+    /// ★C 验收红线 (文档 §5.3): c_upgrade_pct=0 → 与 B 模式逐帧一致 (无损回退)。
+    #[test]
+    fn c_mode_zero_upgrade_is_frame_identical_to_b() {
+        let sig = bgm_with_kicks(6.0, 0.35);
+        let mut pb = default_params();
+        pb.smart_enabled = true;
+        pb.algorithm_mode = 1; // B
+        let mut pc = c_params(0); // C 但升级 0 → 整层旁路
+        let mut b = Analyzer::new(48000.0);
+        let mut c = Analyzer::new(48000.0);
+        let (mut nb, mut nc) = (1000u64, 1000u64);
+        let ob = run(&mut b, &pb, &sig, &mut nb);
+        let oc = run(&mut c, &pc, &sig, &mut nc);
+        assert_eq!(ob.len(), oc.len());
+        for (x, y) in ob.iter().zip(oc.iter()) {
+            assert!(!y.c_active, "upgrade=0 时 C 层必须全程旁路");
+            assert_eq!(x.level_l, y.level_l, "upgrade=0 左马达必须与 B 逐帧相同");
+            assert_eq!(x.level_r, y.level_r, "upgrade=0 右马达必须与 B 逐帧相同");
+        }
+    }
+
+    /// ★C 招牌能力: 稳态 BGM 段 (锁定后) C 的输出应显著低于 B (背景压制),
+    /// 同时锁定建立 (c_music_state=MUSIC_LOCK)。
+    #[test]
+    fn c_mode_suppresses_steady_bgm_vs_b() {
+        let sig = bgm_with_kicks(6.0, 0.20); // 0.5s 周期鼓点 + 和声铺底
+        let mut pb = default_params();
+        pb.smart_enabled = true;
+        pb.algorithm_mode = 1;
+        let mut pc = c_params(100);
+        pc.c_sustain_suppress = 90;
+        let mut b = Analyzer::new(48000.0);
+        let mut c = Analyzer::new(48000.0);
+        let (mut nb, mut nc) = (1000u64, 1000u64);
+        let ob = run(&mut b, &pb, &sig, &mut nb);
+        let oc = run(&mut c, &pc, &sig, &mut nc);
+        // 锁定应建立 (6s 内; 取后半段统计)
+        let locked = oc.iter().skip(300).filter(|o| o.c_music_state == 2).count();
+        assert!(
+            locked > 100,
+            "稳态 BGM 应建立 MUSIC_LOCK (后半段锁定帧 {})",
+            locked
+        );
+        // 稳态段 (3s 后) 平均电平: C 应显著低于 B
+        let mean = |outs: &[FrameOut]| -> f32 {
+            let seg = &outs[outs.len() / 2..];
+            seg.iter().map(|o| o.level_l + o.level_r).sum::<f32>()
+                / seg.len().max(1) as f32
+                / 2.0
+        };
+        let (mb, mc) = (mean(&ob), mean(&oc));
+        assert!(
+            mc < mb * 0.75,
+            "BGM 锁定后 C 应显著压低稳态输出: C={mc:.3} 对比 B={mb:.3}"
+        );
+    }
+
+    /// ★C 性能门槛 (任务书): 单核处理 1 秒音频 <10ms (iter 档实测, 数值写交接)。
+    #[test]
+    fn c_mode_1s_audio_processes_under_10ms() {
+        use std::time::Instant;
+        let rate = 48000.0f32;
+        // 1 秒混合素材: BGM + 瞬态冲击 (真实工况近似)
+        let mut sig = bgm_with_kicks(1.0, 0.3);
+        let burst = noise(0.02, 0.5, 42);
+        let at = sig.len() / 2;
+        for (i, &s) in burst.iter().enumerate() {
+            if at + i < sig.len() {
+                sig[at + i] += s;
+            }
+        }
+        let rest: Vec<f32> = sig.iter().skip(1024).copied().collect();
+        let mut now;
+        /* B 模式对照 */
+        let mut an_b = Analyzer::new(rate);
+        let mut pb = default_params();
+        pb.smart_enabled = true;
+        pb.algorithm_mode = 1;
+        now = 1000u64;
+        for s in sig.iter().take(1024) {
+            an_b.push(*s);
+        }
+        let _ = an_b.process(now, &pb);
+        now += 30;
+        let t_b = Instant::now();
+        for ch in rest.chunks(480) {
+            for &s in ch {
+                an_b.push(s);
+            }
+            now += 10;
+            let _ = an_b.process(now, &pb);
+        }
+        let ms_b = t_b.elapsed().as_secs_f64() * 1000.0;
+        /* C 模式 (主测量) */
+        let mut an = Analyzer::new(rate);
+        let p = c_params(100);
+        now = 1000u64;
+        for s in sig.iter().take(1024) {
+            an.push(*s);
+        }
+        let _ = an.process(now, &p);
+        now += 30;
+        let t0 = Instant::now();
+        for ch in rest.chunks(480) {
+            for &s in ch {
+                an.push(s);
+            }
+            now += 10;
+            let _ = an.process(now, &p);
+        }
+        let ms = t0.elapsed().as_secs_f64() * 1000.0;
+        assert!(
+            ms < 10.0,
+            "C 模式处理 1s 音频应 <10ms (单核), 实测 {ms:.2}ms"
+        );
+        eprintln!(
+            "[C-MODE BENCH] 1s audio (iter profile): B={ms_b:.2} ms / C={ms:.2} ms / C-B={:.2} ms",
+            ms - ms_b
+        );
     }
 }

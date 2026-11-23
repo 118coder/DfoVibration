@@ -1317,7 +1317,8 @@ impl SorahkGui {
                         (th.good, "运行中", true)
                     };
                     widgets::status_dot(ui, color, pulsing, 4.5);
-                    ui.label(egui::RichText::new(text).size(12.5).strong().color(th.heading));
+                    ui.label(egui::RichText::new(text).size(12.5).strong().color(th.heading))
+                        .on_hover_text("仅表示连发与映射状态；游戏震动、音频震动各自独立开关。");
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let (icon, tip) = if frame_state.is_paused {
                             (widgets::Icon::Play, "恢复连发")

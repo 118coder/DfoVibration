@@ -2220,10 +2220,10 @@ fn get_raw_translation(lang: Language, key: RawKey) -> &'static str {
         (Language::Japanese, RawKey::TrayActivate) => "✓ DfoVibration-V3を有効化",
 
         // Tray Icon - Pause
-        (Language::English, RawKey::TrayPause) => "⏸ Pause DfoVibration-V3",
-        (Language::SimplifiedChinese, RawKey::TrayPause) => "⏸ 暂停 DfoVibration-V3",
-        (Language::TraditionalChinese, RawKey::TrayPause) => "⏸ 暫停 DfoVibration-V3",
-        (Language::Japanese, RawKey::TrayPause) => "⏸ DfoVibration-V3を一時停止",
+        (Language::English, RawKey::TrayPause) => "⏸ Pause turbo / mappings",
+        (Language::SimplifiedChinese, RawKey::TrayPause) => "⏸ 暂停连发与映射",
+        (Language::TraditionalChinese, RawKey::TrayPause) => "⏸ 暫停連發與映射",
+        (Language::Japanese, RawKey::TrayPause) => "⏸ 連射・マッピングを一時停止",
 
         // Tray Icon - Show Window
         (Language::English, RawKey::TrayShowWindow) => "✨ Show Window",
@@ -2260,10 +2260,10 @@ fn get_raw_translation(lang: Language, key: RawKey) -> &'static str {
         (Language::Japanese, RawKey::TrayNotificationActivated) => "DfoVibration-V3が有効になりました",
 
         // Tray Icon - Notification Paused
-        (Language::English, RawKey::TrayNotificationPaused) => "DfoVibration-V3 paused",
-        (Language::SimplifiedChinese, RawKey::TrayNotificationPaused) => "DfoVibration-V3 已暂停",
-        (Language::TraditionalChinese, RawKey::TrayNotificationPaused) => "DfoVibration-V3 已暫停",
-        (Language::Japanese, RawKey::TrayNotificationPaused) => "DfoVibration-V3が一時停止しました",
+        (Language::English, RawKey::TrayNotificationPaused) => "Turbo / mappings paused; haptics unaffected",
+        (Language::SimplifiedChinese, RawKey::TrayNotificationPaused) => "连发与映射已暂停，震动不受影响",
+        (Language::TraditionalChinese, RawKey::TrayNotificationPaused) => "連發與映射已暫停，震動不受影響",
+        (Language::Japanese, RawKey::TrayNotificationPaused) => "連射・マッピングを一時停止（振動は継続）",
 
         // Preset Management
         (Language::English, RawKey::PresetTitle) => "📋 Preset Management",

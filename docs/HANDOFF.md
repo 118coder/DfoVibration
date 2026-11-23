@@ -1,5 +1,17 @@
 # DfoVibration-V3 (原 SorahkDFO) — 交接文档 (HANDOFF)
 
+## 2026-11-24：暂停连发与两类震动解耦（独立任务分支）
+
+- 基线：远程 main / PR26 merge `a7853e4d5f2664cc3c6ddee704d5ad1b00d0c289`。
+- 工作区：`E:/dfo_pause_independent_20261124`，分支 `fix/pause-independent-haptics-20261124`；原源码 M/M2 脏改未动。
+- 来源：Git 直连超时后，以认证 GitHub API 读取 main ref 和签名 commit payload，Git hash-object 验证实际 commit SHA 完全一致；tree/blob 复用本地已有的同 SHA 对象。脚本独立放 `E:/dfo_work_scripts`，凭据未输出。
+- 修复：vibration 生产出口调用 haptic_output_gates；游戏开关与音频开关/自检独立，不读连发暂停。audio 主循环移除暂停分支，自检尊重退出，白名单/设备/静音等待/占空比未改。退出仍 force_zero，并清遥测残留。
+- UI：极简底部三通道状态；侧边栏 hover 与托盘暂停文案限定连发/映射，无布局或配置字段变更。
+- 验证：真实 AppState 八组合、关闭残留归零、自检退出门；源码守卫锁定生产门控入口与禁暂停依赖、退出 force_zero。现有完整 suite（原真实输入 skip 保留）与 z release 由 pause-independent.yml 执行。
+- 构建红线：fat LTO / 1 CGU / strip / unwind、FFT SIMD 均保留；本机不编译。EXE 必须严格小于 10,000,000B，下载后另核 SHA 与 PE 资源。
+- 当前阶段：已完成本地 diff 检查，云端运行及产物验收待补；不得据此声称 CI 或真实手柄验收通过。不自动 merge，不创建 Release。
+
+
 > 更新: 2026-09-27 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
 > 配套: `docs/开发维护规范.md`(★强制性规范, R1 新增) · `CONTEXT.md`(领域词汇+模块地图, R1 新增) · `docs/adr/`(已定决策) · `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
 

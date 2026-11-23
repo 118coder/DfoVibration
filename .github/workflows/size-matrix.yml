@@ -1,0 +1,69 @@
+name: size-matrix
+
+# 体积实验专用：只构建，不跑任何测试。
+# 保持 release 现有 fat LTO / 1 CGU / strip=true / panic=unwind，仅切换 opt-level。
+# 产物用于比较 EXE 字节数；功能与性能验收仍由 Owner 实机完成。
+
+on:
+  push:
+    branches:
+      - verify/minimal-audio-size-r214
+    paths:
+      - ".github/workflows/size-matrix.yml"
+      - "src/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "build.rs"
+      - "resources/**"
+  workflow_dispatch:
+
+env:
+  RUSTUP_TOOLCHAIN: "1.96.0"
+  CARGO_HTTP_TIMEOUT: "120"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        opt: [3, s, z]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache cargo registry + target (per opt-level)
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: size-matrix-${{ matrix.opt }}-v1
+
+      - name: Install pinned toolchain (MSVC host)
+        run: rustup toolchain install 1.96.0
+
+      - name: Build release (no tests)
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: ${{ matrix.opt }}
+        run: |
+          Write-Host "opt-level = $env:CARGO_PROFILE_RELEASE_OPT_LEVEL"
+          cargo build --release --locked
+
+      - name: Rename artifact + SHA256 + size
+        shell: pwsh
+        run: |
+          $opt = "${{ matrix.opt }}"
+          $name = "sorahk-opt$opt.exe"
+          Rename-Item "target/release/sorahk.exe" $name
+          $path = "target/release/$name"
+          $size = (Get-Item $path).Length
+          $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File -FilePath "target/release/SHA256SUMS-opt$opt.txt" -Encoding utf8
+          "opt=$opt bytes=$size sha256=$hash" | Out-File -FilePath "target/release/size-opt$opt.txt" -Encoding utf8
+          Get-Content "target/release/size-opt$opt.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: size-opt${{ matrix.opt }}
+          path: |
+            target/release/sorahk-opt${{ matrix.opt }}.exe
+            target/release/SHA256SUMS-opt${{ matrix.opt }}.txt
+            target/release/size-opt${{ matrix.opt }}.txt

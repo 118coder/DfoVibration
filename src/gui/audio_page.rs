@@ -81,7 +81,6 @@ impl SorahkGui {
             mode == AUDIO_ALGO_B,
             mode == AUDIO_ALGO_C,
         );
-        let on = audio.smart_enabled;
         th.card(ui, Some("智能模式（A 经典 · B 智能增强 · C 事件模式）"), |ui| {
             ui.label(th.hint_text(
                 "A = 原手感。B = 纯算法判断声音远近与高低：近的更猛更脆、收得快；远的更轻、拖尾长。C = B 的下一代：再拆出「一记一记」的事件，纯算法压低 BGM 背景（锁定后压持续声、规律鼓点中压、技能音宽带逃逸），换曲/静音快速重收敛。全部不装模型、不联网。",
@@ -90,36 +89,39 @@ impl SorahkGui {
             ui.horizontal(|ui| {
                 let a = ui.selectable_label(is_a, "A 经典模式（原手感，逐字节不变）");
                 if a.clicked() && !is_a {
-                    self.backend.update_audio_config(|cfg| {
-                        cfg.smart_enabled = false;
-                        cfg.audio_algorithm_mode = Some("a".into());
-                    });
+                    self.backend.set_audio_algorithm_mode(AUDIO_ALGO_A);
                     dirty = true;
                 }
                 let b = ui.selectable_label(is_b, "B AI 智能模式（远近高低自适应）");
                 if b.clicked() && !is_b {
-                    self.backend.update_audio_config(|cfg| {
-                        cfg.smart_enabled = true;
-                        cfg.audio_algorithm_mode = Some("b".into());
-                    });
+                    self.backend.set_audio_algorithm_mode(AUDIO_ALGO_B);
                     dirty = true;
                 }
                 let c = ui.selectable_label(is_c, "C 事件模式（BGM 筛选 + 事件包络）");
                 if c.clicked() && !is_c {
-                    self.backend.update_audio_config(|cfg| {
-                        cfg.smart_enabled = true; // C 内部先跑 B 核心
-                        cfg.audio_algorithm_mode = Some("c".into());
-                    });
+                    self.backend.set_audio_algorithm_mode(AUDIO_ALGO_C);
                     dirty = true;
                 }
             });
             ui.add_space(SP_XS);
             if !is_c {
-                dirty |= audio_check!(self, ui, th, audio, smart_enabled,
+                let mut smart = audio.smart_enabled;
+                let changed = check_row(
+                    ui,
+                    th,
+                    &mut smart,
                     "AI 智能增强开关（与上方 A/B 等价）",
                     "关 = A 经典；开 = B 智能",
-                    "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。"
+                    "这个开关和上面的 A/B 是同一个设置。关掉后输出和老版本完全一样，可以放心来回对比。",
                 );
+                if changed {
+                    self.backend.set_audio_algorithm_mode(if smart {
+                        AUDIO_ALGO_B
+                    } else {
+                        AUDIO_ALGO_A
+                    });
+                    dirty = true;
+                }
             }
             split_cols(ui, 2, SP_L, |ui, i| {
                 if i == 0 {

@@ -12,7 +12,9 @@ name: build-windows
 #   ③ release 构建前先跑一遍完整测试 —— 改坏代码在合并前就被挡住, 不用等发版才发现。
 
 on:
-  push: # 任意分支触发
+  push: # 任意分支触发 (本任务分支除外：交给 size-matrix.yml 只构建不跑测试)
+    branches-ignore:
+      - verify/minimal-audio-size-r214
   workflow_dispatch:
 
 env:

@@ -6,6 +6,8 @@ name: size-matrix
 
 on:
   push:
+    branches:
+      - verify/minimal-audio-size-r214
     paths:
       - ".github/workflows/size-matrix.yml"
       - "src/**"

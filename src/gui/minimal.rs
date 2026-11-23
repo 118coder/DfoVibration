@@ -113,6 +113,168 @@ impl SorahkGui {
     }
 
 
+    /// 极简页音频区: 总开关 + 实时状态 + A/B/C 算法选择。
+    ///
+    /// 所有玩家可见（不跟随 `dfo_player` 隐藏）；配置写入统一走
+    /// `backend.update_audio_config`，A/B/C 选择由 backend 同步双字段。
+    fn render_minimal_audio_section(&mut self, ui: &mut egui::Ui) {
+        use crate::state::audio_state::{
+            audio_status_name, resolve_algorithm_mode, AUDIO_ALGO_A, AUDIO_ALGO_B, AUDIO_ALGO_C,
+            AUDIO_STATUS_NO_DEVICE, AUDIO_STATUS_OFF, AUDIO_STATUS_PAUSED, AUDIO_STATUS_RUNNING,
+            AUDIO_STATUS_WAIT_GAME, AUDIO_STATUS_WAIT_SOUND,
+        };
+        let th = self.theme();
+        let (mut audio_on, mut mode) = self.backend.with_config(|c| {
+            let a = &c.audio_haptics;
+            (
+                a.enabled,
+                resolve_algorithm_mode(a.audio_algorithm_mode.as_deref(), a.smart_enabled),
+            )
+        });
+        let status = self.backend.audio_status_code();
+
+        // 音频总开关 (与连发/震动大开关同规格)
+        let (text, fg, bg) = if audio_on {
+            ("音频震动 · 开启", th.good, th.good_soft)
+        } else {
+            ("音频震动 · 关闭", th.hint, th.faint)
+        };
+        let audio_btn = egui::Button::new(egui::RichText::new(text).size(16.0).strong().color(fg))
+            .fill(bg)
+            .corner_radius(egui::CornerRadius::same(12))
+            .min_size(egui::vec2(260.0, 46.0));
+        if ui.add_sized([280.0, 46.0], audio_btn).clicked() {
+            let next = !audio_on;
+            self.backend.update_audio_config(|a| a.enabled = next);
+            audio_on = next;
+        }
+        ui.add_space(theme::SP_XS);
+
+        // 状态行: 关闭时说明未开启; 开启后直接显示引擎状态
+        let (dot, pulsing, stat_text) = if !audio_on {
+            (th.hint, false, "音频震动未开启".to_string())
+        } else {
+            match status {
+                AUDIO_STATUS_RUNNING => (
+                    th.good,
+                    true,
+                    format!("音频震动 · {}", audio_status_name(status)),
+                ),
+                AUDIO_STATUS_WAIT_GAME | AUDIO_STATUS_WAIT_SOUND => (
+                    th.warn,
+                    false,
+                    format!("音频震动 · {}", audio_status_name(status)),
+                ),
+                AUDIO_STATUS_NO_DEVICE | AUDIO_STATUS_PAUSED => (
+                    th.warn,
+                    false,
+                    format!("音频震动 · {}", audio_status_name(status)),
+                ),
+                AUDIO_STATUS_OFF => (th.info, false, "音频震动 · 启动中".to_string()),
+                _ => (
+                    th.hint,
+                    false,
+                    format!("音频震动 · {}", audio_status_name(status)),
+                ),
+            }
+        };
+        let dot_w = 4.5 * 2.4;
+        let stat_w = ui
+            .painter()
+            .layout_no_wrap(
+                stat_text.clone(),
+                egui::FontId::proportional(12.0),
+                egui::Color32::WHITE,
+            )
+            .size()
+            .x;
+        let gap = theme::SP_XS + ui.spacing().item_spacing.x;
+        let _ = ui.allocate_ui_with_layout(
+            egui::vec2(dot_w + gap + stat_w, 18.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                widgets::status_dot(ui, dot, pulsing, 4.5);
+                ui.add_space(theme::SP_XS);
+                ui.label(th.weak(stat_text.clone()));
+            },
+        );
+        ui.add_space(theme::SP_XS);
+
+        // A/B/C 三段选择 (定宽 300, 与上面两个大开关同宽域)
+        let seg_id = egui::Id::new("minimal_audio_mode");
+        let labels = ["A 经典", "B 智能", "C 事件"];
+        let seg_w = 300.0_f32;
+        let seg_h = 26.0_f32;
+        let (seg_rect, _) =
+            ui.allocate_exact_size(egui::vec2(seg_w, seg_h), egui::Sense::hover());
+        let third = seg_rect.width() / 3.0;
+        let mut picked: Option<u8> = None;
+        for i in 0..labels.len() {
+            let rect = egui::Rect::from_x_y_ranges(
+                (seg_rect.left() + third * i as f32)
+                    ..=(seg_rect.left() + third * (i + 1) as f32),
+                seg_rect.top()..=seg_rect.bottom(),
+            );
+            let resp = ui
+                .interact(rect, seg_id.with(i), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(match i {
+                    0 => "A 经典：原手感",
+                    1 => "B 智能：远近高低自适应",
+                    _ => "C 事件：BGM 筛选 + 事件包络",
+                });
+            if resp.clicked() {
+                picked = Some(match i {
+                    0 => AUDIO_ALGO_A,
+                    1 => AUDIO_ALGO_B,
+                    _ => AUDIO_ALGO_C,
+                });
+            }
+        }
+        if let Some(next) = picked {
+            if next != mode {
+                self.backend.set_audio_algorithm_mode(next);
+                mode = next;
+            }
+        }
+        let mode_idx = match mode {
+            AUDIO_ALGO_B => 1,
+            AUDIO_ALGO_C => 2,
+            _ => 0,
+        };
+        ui.painter().rect_filled(seg_rect, 8, th.faint);
+        let thumb_w = third - 4.0;
+        let thumb_x = seg_rect.left() + 2.0 + third * mode_idx as f32;
+        let thumb = egui::Rect::from_min_size(
+            egui::pos2(thumb_x, seg_rect.top() + 3.0),
+            egui::vec2(thumb_w, seg_h - 6.0),
+        );
+        ui.painter().rect_filled(thumb, 6, th.accent);
+        for (i, label) in labels.iter().enumerate() {
+            ui.painter().text(
+                egui::pos2(
+                    seg_rect.left() + third * (i as f32 + 0.5),
+                    seg_rect.center().y,
+                ),
+                egui::Align2::CENTER_CENTER,
+                label.to_string(),
+                egui::FontId::proportional(12.0),
+                if i == mode_idx {
+                    egui::Color32::WHITE
+                } else {
+                    th.text_weak
+                },
+            );
+        }
+        ui.add_space(theme::SP_XS);
+        ui.label(th.hint_text(match mode_idx {
+            0 => "A 经典：原手感，逐字节不变",
+            1 => "B 智能：远近高低自适应",
+            _ => "C 事件：BGM 筛选 + 事件包络",
+        }));
+    }
+
+
     /// 极简模式页面: 连发开关 + 预设 + 震动开关。
     ///
     /// 布局用单层 `top_down(Align::Center)`: 所有元素自动水平居中。
@@ -138,7 +300,7 @@ impl SorahkGui {
             ui.add_space(theme::SP_XS);
             ui.label(th.h1("极简模式"));
             ui.add_space(theme::SP_XS);
-            ui.label(th.hint_text("只保留两个总开关, 一键启停"));
+            ui.label(th.hint_text("连发 / 震动 / 音频，一页启停"));
             ui.add_space(theme::SP_M);
 
             // 连发大开关
@@ -416,6 +578,10 @@ impl SorahkGui {
                 ui.add_space(theme::SP_S);
             }
             }
+
+            // 音频震动: 所有玩家可见（不跟随 dfo_player 隐藏）
+            ui.add_space(theme::SP_S);
+            self.render_minimal_audio_section(ui);
 
             // 状态行 (居中原理同预设行: 测宽 + 定宽子块)
             let (dot, stat_text) = if !dfo_player {

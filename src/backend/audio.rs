@@ -6,7 +6,9 @@
 use std::sync::atomic::Ordering::Relaxed;
 
 use super::BackendService;
-use crate::state::audio_state::{AudioHapState, AudioTelemetry};
+use crate::state::audio_state::{
+    AudioHapState, AudioTelemetry, AUDIO_ALGO_A, AUDIO_ALGO_B, AUDIO_ALGO_C,
+};
 use crate::ui_api::Commit;
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -83,6 +85,22 @@ impl BackendService {
         self.cfg
             .with_config(|c| self.app.audio_hap.apply_config(&c.audio_haptics));
         ret
+    }
+
+    /// A/B/C 算法选择的唯一写入口：同步 `smart_enabled` + `audio_algorithm_mode`
+    /// 双字段（A = false/"a"，B = true/"b"，C = true/"c"），避免两个字段各写一半
+    /// 导致界面显示与引擎实际模式不一致。
+    pub fn set_audio_algorithm_mode(&self, mode: u8) {
+        let (smart, tag) = match mode {
+            AUDIO_ALGO_A => (false, "a"),
+            AUDIO_ALGO_B => (true, "b"),
+            AUDIO_ALGO_C => (true, "c"),
+            _ => return,
+        };
+        self.update_audio_config(|cfg| {
+            cfg.smart_enabled = smart;
+            cfg.audio_algorithm_mode = Some(tag.to_string());
+        });
     }
 
     /// 应用校准建议 (旧 audio_page.rs:412-417 语义：写 mask_threshold + 落盘)。

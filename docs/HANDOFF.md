@@ -1,5 +1,28 @@
 # DfoVibration-V3 (原 SorahkDFO) — 交接文档 (HANDOFF)
 
+## 2026-11-24：R2.15 正式发布准备（用户已授权 PR、合并与 Release）
+
+- 远程复核：main 仍为 `a7853e4d5f2664cc3c6ddee704d5ad1b00d0c289`，latest 为 R2.14，R2.15 未占用；工作分支 `fix/pause-independent-haptics-20261124`。
+- `APP_VERSION` 单点升级 R2.15；正式 `build-windows.yml` 的 release step 设置 `CARGO_PROFILE_RELEASE_OPT_LEVEL=z`，Cargo 默认 opt3 不变。完整功能/字体、FFT SIMD、fat LTO / 1 CGU / strip / unwind 保留；EXE 严格 `<10,000,000B`，记录版本、SHA、字节数及构建来源。
+- 清理旧 `verify/minimal-audio-size-r214` 分支的正式构建排除；完整测试和原真实输入 skip 不变。先 PR checks 成功再按 expected head SHA squash merge；正式交付必须重新取合并 main SHA 的云端产物，Release/tag 指向该 SHA。
+- 既有 9,904,128B / SHA `438ba412...` 是 R2.14 分支预验包，不作为 R2.15 正式包。下段为历史预验记录；本轮正式测试/发布/公开下载核验在完成后补录。
+- 实机边界：此前反馈排查发现仍运行旧包 `c633b4ad...`；root 已新增 PauseFix，但没有完成真实手柄/游戏现场验收。不得声称用户实机通过，不操作运行进程或用户配置。
+- 兼容/切换：不新增或改名配置字段；用户更新时自行从托盘完整退出旧实例，再从新的 R2.15 目录启动并确认“关于”版本。不要覆盖运行中 EXE 或旧包别名。
+
+## 2026-11-24：暂停连发与两类震动解耦（独立任务分支预验记录）
+
+- 基线：远程 main / PR26 merge `a7853e4d5f2664cc3c6ddee704d5ad1b00d0c289`。
+- 工作区：`E:/dfo_pause_independent_20261124`，分支 `fix/pause-independent-haptics-20261124`；原源码 M/M2 脏改未动。
+- 来源：Git 直连超时后，以认证 GitHub API 读取 main ref 和签名 commit payload，Git hash-object 验证实际 commit SHA 完全一致；tree/blob 复用本地已有的同 SHA 对象。脚本独立放 `E:/dfo_work_scripts`，凭据未输出。
+- 修复：vibration 生产出口调用 haptic_output_gates；游戏开关与音频开关/自检独立，不读连发暂停。audio 主循环移除暂停分支，自检尊重退出，白名单/设备/静音等待/占空比未改。退出仍 force_zero，并清遥测残留。
+- UI：极简底部三通道状态；侧边栏 hover 与托盘暂停文案限定连发/映射，无布局或配置字段变更。
+- 验证：真实 AppState 八组合、关闭残留归零、自检退出门；源码守卫锁定生产门控入口与禁暂停依赖、退出 force_zero。现有完整 suite（原真实输入 skip 保留）与 z release 由 pause-independent.yml 执行。
+- 构建红线：fat LTO / 1 CGU / strip / unwind、FFT SIMD 均保留；本机不编译。EXE 必须严格小于 10,000,000B，下载后另核 SHA 与 PE 资源。
+- 最终结果：云端 [run 45284434636](https://github.com/118coder/DfoVibration/actions/runs/45284434636) test/release-z 均 success；1073 passed / 0 failed / 4 ignored / 2 filtered（保留原真实输入 skip）。云端提交 `dfa87ecb8b28a012b3b389f5a540e109ea33db4b` 与本地实现 `56f18d011810908bb106bd6ea0ff9606c29c7832` 的 tree 均为 `1b38e5c52aa9bc1098dbc666f96c1516beabf797`（API提交元数据不同）。
+- 交付：`E:/网页小工具/DfoVibration V3版本/编译输出/R2.14_暂停仅连发_20261124/`，含EXE、云端ZIP、SHA和使用说明交接。EXE 9,904,128B，SHA256 `438ba4123200835d537aa608dbbb69bb41601c63ecb5ae9b40133f7b2c6f7fbd`；PE资源4552B SHA256 `745877da27980cdac31cc5849dd398d04765b1d3ec5915228e182cd46620f71d`，与旧包相同。
+- 未做真实手柄/游戏现场验收，未merge main、未创建Release；本段最终结果是构建完成后的本地交接补录，不重新构建同一代码。
+
+
 > 更新: 2026-09-27 · 目的: 让下一个对话/会话无需翻历史即可无缝接手
 > 配套: `docs/开发维护规范.md`(★强制性规范, R1 新增) · `CONTEXT.md`(领域词汇+模块地图, R1 新增) · `docs/adr/`(已定决策) · `design.md`(设计规范) · `docs/DESIGN.md` · `震动系统开发规范_v20.md`(§7.9 时间哨兵 / §9 高级算法纪律 / §十-十二 ACT 体系) · `docs/ACT全职业特调表_v19.md`(逐职业 ACT 参数审阅表)
 

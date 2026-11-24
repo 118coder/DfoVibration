@@ -584,17 +584,15 @@ impl SorahkGui {
             self.render_minimal_audio_section(ui);
 
             // 状态行 (居中原理同预设行: 测宽 + 定宽子块)
-            let (dot, stat_text) = if !dfo_player {
-                (th.hint, "连发模式 · DFO 震动功能已关闭")
-            } else if vib_on && running {
-                (th.good, "连发与震动均已就绪")
-            } else if vib_on {
-                (th.warn, "震动开启 · 连发已暂停")
-            } else if running {
-                (th.info, "连发运行中 · 震动关闭")
-            } else {
-                (th.hint, "全部关闭")
-            };
+            let audio_on = self.backend.with_config(|c| c.audio_haptics.enabled);
+            let game_on = dfo_player && vib_on;
+            let dot = if running || game_on || audio_on { th.good } else { th.hint };
+            let stat_text = format!(
+                "连发{} · 游戏震动{} · 音频震动{}",
+                if running { "运行" } else { "暂停" },
+                if game_on { "开" } else { "关" },
+                if audio_on { "开" } else { "关" },
+            );
             let dot_w = 4.5 * 2.4; // status_dot 内部 allocate 的宽度
             let stat_w = ui
                 .painter()

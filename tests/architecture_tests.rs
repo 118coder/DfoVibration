@@ -19,6 +19,26 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// 生产门控不能绕过八组合测试的入口，音频采集也不得重新引用连发暂停。
+#[test]
+fn haptics_do_not_depend_on_turbo_pause_and_keep_shutdown_zero() {
+    let vibration = fs::read_to_string(src_dir().join("vibration/mod.rs")).unwrap();
+    let production = vibration.split("/* ---------------- 测试 ---------------- */").next().unwrap();
+    assert!(!production.contains("is_paused"), "游戏/音频输出不得依赖连发暂停");
+    assert!(production.contains("let (enabled, audio_on) = haptic_output_gates(&state);"));
+    let shutdown = production.split("if state.should_exit.load(Ordering::Relaxed) {")
+        .nth(1).unwrap().split("break;").next().unwrap();
+    assert!(shutdown.contains("send_vibration_force_zero();"));
+    assert!(shutdown.contains("set_idle(crate::state::AUDIO_STATUS_OFF)"));
+    assert!(shutdown.contains("vibration_out_l.store(0"));
+    assert!(shutdown.contains("vibration_out_r.store(0"));
+    let audio = fs::read_to_string(src_dir().join("audio_haptics/mod.rs")).unwrap();
+    let engine = audio.split("fn engine_loop(state: Arc<AppState>) {").nth(1).unwrap();
+    assert!(!engine.contains("is_paused"), "音频采集和自检不得依赖连发暂停");
+    assert!(!engine.contains("AUDIO_STATUS_PAUSED"));
+    assert!(engine.contains("state.audio_hap.set_idle(AUDIO_STATUS_OFF);"));
+}
+
 fn src_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
 }

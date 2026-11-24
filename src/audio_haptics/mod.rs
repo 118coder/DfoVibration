@@ -15,7 +15,7 @@
 //! - **默认关** (Config.toml audio_haptics.enabled=false) → out 恒 0 → 震动管线与
 //!   旧版逐字节一致; 连发/组合键/DLL 震动零影响;
 //! - 唯一出口仍是 `send_vibration` (v24.41 写入去重记账不破坏);
-//! - 尊重暂停键 (切换键) 与前台白名单语义;
+//! - 连发暂停不影响音频震动；保留音频专属白名单与退出归零;
 //! - GPL/AGPL 组件禁用 (aubio/essentia 红线)。
 //!
 //! ★v24.51 修复 (实机"引擎运行中但马达无感"):
@@ -36,7 +36,7 @@ use std::time::{Duration, Instant};
 
 use crate::state::{
     audio_status_name, AudioHapState, AppState, AUDIO_STATUS_NO_DEVICE,
-    AUDIO_STATUS_OFF, AUDIO_STATUS_PAUSED, AUDIO_STATUS_RUNNING, AUDIO_STATUS_WAIT_GAME,
+    AUDIO_STATUS_OFF, AUDIO_STATUS_RUNNING, AUDIO_STATUS_WAIT_GAME,
     AUDIO_STATUS_WAIT_SOUND,
 };
 use mapping::EngineParams;
@@ -286,7 +286,7 @@ fn whitelist_entry_matches(entry: &str, name: Option<&str>, path: Option<&str>) 
     name.is_some_and(|n| n.eq_ignore_ascii_case(entry_name))
 }
 
-/// 引擎主循环 (10ms tick; 关闭/暂停/无游戏时空转 200ms)。
+/// 引擎主循环 (10ms tick; 关闭/无游戏时空转 200ms)。
 fn engine_loop(state: Arc<AppState>) {
     // COM 初始化 (本线程; 幂等)
     let _ = wasapi::initialize_mta();
@@ -321,11 +321,10 @@ fn engine_loop(state: Arc<AppState>) {
         }
         let ah: &AudioHapState = &state.audio_hap;
 
-        // ── 马达自检脉冲 (置于所有闸门之前, 但尊重暂停键) ──
-        // 绕过 DSP/采集/WASAPI, 直接把固定强度写进 out_l/out_r → 震动线程合流,
-        // 一击区分"音频链不通"与"马达链不通"。暂停键仍统一静音。
+        // ── 马达自检脉冲 (退出检查之后，其余闸门之前) ──
+        // 绕过 DSP/采集/WASAPI，直接写入马达贡献；连发暂停不影响自检。
         let sc_until = ah.self_check_until.load(Ordering::Relaxed);
-        if sc_until != 0 && !state.is_paused() {
+        if sc_until != 0 {
             if crate::vibration::now_ms_u64() < sc_until {
                 let ml = state.vibration_motor_l_gain.load(Ordering::Relaxed) as f32 / 100.0;
                 let mr = state.vibration_motor_r_gain.load(Ordering::Relaxed) as f32 / 100.0;
@@ -352,16 +351,7 @@ fn engine_loop(state: Arc<AppState>) {
             std::thread::sleep(Duration::from_millis(200));
             continue;
         }
-        // ── 闸门 2: 暂停键 (切换键) —— 音频冻结 + 马达归零 ──
-        if state.is_paused() {
-            capture = None;
-            analyzer = None;
-            ah.set_idle(AUDIO_STATUS_PAUSED);
-            log_status_change(ah, &mut last_status);
-            std::thread::sleep(Duration::from_millis(100));
-            continue;
-        }
-        /* ── 闸门 3: ★v24.52 音频专属白名单 ──
+        /* ── 闸门 2: ★v24.52 音频专属白名单 ──
          *  关  = 全局听 (玩家可完全不启用), 零进程判定开销;
          *  开  = 条目**默认复用连发白名单**(只读快照), 也可切换成本页自定义列表;
          *        列表为空 = 不做过滤 (只提示), 绝不静默全拒。

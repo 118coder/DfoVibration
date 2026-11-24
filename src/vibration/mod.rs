@@ -276,6 +276,10 @@ pub fn run(state: Arc<AppState>) {
                     /* ★v24.41: 退出前确保马达归零 —— 去重的"释放写"只在输出变化
                      * 那一帧发生; 若正在震动时收到退出, 不强制写就会把马达留在
                      * 旧档位 (手柄一直震到断电)。 */
+                    state.audio_hap.self_check_until.store(0, Ordering::Relaxed);
+                    state.audio_hap.set_idle(crate::state::AUDIO_STATUS_OFF);
+                    state.vibration_out_l.store(0, Ordering::Relaxed);
+                    state.vibration_out_r.store(0, Ordering::Relaxed);
                     send_vibration_force_zero();
                     break;
                 }
@@ -327,37 +331,24 @@ pub fn run(state: Arc<AppState>) {
                 } else {
                     0.0
                 };
-                let enabled = state.vibration_enabled.load(Ordering::Relaxed)
-                    && !state.is_paused();
-                /* ★v24.50 音频震动合流: 独立引擎的马达贡献仅在总输出开 (enabled) 时并入,
-                 * max 合并 —— DLL 事件与音频互相取大、互不覆盖; 暂停/总开关关闭时音频
-                 * 贡献归零 (音频引擎自己也冻结)。关闭态 audio_out 恒 0 → 与 v24.49
-                 * 行为逐字节一致。 */
-                /* ★v24.50.1 音频门与震动总开关**解耦**: 总开关只管 DLL 引擎通道,
-                 * 音频是独立可选模式 (双向不影响)。暂停键仍统一静音 (audio_on 含 !is_paused)。 */
-                /* ★v24.51: 自检脉冲即使在音频总开关关闭时也临时放行走马达,
-                 * 便于一击判定"输出链通不通" (脉冲结束立即回归原语义)。 */
-                let audio_on = (state.audio_hap.is_enabled()
-                    || state.audio_hap.self_check_active())
-                    && !state.is_paused();
+                /* 暂停只控制连发/映射；游戏与音频震动各自按开关运行，仍 max 合流。
+                 * 音频自检可临时放行音频通道，退出优先关闭所有贡献。 */
+                let (enabled, audio_on) = haptic_output_gates(&state);
                 let (audio_l, audio_r) = if audio_on {
                     state.audio_hap.output()
                 } else {
                     (0u16, 0u16)
                 };
                 log_audio_contribution(audio_l, audio_r, enabled);
-                /* ★输出闸门诊断 (v14.1.1): 事件消费在总开关判断之前, 总开关关闭/
-                 * 暂停时 [INJ] 照打但每轮强制 send(0,0) —— 曾因此"日志有注入命中、
-                 * 马达纹丝不动"无从排查。有效输出状态一旦翻转, 记一行 [GATE]。 */
-                let gate_paused = state.is_paused();
+                /* 事件消费在游戏震动开关判断之前；日志分别记录两条通道的闸门。 */
                 let gate_abs = state.vibration_abs_freq_enabled.load(Ordering::Relaxed);
-                let gate_state = (enabled, gate_paused, gate_abs);
+                let gate_state = (enabled, audio_on, gate_abs);
                 if last_gate_state != Some(gate_state) {
                     vib_log(&format!(
-                        "[GATE] 输出{} (总开关={}, 暂停={}, 绝对频率={})",
+                        "[GATE] 游戏震动{} (游戏开关={}, 音频通道={}, 绝对频率={})",
                         if enabled { "开" } else { "关" },
                         state.vibration_enabled.load(Ordering::Relaxed),
-                        gate_paused,
+                        audio_on,
                         gate_abs
                     ));
                     last_gate_state = Some(gate_state);
@@ -685,7 +676,7 @@ pub fn run(state: Arc<AppState>) {
                             let vl = ((l as f32) * motor_l * rk).min(65535.0) as u16;
                             let vr = ((r as f32) * motor_r * rk).min(65535.0) as u16;
                             /* ★v24.50 音频合流: max 取大 (战斗 FONT 输出 vs 音频震感);
-                             * 暂停/总开关关闭时 audio_l/r 已归零, 本分支不执行。 */
+                             * 游戏开关关闭走独立音频出口，音频开关关闭时 audio_l/r 归零。 */
                             let (vl, vr) = (vl.max(audio_l), vr.max(audio_r));
                             send_vibration(vl, vr);
                             state.vibration_out_l.store(vl as u32, Ordering::Relaxed);
@@ -715,6 +706,17 @@ pub fn run(state: Arc<AppState>) {
 
 /* ---------------- 路线相关的参数同步与出口小助手 ----------------
  * 两条引擎字段不同, 用 match 分别同步; 这里只做"逐字段搬运", 不含算法。 */
+
+/// 生产输出门控：连发暂停不参与任何震动通道的判定。
+fn haptic_output_gates(state: &AppState) -> (bool, bool) {
+    if state.should_exit() {
+        return (false, false);
+    }
+    (
+        state.vibration_enabled.load(Ordering::Relaxed),
+        state.audio_hap.is_enabled() || state.audio_hap.self_check_active(),
+    )
+}
 
 fn params_out_threshold(state: &AppState) -> f32 {
     state.vibration_out_threshold.load(Ordering::Relaxed) as f32
@@ -945,6 +947,41 @@ fn smooth_font_out(engine: &mut RouteEngine, l: f32, r: f32, k: f32) -> (f32, f3
 #[cfg(test)]
 mod route_dispatch_tests {
     use super::*;
+
+    #[test]
+    fn pause_and_haptic_switches_are_independent_all_eight_combinations() {
+        let state = AppState::new(crate::config::AppConfig::default()).unwrap();
+        for paused in [false, true] {
+            for game in [false, true] {
+                for audio in [false, true] {
+                    state.set_paused(paused);
+                    state.vibration_enabled.store(game, Ordering::Relaxed);
+                    let config = crate::config::AudioHapticsConfig {
+                        enabled: audio,
+                        ..Default::default()
+                    };
+                    state.audio_hap.apply_config(&config);
+                    assert_eq!(state.is_paused(), paused);
+                    assert_eq!(haptic_output_gates(&state), (game, audio),
+                        "paused={paused} game={game} audio={audio}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn audio_disable_clears_residual_and_exit_closes_self_check_gate() {
+        let state = AppState::new(crate::config::AppConfig::default()).unwrap();
+        state.set_paused(true);
+        state.audio_hap.out_l.store(12345, Ordering::Relaxed);
+        state.audio_hap.out_r.store(54321, Ordering::Relaxed);
+        state.audio_hap.apply_config(&crate::config::AudioHapticsConfig::default());
+        assert_eq!(state.audio_hap.output(), (0, 0));
+        state.audio_hap.request_self_check();
+        assert_eq!(haptic_output_gates(&state).1, true);
+        state.exit();
+        assert_eq!(haptic_output_gates(&state), (false, false));
+    }
 
     /// 两条引擎的路线归属: 构造后各自匹配自己的路线, 且切路线会重建。
     #[test]

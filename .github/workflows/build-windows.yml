@@ -12,9 +12,7 @@ name: build-windows
 #   ③ release 构建前先跑一遍完整测试 —— 改坏代码在合并前就被挡住, 不用等发版才发现。
 
 on:
-  push: # 任意分支触发 (本任务分支除外：交给 size-matrix.yml 只构建不跑测试)
-    branches-ignore:
-      - verify/minimal-audio-size-r214
+  push: # 任意分支触发；正式产物统一执行完整测试与原生体积守卫
   workflow_dispatch:
 
 env:
@@ -52,17 +50,25 @@ jobs:
       - name: Run full test suite (构建前挡坏代码)
         run: cargo test --profile iter --tests --no-fail-fast -- --skip poller_captures_synthesized_keys --skip stuck_key
 
+      # 正式单文件发行包采用原生 z 优化；Cargo.toml 默认 opt-level=3 不变。
+      # 保留 fat LTO / 1 CGU / strip / unwind、FFT SIMD 与完整功能/字体。
       - name: Build (release)
-        run: cargo build --release
+        env:
+          CARGO_PROFILE_RELEASE_OPT_LEVEL: z
+        run: cargo build --release --locked
 
-      - name: Rename artifact + SHA256
+      - name: Rename artifact + verify size + SHA256
         shell: pwsh
         run: |
           $name = $env:SORAHK_EXE
           Rename-Item "target/release/sorahk.exe" $name
-          $hash = (Get-FileHash "target/release/$name" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name" | Out-File -FilePath "target/release/SHA256SUMS.txt" -Encoding utf8
-          Get-Content "target/release/SHA256SUMS.txt"
+          $path = "target/release/$name"
+          $size = (Get-Item $path).Length
+          $hash = (Get-FileHash $path -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Set-Content "target/release/SHA256SUMS.txt" -Encoding utf8NoBOM
+          "version=$env:SORAHK_VER bytes=$size sha256=$hash commit=$env:GITHUB_SHA opt-level=z" | Set-Content "target/release/build-info.txt" -Encoding utf8NoBOM
+          Get-Content "target/release/build-info.txt"
+          if ($size -ge 10000000) { throw "EXE exceeds byte limit: $size (must be < 10000000)" }
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -71,3 +77,4 @@ jobs:
           path: |
             target/release/${{ env.SORAHK_EXE }}
             target/release/SHA256SUMS.txt
+            target/release/build-info.txt
